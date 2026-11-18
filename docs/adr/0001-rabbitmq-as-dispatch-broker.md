@@ -65,7 +65,7 @@ Priority is interpreted as **strict** (R16): a `high` message is always delivere
 - The AMQP priority is `6 − db_priority`, that is `high` = 6, `normal` = 5, `low` = 4 ([ADR-0004](0004-data-model-state-machine-and-fencing.md) stores `high` as 0).
 - **The range starts at 4 on purpose.** RabbitMQ treats a message without a priority as priority 4, and the client library, `amqp091-go`, leaves the priority property off the wire when its value is 0, so a priority of 0 cannot be sent at all. With `low` at 4, a message that loses its priority through a defect is delivered as `low`; it never overtakes `high`. Experiment E1 ran this on RabbitMQ 4.4.1: with priorities 4, 5 and 6 and messages without a priority interleaved in one queue, every 6 was delivered before every 5 and every 5 before every 4, and the messages without a priority were delivered among the 4s in publishing order.
 - **The priority is set explicitly on every message.** A test asserts that every published message carries the field, with the value that belongs to its row ([ADR-0010](0010-testing-and-ci.md)).
-- The worker's pacer picks the highest-priority message in its local prefetch buffer ([ADR-0005](0005-service-topology-and-status-events.md)), so strictness also holds for the messages already delivered to a consumer.
+- The worker's pacer picks the highest-priority message in its local prefetch buffer ([ADR-0005](0005-service-topology-and-status-events.md)), so strictness also holds for the messages already delivered to a consumer. In that buffer a delivery without a priority property counts as 4, as it does in the broker.
 - Per-priority buffer limits (high-water marks) are counted in Postgres, not in the broker ([ADR-0003](0003-bounded-relay-buffer-and-sweepers.md)).
 
 Two limitations follow and are documented in [future work](../future-work.md):
@@ -90,6 +90,7 @@ While a provider's circuit is open, prefetched messages wait unacknowledged in t
 The broker's dead-letter path is a safety net, not the main defence. The worker acknowledges a message as soon as its claim commits ([ADR-0005](0005-service-topology-and-status-events.md)), so a message that crashes a worker during the send is no longer in the queue; that case is handled by the retry budget and the lease sweeper ([ADR-0003](0003-bounded-relay-buffer-and-sweepers.md), [ADR-0007](0007-retry-policy-and-circuit-breaker.md) §9).
 
 - `dispatch.{channel}.poison` queues are classic and durable, and have no consumer. Their depth is a metric and an alert ([ADR-0009](0009-observability.md)).
+- A delivery whose body is not a notification id cannot belong to a row. The worker rejects it without requeue, so it goes to the poison queue, and logs its size, never its content.
 - A dead-lettered message leaves its row in `queued`. The row is recovered by reconciliation or by the manual `requeue-stale` command ([ADR-0003](0003-bounded-relay-buffer-and-sweepers.md)).
 
 ### Status events

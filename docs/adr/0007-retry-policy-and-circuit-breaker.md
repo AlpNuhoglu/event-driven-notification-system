@@ -42,7 +42,7 @@ The scope is certain for some results (`401`, `429`, a refused connection) and a
 | `500`, `502`, `503`, `504` | `retryable` | Message | Yes | Yes | Back-off; `Retry-After` honoured on `503` |
 | Connection refused, DNS or TLS failure, or any error **before the request was written** | `unreachable` | **Provider** | No | Yes | Nothing was sent, so there is no duplicate risk and the message is not at fault. The message goes to `retrying` with a back-off delay. |
 | Timeout or connection error **after the request was written** | `unknown` | Message | Yes | Yes | Delivery is ambiguous; retried with the same provider idempotency key (section 6) |
-| Circuit opened between claim and send | `aborted` | — | No | No | Nothing was sent. The row returns to `retrying` with `due_at` at the circuit's next half-open time (section 8). Excluded from success and failure rates. |
+| Circuit opened between claim and send, or the send deadline passed before the send could start | `aborted` | — | No | No | Nothing was sent. The row returns to `retrying`: with `due_at` at the circuit's next half-open time (section 8), or due at once after a missed send deadline (section 5). Excluded from success and failure rates. |
 | Panic recovered in the worker | `internal_error` | Message | Yes | No | It may be a persistent bug; the row fails when the budget runs out |
 
 **Detecting whether the request left the process.** The worker uses `net/http/httptrace`'s `ClientTrace.WroteRequest`. The request counts as *sent* only if the hook fired **and** `WroteRequestInfo.Err == nil`. The hook also fires on a failed write (for example a broken pipe), and such a request is treated as not sent (`unreachable`).
@@ -61,6 +61,7 @@ The delay uses **full jitter**: `delay = jitter × min(cap, base × 2^failures)`
 | `normal` | 5 s | 10 min | 8 | due time + **6 hours** | 21,600 s × 98 ≈ 2.1 M |
 | `low` | 30 s | 1 h | 10 | due time + **24 hours** | 86,400 s × 98 ≈ 8.5 M |
 
+- **`max_failures` is the total number of budget-consuming failures** a notification may have: the row fails on the failure that makes `failures` equal to `max_failures` (with `max_failures = 1`, on the first one). `failures` is also incremented on that last failure, so an exhausted row shows `failures = max_failures` ([ADR-0004](0004-data-model-state-machine-and-fencing.md) §5).
 - **Every notification has an `expires_at`.** The due time is `scheduled_at` if set, otherwise creation time. Because provider-scoped failures do not consume budget, the TTL is what guarantees that nothing retries forever.
 - **The TTL also caps the burst a priority can absorb.** The last column assumes the channel carries nothing else and nothing is retried; messages beyond it expire before they are sent. A client that submits a larger burst must set a longer `expires_at`. The README states these figures.
 - **Expiry shortcut:** if the retry would fall at or after `expires_at`, `decideRetry` fails the notification immediately (`failed / expired`) instead of scheduling a retry that can never happen.
@@ -86,8 +87,14 @@ The delay uses **full jitter**: `delay = jitter × min(cap, base × 2^failures)`
 | Clock | The script reads Redis `TIME`, so every worker uses the same clock and local clock skew is irrelevant |
 | Result | A **relative wait** until the caller's slot, not an absolute time, so the caller's clock does not matter either |
 | Reservation horizon | If the wait would exceed 250 ms, the script does not reserve; the pacer asks again after 50 ms. This bounds how many future slots a crashed process can waste. |
-| Never nack on limit | A message is never pulled and then put back because of the rate limit: that would cause a spin loop or needless write amplification |
+| Missed slot (D77) | A send starts within `PACER_SLOT_TOLERANCE` (5 ms) after its slot. A claim that returns later than that gives the slot up (it is not returned to the limiter) and reserves a new one through the same script, horizon included. The same holds for a slot kept after a zero-row claim that is stale when the next message is ready. Counted in `pacer_slots_missed_total{channel}` ([ADR-0009](0009-observability.md)). |
+| Send deadline (D77) | If the send cannot start within `lease − HTTP timeout − 5 s` of issuing the claim call (15 s with the defaults; derived, not configured), the attempt is closed as `aborted` and the row returns to `retrying` without consuming budget (section 2) |
+| Never nack on limit | A message is never pulled and then put back because of the rate limit: that would cause a spin loop or needless write amplification. A late claim **holds its message** (claimed, acked, the row `processing`) while it waits for a new slot. |
 | Redis unavailable | Fall back to an **in-process limiter** at `98 / WORKER_REPLICAS`. Sending does not stop. The limit is then **approximate**: replicas no longer share a clock or a schedule, and while some replicas use Redis and others the fallback, the channel can briefly exceed its rate. `limiter_fallback_active` is set and alerts ([ADR-0009](0009-observability.md)). |
+
+**Why a missed slot is given up.** The pacer claims during the wait, and a claim can outlast it: a worker that receives a message before the relay commits waits on the relay's row lock ([ADR-0002](0002-postgres-as-outbox-scheduler-and-retry-delay.md)) while the pacer goes on reserving the following slots. If each late claim sent at once, several sends would leave together, next to slots that are used on time. Three are enough: a batch arrives on an idle channel, the relay commits 30 ms later, the claims for the slots at 0, 10 and 20 ms send at 30 ms, and the window `[30 ms, 1030 ms)` holds 101 arrivals. With the rule, every send leaves at a slot that was reserved for it, so the spacing of the script is also the spacing at the provider, up to the tolerance.
+
+**Why 5 ms.** At 98 msg/s the limit of 100 leaves two slots, about 20 ms, of total lateness in a window. The tolerance must stay well below that; the rest is for scheduler and network jitter, which `load-smoke` measures.
 
 Adding workers beyond the point where the limit is reached does not increase throughput. Workers scale to *reach* the limit (by Little's law, about 20 concurrent sends per channel at 200 ms latency) and for availability, not to exceed it.
 
@@ -127,8 +134,8 @@ The pacer loop per channel is defined in [ADR-0005](0005-service-topology-and-st
 
 1. **Breaker before limiter.** While the circuit is open, the pacer waits; it does not reserve slots and does not claim.
 2. **A slot is reserved only when a message is waiting** in the local buffer.
-3. **The claim happens during the wait for the slot,** so the claim's latency does not shift the send away from its slot.
-4. **A claim that affects zero rows keeps its slot** for the next message.
+3. **The claim happens during the wait for the slot,** so the claim's latency does not shift the send away from its slot. **If the claim returns more than the tolerance after the slot, the slot is given up and a new one is reserved** (section 5); the send never happens "now" on a slot that has passed. The breaker is asked again at the new slot's time.
+4. **A claim that affects zero rows keeps its slot** for the next message, unless the slot is stale by more than the tolerance when that message is ready; then it is dropped.
 5. **If the circuit opens between the claim and the send,** nothing is sent: the attempt is closed as `aborted` and the row returns to `retrying` without consuming budget, due at the circuit's next half-open time.
 
 **While a circuit is open,** prefetched messages wait unacknowledged in the worker and further messages wait in the queue. The dispatch queues carry a 24-hour consumer timeout so that the broker does not cancel the consumer during a long outage ([ADR-0001](0001-rabbitmq-as-dispatch-broker.md)). Notifications that expire while waiting are failed by the expiry pass, and their messages are dropped at claim.
@@ -213,3 +220,4 @@ Changes made after the design review, recorded in the [design review log](../ai/
 - Redirects are no longer followed and transport replays are disabled, because either could turn one attempt into a different or repeated request. (D27, D29)
 - The provider contract (request body, `202` response, other `2xx`, headers, webhook.site as default) was written down; it had been defined nowhere. (D28, D44)
 - The pacer's order of operations and the `aborted` outcome were defined, provider failover moved to future work, and the default TTLs were tied to the burst each priority can absorb. (D23, D32, D31)
+- In P1 the rate limit gained the missed-slot rule and the send deadline, after the implementation showed that a claim can outlast its slot while it waits on the relay's row lock; `max_failures` was stated as the total number of budget-consuming failures. (D77)

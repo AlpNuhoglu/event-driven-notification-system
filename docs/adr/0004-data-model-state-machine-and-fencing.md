@@ -74,7 +74,7 @@ stateDiagram-v2
 | 3 | `pending`, `retrying` or `queued` `→ processing` | worker | The **claim** (below). Zero rows affected → ack and drop the message. |
 | 4 | `processing → sent` | worker | Fencing guard (section 4); sets `provider_message_id`, `provider`, `sent_at` |
 | 5 | `processing → retrying` | worker | `decideRetry` returns *retry*; sets `due_at = now() + delay`. `failures + 1` only for budget-consuming outcomes ([ADR-0007](0007-retry-policy-and-circuit-breaker.md)) |
-| 6 | `processing → failed` | worker | `decideRetry` returns *fail* (permanent, budget exhausted, or the retry would fall after `expires_at`) |
+| 6 | `processing → failed` | worker | `decideRetry` returns *fail* (permanent, budget exhausted, or the retry would fall after `expires_at`). `failures + 1` for budget-consuming outcomes, as in 5, so a row that exhausted its budget shows `failures = max_failures` |
 | 7 | `processing → retrying` or `failed` | lease sweeper | `lease_expires_at < now()`. The attempt goes from `in_flight` to `unknown` with `finished_at = now()`, `failures + 1`, then `decideRetry`; all in one transaction ([ADR-0003](0003-bounded-relay-buffer-and-sweepers.md)) |
 | 8 | `queued → pending` | relay (reconciliation), or the manual `requeue-stale` command | Runs on every relay (re)connection to RabbitMQ ([ADR-0003](0003-bounded-relay-buffer-and-sweepers.md)) |
 | 9 | `pending`, `retrying` or `queued` `→ cancelled` | api | `status IN (...)`. A message already in RabbitMQ stays there, but its claim (3) affects zero rows and is dropped. **Cancel versus claim is therefore race-free without any coordination.** |
@@ -125,7 +125,7 @@ SELECT * FROM claimed;
 
 A **slow worker is not a dead worker.** A worker can stall past its lease, have its notification reclaimed by the lease sweeper, and then wake up holding a result. Without protection it would overwrite the state of a newer attempt.
 
-- **Lease:** `lease_expires_at`, set at claim time to 30 seconds. It covers the wait for the rate-limit slot after the claim (at most 250 ms), the HTTP timeout (10 s) and a margin for the final write.
+- **Lease:** `lease_expires_at`, set at claim time to 30 seconds. It covers the wait for the send after the claim, the HTTP timeout (10 s) and a margin for the final write. The wait is bounded by the worker's send deadline, `lease − HTTP timeout − 5 s` from issuing the claim call ([ADR-0007](0007-retry-policy-and-circuit-breaker.md) §5); `now()` is the start of the claim statement, so a claim that waited on a row lock has a lease that is shorter by that wait, which the deadline accounts for.
 - **Fencing token:** `attempt_count`. It increases only at claim time, so its value identifies exactly one attempt. Final writes are conditional on it:
 
 ```sql
@@ -151,6 +151,8 @@ decideRetry(outcome Outcome, failures, maxFailures int, expiresAt time.Time,
 // Decision{Action: Retry | Fail, Delay, Reason, ConsumesBudget}
 ```
 
+- `failures` is the number of budget-consuming failures recorded on the row **before** the current outcome; the function adds the current one. The row fails when that total reaches `max_failures`, so `max_failures` is the total number of budget-consuming failures a notification may have ([ADR-0007](0007-retry-policy-and-circuit-breaker.md) §3).
+- It is exported from `domain/` as `DecideRetry`, because the repository functions of transitions 5, 6 and 7 call it inside their transaction.
 - It encodes the budget, the expiry shortcut (fail immediately if `now + Delay >= expiresAt`) and `Retry-After` handling ([ADR-0007](0007-retry-policy-and-circuit-breaker.md)).
 - **It is deterministic.** The random part of full jitter is passed in as `jitter`, a number in `[0, 1)`, so the function can be table-tested exhaustively.
 - **It returns a delay, not a timestamp.** The caller passes the database `now()` read in the same transaction, and `due_at = now() + delay` is computed in SQL. Scheduling uses one clock ([ADR-0002](0002-postgres-as-outbox-scheduler-and-retry-delay.md)).
@@ -180,7 +182,7 @@ One table holds both the immutable request and the changing delivery state.
 | `queued_at` | `timestamptz NULL` | Set by the relay; `NULL` for rows claimed directly |
 | `lease_expires_at` | `timestamptz NULL` | Used by the lease sweeper |
 | `provider`, `provider_message_id` | `text NULL` | Which provider accepted the message. `provider_message_id` is **not** assumed to be unique. |
-| `correlation_id`, `trace_parent` | `text` | Request correlation and trace context, stored because the relay is asynchronous ([ADR-0009](0009-observability.md)) |
+| `correlation_id`, `trace_parent` | `text` | Request correlation and trace context, stored because the relay is asynchronous ([ADR-0009](0009-observability.md)). Both are `NOT NULL`; `trace_parent` defaults to the empty string for a request without trace context |
 | `version` | `bigint` | Strictly monotonic per row; orders status events |
 | `created_at`, `updated_at`, `sent_at` | `timestamptz` | |
 
@@ -203,7 +205,7 @@ There is deliberately no free-text error column on `notifications`. Provider err
 
 | Column | Type | Notes |
 |---|---|---|
-| `notification_id`, `attempt_no` | `uuid`, `int` | `UNIQUE (notification_id, attempt_no)`; `attempt_no` equals the `attempt_count` at claim time |
+| `notification_id`, `attempt_no` | `uuid`, `int` | `UNIQUE (notification_id, attempt_no)`, implemented as the table's primary key; `attempt_no` equals the `attempt_count` at claim time |
 | `channel`, `provider` | `text` | Denormalised (immutable) so the metrics summary avoids a join ([ADR-0009](0009-observability.md)) |
 | `outcome` | `text` | `CHECK IN ('in_flight', 'success', 'retryable', 'permanent', 'provider_fatal', 'throttled', 'unknown', 'unreachable', 'aborted', 'internal_error')` ([ADR-0007](0007-retry-policy-and-circuit-breaker.md) §2) |
 | `http_status`, `latency_ms` | `int NULL` | |

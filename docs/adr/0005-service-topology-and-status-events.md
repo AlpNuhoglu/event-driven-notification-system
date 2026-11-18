@@ -78,10 +78,19 @@ pacer loop (one per channel):
   2. wait until the buffer holds a message   (a signal; nothing is taken yet)
   3. circuit open? ── yes ──► wait until its next half-open time
   4. reserve a rate-limit slot               (GCRA, at most 250 ms ahead)
-  5. take the highest-priority buffered message and claim it during the wait
-        claim affects 0 rows ──► ack, drop; keep the slot and take the next message
+  5. take the highest-priority buffered message; the pacer loop goes back to 1,
+     and the message's own goroutine does the rest:
+     claim it during the wait
+        claim affects 0 rows ──► ack, drop; keep the slot for the next buffered
+                                 message, unless the slot is stale by more than
+                                 the tolerance (then it is given up)
   6. ack, unless the delivery is from an older connection epoch; emit the processing event
-  7. at the slot time:
+  7. wait for the slot:
+        send deadline reached (15 s after issuing the claim call)
+                              ──► attempt 'aborted', row back to retrying, nothing sent
+        slot missed by more than the tolerance (5 ms)
+                              ──► give the slot up, reserve a new one (step 4), wait again
+     at the slot time (also a re-reserved one):
         circuit opened meanwhile ──► attempt 'aborted', row back to retrying
         otherwise ──► call the provider ──► final transition (fenced) ──► emit event
   8. release the concurrency slot
@@ -89,8 +98,10 @@ pacer loop (one per channel):
 
 - **One pacer, not N competing goroutines.** A rate-limit slot is reserved only when a message is known to be waiting, and each reserved slot is used at its own time. Idle goroutines never hold slots they reserved earlier, which would let them send in a burst when messages arrive.
 - **The message is chosen after the slot is reserved,** so the highest-priority message available at that moment is the one that is sent.
-- **The slot is kept when a claim affects zero rows.** A duplicate or cancelled message does not waste capacity.
-- **Circuit opening between claim and send:** nothing is sent. The row returns to `retrying` without consuming retry budget, with `due_at` at the circuit's next half-open time, and the attempt is closed with outcome `aborted` ([ADR-0007](0007-retry-policy-and-circuit-breaker.md) §2).
+- **The slot is kept when a claim affects zero rows.** A duplicate or cancelled message does not waste capacity. A kept slot that is stale by more than the tolerance when the next message is ready is dropped.
+- **A send starts at a slot reserved for it, or not at all (D77).** A claim can return after its slot has passed, typically because it waited on the relay's row lock while the pacer went on reserving later slots. Within `PACER_SLOT_TOLERANCE` (5 ms) it sends at once. Beyond it the slot is given up, never returned to the limiter, and the goroutine reserves a new one through the same limiter call, horizon included. Meanwhile it holds its message: claimed, acked, the row `processing` ([ADR-0007](0007-retry-policy-and-circuit-breaker.md) §5).
+- **Send deadline (D77).** If the send cannot start within `lease − HTTP timeout − 5 s` of issuing the claim call (15 s with the defaults; derived, not configured; measured on the worker's monotonic clock), nothing is sent: the attempt is closed as `aborted` and the row returns to `retrying`, due at once, without consuming retry budget. What remains of the lease always covers the HTTP timeout and the final write, even when the lease began while the claim was still waiting on a row lock.
+- **Circuit opening between claim and send:** the breaker is asked again at every slot time, including a re-reserved one; if it is open, nothing is sent. The row returns to `retrying` without consuming retry budget, with `due_at` at the circuit's next half-open time, and the attempt is closed with outcome `aborted` ([ADR-0007](0007-retry-policy-and-circuit-breaker.md) §2).
 - **Concurrency is 25 per channel per replica, and prefetch equals concurrency.** By Little's law, reaching 98 msg/s with about 200 ms of provider latency needs `98 × 0.2 ≈ 20` concurrent requests.
 - **The message is acked as soon as the claim commits.** From that point the database owns the work: the row is `processing` with a lease, and the lease sweeper recovers it if the worker dies ([ADR-0003](0003-bounded-relay-buffer-and-sweepers.md)). Only unclaimed messages are ever unacknowledged.
 - **The final write is retried** with back-off for up to 60 seconds if Postgres is unavailable ([ADR-0004](0004-data-model-state-machine-and-fencing.md) §4).
@@ -122,8 +133,8 @@ The test is in [ADR-0010](0010-testing-and-ci.md): the connection is broken whil
 
 | Service | On `SIGTERM` |
 |---|---|
-| worker | Cancel the consumers; nack prefetched messages that have not been claimed (requeue); finish in-flight sends within 15 s, which is under the 30 s lease and the 20 s stop grace period; exit. |
-| relay | Finish the current cycle's transaction and exit. |
+| worker | Cancel the consumers; nack prefetched messages that have not been claimed (requeue); finish in-flight sends within 15 s, which is under the 30 s lease and the 20 s stop grace period; exit. A claimed notification whose send has not started when the 15 s end is closed as `aborted` and returns to `retrying` without consuming budget. A send that is still running then is cancelled and recorded as `unknown`: waiting for it could take the drain time plus the HTTP timeout, longer than the stop grace period. |
+| relay | Finish the current lane's transaction, start no further lane, and exit. |
 | api | `http.Server.Shutdown` drains in-flight requests. |
 | gateway | Send a WebSocket close frame. Clients reconnect with jittered back-off. |
 
@@ -220,3 +231,4 @@ Changes made after the design review, recorded in the [design review log](../ai/
 - The gateway sends a snapshot on subscribe and no longer keeps a `last_version` map, because a client learns a notification's `id` only after the first events may have been published. (D37)
 - Event publishers became lazy and optional, connection-recovery failure became an exit, and Compose details (fixed RabbitMQ hostname, `healthcheck` subcommand, stop grace period, pinned images) were added. (D11, D5, D9, D47, D48)
 - After experiment E4 (P0), the client's recovery is enabled explicitly with a configured budget of 24 attempts at 5 s, and the worker gained the connection epoch: a delivery that arrived before a reconnect is dropped from the local buffer and never acked, because delivery tags restart on the recovered channel. (D5, D76)
+- In P1 the worker loop gained the missed-slot rule and the send deadline: a claim that returns more than 5 ms after its slot gives the slot up and reserves a new one, and a send that cannot start within 15 s of the claim call is aborted. Sending late at once could put 101 arrivals into a one-second window. (D77)
