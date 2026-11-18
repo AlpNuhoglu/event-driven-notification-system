@@ -42,7 +42,7 @@ func lookup(m map[string]string) func(string) (string, bool) {
 
 // composeOnly lists the variables of .env.example that docker-compose.yml
 // interpolates itself (published host ports) and that no service reads.
-var composeOnly = []string{"GRAFANA_PORT", "PROMETHEUS_PORT", "JAEGER_UI_PORT"}
+var composeOnly = []string{"API_PORT", "MOCKPROVIDER_PORT", "GRAFANA_PORT", "PROMETHEUS_PORT", "JAEGER_UI_PORT"}
 
 func TestKeysMatchEnvExample(t *testing.T) {
 	file := envFile(t)

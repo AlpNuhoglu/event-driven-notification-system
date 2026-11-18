@@ -1,11 +1,92 @@
-# Infrastructure services for local development. Application services are
-# added in a later phase.
+# Application services (migrate, api, relay, worker) and the six
+# infrastructure services. All four application services run the same image,
+# built from this repository; the command selects the role.
 #
-# Only the three user interfaces publish a host port. Each host port can be
-# changed with a variable (GRAFANA_PORT, PROMETHEUS_PORT, JAEGER_UI_PORT), in
-# the environment or in .env, when the default is taken on the machine; see
-# .env.example. The container ports stay the same.
+# The stack runs without a .env file. The worker's provider URL defaults to the
+# public webhook.site URL below; docker-compose.mock.yml replaces it with the
+# local mockprovider (make up-mock). A .env file is optional: when present, its
+# values reach every application container; see .env.example.
+#
+# Only the API and the three user interfaces publish a host port. Each host port
+# can be changed with a variable (API_PORT, GRAFANA_PORT, PROMETHEUS_PORT,
+# JAEGER_UI_PORT), in the environment or in .env, when the default is taken on
+# the machine; see .env.example. The container ports stay the same. The admin
+# port 8081 of the application services is not published.
+x-app: &app
+  build: .
+  image: event-driven-notification-system:local
+  env_file:
+    - path: .env
+      required: false
+
 services:
+  migrate:
+    <<: *app
+    command: ["migrate", "up"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    <<: *app
+    command: ["api"]
+    ports:
+      - "${API_PORT:-8080}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "api", "healthcheck"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  relay:
+    <<: *app
+    command: ["relay"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "relay", "healthcheck"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  worker:
+    <<: *app
+    command: ["worker"]
+    environment:
+      PROVIDER_URL: ${PROVIDER_URL:-https://webhook.site/43b89abc-51c2-438c-9847-e1e8ccc8e078}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "worker", "healthcheck"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    stop_grace_period: 20s
+    restart: unless-stopped
+
   postgres:
     image: postgres:18.7
     environment:
