@@ -46,6 +46,8 @@ type Ports struct {
 	APIAddr     string
 	AdminAddr   string
 	GatewayAddr string
+	// MockProviderAddr is the listen address of the mock provider.
+	MockProviderAddr string
 }
 
 // API configures the REST API.
@@ -93,6 +95,9 @@ type RateLimit struct {
 	PerSecond     int
 	Horizon       time.Duration
 	RetryInterval time.Duration
+	// SlotTolerance is how late a send may start after its reserved slot.
+	// Beyond it the slot is given up and a new one is reserved (D77).
+	SlotTolerance time.Duration
 }
 
 // RetryConfig holds the retry profiles and shared delay bounds.
@@ -313,9 +318,10 @@ func (l *loader) load() Config {
 		AMQPRecoveryMaxRetries:    l.intv("AMQP_RECOVERY_MAX_RETRIES", 24),
 	}
 	c.Ports = Ports{
-		APIAddr:     l.str("API_ADDR", ":8080"),
-		AdminAddr:   l.str("ADMIN_ADDR", ":8081"),
-		GatewayAddr: l.str("GATEWAY_ADDR", ":8082"),
+		APIAddr:          l.str("API_ADDR", ":8080"),
+		AdminAddr:        l.str("ADMIN_ADDR", ":8081"),
+		GatewayAddr:      l.str("GATEWAY_ADDR", ":8082"),
+		MockProviderAddr: l.str("MOCKPROVIDER_ADDR", ":8090"),
 	}
 	c.API = API{
 		MaxBodyBytes:          l.int64v("MAX_BODY_BYTES", 5242880),
@@ -355,6 +361,7 @@ func (l *loader) load() Config {
 		PerSecond:     l.intv("RATE_LIMIT_PER_SECOND", 98),
 		Horizon:       l.dur("RATE_LIMIT_HORIZON", 250*time.Millisecond),
 		RetryInterval: l.dur("RATE_LIMIT_RETRY_INTERVAL", 50*time.Millisecond),
+		SlotTolerance: l.dur("PACER_SLOT_TOLERANCE", 5*time.Millisecond),
 	}
 	c.Retry = RetryConfig{
 		High:                 l.retry("HIGH", "TTL_HIGH", Retry{time.Second, 30 * time.Second, 5, 10 * time.Minute}),
