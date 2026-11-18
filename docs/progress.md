@@ -4,11 +4,11 @@ The first file every session reads and the last one it updates. The phases and t
 
 ## Current phase
 
-**P1: core path** — in review (pull request 2 of 3, `p1/relay-worker-provider`).
+**P1: core path** — in review (pull request 3 of 3, `p1/compose-e2e`). Every exit criterion has been run; the phase is done when this pull request is merged.
 
-**Next step:** the author answers open issue 6 and merges the `p1/relay-worker-provider` pull request. Then `p1/compose-e2e` from the updated `main`: the API (two endpoints), the application services in Compose, the mock profile, `make test-e2e` with `load-smoke`, the README quick start and the phase's closing mutation check.
+**Next step:** the author merges the `p1/compose-e2e` pull request. Then P2 (API completeness) from the updated `main`. Open issue 7 belongs to P3.
 
-**Minimum Compose version:** v2.1.1, from the release notes (`up --wait`); tested with v5.6.1 (D45, D70). `up --wait` is the newest feature the P0 file and the exit criteria use; everything else in the file (`healthcheck` with `start_period`, named volumes, short-syntax ports and mounts, `${VAR:-default}` interpolation) is older. The number is not run against a v2.1.1 binary. P1 re-derives it from the release notes when the one-shot `migrate` service lands (probably v2.7.0, whose notes list the fix that makes `up --wait` handle one-shot containers). The practical check is the clean-clone rehearsal in P7.
+**Minimum Compose version:** v2.24.0, from Docker's documentation and the release notes; tested with v5.6.1 (D45, D70). Re-derived in P1 when the application services and the one-shot `migrate` service landed. Three features decide it: `up --wait` (introduced in v2.1.1), `up --wait` with a one-shot container that other services wait for with `service_completed_successfully` (fixed in v2.7.0: "Use appropriate dependency condition for one-shot containers when running `compose up --wait`"), and the optional `.env` entry, `env_file` with `required: false` (the documentation says "As of Docker Compose version 2.24.0"); the last is the newest. The number is not run against a v2.24.0 binary; the practical check is the clean-clone rehearsal in P7. CI runs the stack with the standalone v5.6.1 binary.
 
 **Decision ledger:** v4 (`D1`–`D77`), amended after the first-hour experiments: D5 and D7 were extended and D76 was added, by the author's decision. In P1 the author added D77 (the pacer's missed-slot rule and send deadline) and amended D20 and D23 to it. Section K records the points settled during the preparation session, and D76. The ADRs are the primary design documents; the ledger is the decision record.
 
@@ -19,7 +19,7 @@ Status is one of: `not started`, `in progress`, `in review` (pull requests open)
 | Phase | Title | Status | Pull requests | Exit criteria met on |
 |---|---|---|---|---|
 | P0 | Repository skeleton and first-hour experiments | done | [#2](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/2) (`p0/skeleton`, merged), [#3](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/3) (`p0/experiments`, merged) | 2026-11-18 |
-| P1 | Core path | in review | [#4](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/4) (`p1/schema-and-store`, merged), [#5](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/5) (`p1/relay-worker-provider`); `p1/compose-e2e` follows | |
+| P1 | Core path | in review | [#4](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/4) (`p1/schema-and-store`, merged), [#5](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/5) (`p1/relay-worker-provider`, merged), [#6](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/6) (`p1/compose-e2e`) | |
 | P2 | API completeness | not started | | |
 | P3 | Delivery robustness | not started | | |
 | P4 | Templates and scheduling | not started | | |
@@ -49,7 +49,7 @@ Filled in as each assumption is confirmed or refuted (ledger section J; mapping 
 | # | Status (open / confirmed / refuted) | Confirmed by | Date |
 |---|---|---|---|
 | U1 | confirmed | E5, now the permanent test `TestSend_SentExactlyOnce` of the provider client (`-count=20`); `experiments/e5` is deleted. | 2026-11-19 |
-| U2 | open | Partly observed: one probe of the default URL with the reserved fake values answered `202` with a body of the contract's shape (session log, 2026-11-18, P1). The answers at the request cap and after expiry are not observed yet. | |
+| U2 | confirmed | Manual check on a **throwaway** free webhook.site URL (never the default one), 2026-11-18: requests 1 to 50 were answered `202`; request 51 and every later one `429` with `application/json` (`"Request limit exceeded…"`) and no `Retry-After` header. After the URL was deleted, and for a UUID that never existed, the answer is `404` with `application/json`. Real expiry after seven days was not waited for; a deleted URL stands in for it. Both codes are provider-scoped in ADR-0007 §2 (`429` throttled, `404` provider-fatal); the classification test is P3. **Until P3 the three-way classification treats both as `retryable`, so a capped or expired URL consumes retry budgets.** | 2026-11-18 |
 | U3 | open | | |
 | U4 | confirmed | E4: the connection's `StateChanged{From: reconnecting, To: open}` is the reconnect event. The reconciliation tests of P3 build on it. | 2026-11-18 |
 | U5 | confirmed | E1: strict order and default priority 4. The client cannot send priority 0, so D7 now maps to 6, 5 and 4. In P1: `TestRelay_PrioritySetOnEveryMessage` reads the property of every published message. | 2026-11-19 |
@@ -63,7 +63,7 @@ Questions that the ledger and the ADRs do not answer, and problems that are not 
 
 | # | Raised on | Issue | Blocks |
 |---|---|---|---|
-| 6 | 2026-11-19 | **`TestE2E_IdleSingleNotificationIsSent` does not fail when the claim guard is narrowed to `status = 'queued'`.** The plan's closing mutation check for P1, and ADR-0010 ("the two tests in bold are the ones that would have caught the dropped-message defect"), assume it does. Measured on the development machine: with one message on an idle system the relay commits 0.8–1.3 ms after its publish returns, and the worker's claim arrives later (delivery, a Redis reservation, then the claim; the request reaches the provider after 2.1–2.7 ms). The commit therefore wins the race and the narrowed guard still finds a `queued` row: 0 failures in 20 runs, 0 in a further 200. Which side wins depends on the machine, so the idle test can neither be relied on to catch the defect nor be said never to. **What does catch it:** `TestClaim_WaitsForRelayCommit` (20 of 20 fail under the mutation), and a test added in this pull request, `TestE2E_WorkerFasterThanRelayCommit`, which runs the same path through the real broker and holds the relay's transaction open until the worker's claim is seen waiting on the row lock (20 of 20 fail). The batch tests (duplicate message, send deadline, shutdown, late relay commit) fail under it as well. **Question:** what should the closing mutation check and ADR-0010 name? **Recommendation:** keep the idle test as the plain proof that one notification is sent; name `TestClaim_WaitsForRelayCommit` and `TestE2E_WorkerFasterThanRelayCommit` as the two tests the mutation must fail (plan P1, ADR-0010 §1 and §8); and correct ADR-0010's sentence about the idle test. | The closing mutation check in `p1/compose-e2e` |
+| 7 | 2026-11-19 | **A claim that fails with a database error nacks at once (for P3; not fixed in P1).** During a Postgres outage each buffered message then cycles between the broker and the worker: every cycle uses a rate-limit slot and logs an error. **Proposed fix (author):** retry the claim in place with back-off while holding the delivery and the concurrency slot, and nack once on shutdown. **Also for P3:** check on RabbitMQ 4.4.1 that a nack with requeue does not count toward the delivery limit (nack one message 25 times; it must not be dead-lettered), which is why requeues use `basic.nack` and not `basic.reject` (ADR-0001); and add "the poison queues stay empty" to the Postgres-restart chaos scenario (ADR-0010, P6). | The worker's claim path in P3 |
 
 ## Session log
 
@@ -79,6 +79,45 @@ Newest entry first. One entry per session, in this form:
 - **Open issues:** new entries added to the table above.
 - **Next step:** the first thing the next session does.
 ```
+
+### 2026-11-19 — P1: API, Compose and end to end (pull request 3 of 3)
+
+- **Done:**
+  - **API** (`api/openapi.yaml`, `internal/api`, `cmd/api`): contract first, with the server generated by `oapi-codegen` (strict server on `http.ServeMux`). `POST /v1/notifications` (`202`, `Location`) and `GET /v1/notifications/{id}`; `/healthz` and `/readyz` on the public port (D33); `/openapi.yaml`. Every non-2xx answer is an RFC 9457 problem document, including the router's own 404 and 405; `X-Request-ID` is the correlation id; one log line per request with the route template and no personal data. `docs/errors.md` lists the problem types and codes. `experiments/e2` is deleted.
+  - **Compose:** `migrate` (one-shot), `api`, `relay` and `worker` on one image, with `restart: unless-stopped`, the binaries' `healthcheck` subcommand, the `depends_on` chain on Postgres, RabbitMQ, Redis and the completion of `migrate`, `stop_grace_period: 20s` for the worker and the default `PROVIDER_URL` (D44, D45, D46, D47). `docker-compose.mock.yml` adds `mockprovider` and points the worker at it (D65); `make up-mock`, `make down`.
+  - **`make test-e2e`** (`test/e2e`, build tag `e2e`): the stack with the mock override under its own Compose project, three tests and always a clean stop. `TestComposeE2E_CreatedNotificationIsSent` checks on `mockprovider`'s report that the provider received exactly `to`, `channel`, `content` (R23, D72), per channel. `TestLoadSmoke` (D51) sends 6,000 SMS and logs the largest one-second window.
+  - **CI:** `compose-up` (the assessment's command with the standalone `docker-compose` v5.6.1, checksum-verified; no notification is created, so nothing reaches the public URL), `e2e` (`make test-e2e`; service logs uploaded on failure), and a step in `integration` that prints the D77 scenario's largest window.
+  - **Relay:** exits with a non-zero code when its publisher's channel is closed for good (`queue.ErrPublisherChannelClosed`), like after a recovery that gave up.
+  - **README:** the quick start, the public-URL warning with the observed cap, the mock profile.
+  - **Documents, by the author's decision on open issue 6:** ADR-0010, the plan and D54 name `TestClaim_WaitsForRelayCommit` and `TestE2E_WorkerFasterThanRelayCommit` as the targets of the claim-guard mutation; the design review log has its first implementation-phase entry. Also: the send-time limitation in `future-work.md`, the `basic.nack` note in ADR-0001, the P3 additions in the plan and ADR-0010.
+- **Pull requests opened:** [#6](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/6) from `p1/compose-e2e`.
+- **Exit criteria:** every command of the P1 list was run and passed (outputs in the pull request): `make test`; `docker-compose up -d --wait` from a clean copy of the tree without a `.env` file (all ten services healthy, `migrate` exited 0, 12 s with a warm image cache); `/healthz` and `/readyz`; the `curl` create and get (`sent` 0.3 s after creation, at the default provider); the request the default URL received has exactly the fields `channel`, `content`, `to` and the notification id as idempotency key (read from the URL's request log); the `-count=20` race run; the `-count=100` unroutable run; `make test-e2e` with `load-smoke`. `gh pr checks` is reported on the pull request.
+- **Closing mutation check:** claim guard narrowed to `status = 'queued'` and the code regenerated: `TestClaim_WaitsForRelayCommit` and `TestE2E_WorkerFasterThanRelayCommit` fail 5 of 5; restored byte-identically (checksum compared), both pass again.
+- **Measured:**
+  - **`load-smoke`:** 6,000 SMS in 61.2 s, 98.0/s; **largest one-second window at the provider: 99** in two of two runs after the mock's timing fix below (before it: 99 in five runs and 100 in one).
+  - **D77 scenario, in-process:** largest window 99 in three of three runs, 12 missed slots.
+  - The numbers of the CI runner are in the pull request.
+- **Decisions taken** (within the latitude of the ledger and the ADRs; the ADRs they touch are updated):
+  1. **The P1 request has exactly the four fields the assessment names.** `template`, `scheduled_at`, `expires_at` and `dedupe_key` arrive with their phases. **An unknown field is rejected (`422`, `unknown_field`), never ignored**, and so is a repeated key (ADR-0006 §3).
+  2. Status codes beyond ADR-0006 §9's table: `405`, `415` and `500`, each a problem document (ADR-0006 §9). `400` covers malformed JSON, a body that is not an object and a path id that is not a UUID. A recipient or content containing U+0000 is a validation error (Postgres cannot store it).
+  3. **A failed readiness is a `503` problem document that carries the checks** (`name`, `status`, `duration_ms`), which satisfies ADR-0009 §7 and ADR-0006 §9 together (ADR-0009 updated).
+  4. Timestamps keep the database's microsecond precision. The response has no `sms` and no `template` object yet.
+  5. One info log line per request. ADR-0009 §4 wants info reserved for outcomes at high rates; to be revisited with the logging work in P5.
+  6. The api's database timeout (5 s per call) and its HTTP server timeouts are constants; the database timeout is an option that tests shorten. No environment variables were added for them.
+  7. **The optional `.env` reaches the containers through `env_file` with `required: false`**, which makes v2.24.0 the minimum Compose version (ADR-0005 updated). The alternative, listing every variable in the Compose file, would have kept the minimum at v2.7.0 at the cost of a third copy of every default.
+  8. `make test-e2e` runs under its own Compose project (`edns-e2e`), so it never reuses or removes a developer's stack, and it needs Go as well as Docker, because the tests run on the host (ADR-0010 §4 updated). `load-smoke` creates its 6,000 notifications at once (about 0.7 s) and measures the drain.
+  9. **`mockprovider` stamps a request's arrival before it takes its lock, and builds its report outside the lock.** Before this change a report request, which sorted up to 6,000 timestamps while holding the lock, could delay the stamps of requests arriving meanwhile and make arrivals look bunched.
+  10. The publisher's error for a closed channel is exported; the relay returns it from its cycle and the role exits. A broker channel error alone does not produce it (below).
+- **Observed:**
+  - **A broker channel error does not lose the return listener.** After a `404` channel exception on the publisher's channel, the library reopened the channel and 30 of 30 later batches still excluded the unroutable message. The concern recorded in the previous entry ("lost return listener") does not occur in that case; the listener is closed only when the channel is closed for good (recovery gave up, or an explicit close), which now ends the relay.
+  - **The default webhook.site URL has received 2 requests** (one probe on 2026-11-18, one for the exit criterion), out of the 50 a free URL accepts.
+  - **The margin of `load-smoke` is one or two arrivals** (99, once 100, against a limit of 100). The pacing margin is decided in P6 (D24); if CI shows 101, the rate is the lever, and it is configuration.
+  - Until P3, a `429` or `404` from the provider is `retryable` and consumes budget (three-way classification), so a capped default URL fails notifications instead of opening a circuit.
+  - The worker logs nothing at info level while a provider answers `500`; outcome logging arrives with observability (P5).
+- **Not verified:** the stack with a Compose release older than v5.6.1 (the minimum is derived from documentation); `docker-compose up` in the foreground (the criteria use `-d --wait`); the image build without a layer cache locally (CI builds from scratch).
+- **Delegation:** Opus for the API and for the end-to-end tests with `load-smoke` and CI; Sonnet for the Compose files and the README quick start; two web look-ups for the Compose release facts. The main loop wrote the briefs, the relay's exit with its tests, the document changes and the U2 check; reviewed every diff; changed the readiness answer, the mock's arrival stamping, the README and `.dockerignore`; ran `make test-e2e` twice, the exit criteria from a clean copy and the closing mutation check itself.
+- **Open issues:** 7 (a claim that fails with a database error nacks at once; for P3). Issue 6 is closed by the author's decision.
+- **Next step:** after the merge, P2 (API completeness).
 
 ### 2026-11-19 — P1: relay, worker and provider (pull request 2 of 3)
 
