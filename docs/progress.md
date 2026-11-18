@@ -4,9 +4,9 @@ The first file every session reads and the last one it updates. The phases and t
 
 ## Current phase
 
-**P0: repository skeleton and first-hour experiments** — in review (task 3, the experiments).
+**P1: core path** — in review (pull request 1 of 3, `p1/schema-and-store`).
 
-**Next step:** the author merges the `p0/experiments` pull request. Then P1 on `p1/core-path`.
+**Next step:** the author answers open issue 5 and merges the `p1/schema-and-store` pull request. Then `p1/relay-worker-provider` from the updated `main`, followed by `p1/compose-e2e`.
 
 **Minimum Compose version:** v2.1.1, from the release notes (`up --wait`); tested with v5.6.1 (D45, D70). `up --wait` is the newest feature the P0 file and the exit criteria use; everything else in the file (`healthcheck` with `start_period`, named volumes, short-syntax ports and mounts, `${VAR:-default}` interpolation) is older. The number is not run against a v2.1.1 binary. P1 re-derives it from the release notes when the one-shot `migrate` service lands (probably v2.7.0, whose notes list the fix that makes `up --wait` handle one-shot containers). The practical check is the clean-clone rehearsal in P7.
 
@@ -18,8 +18,8 @@ Status is one of: `not started`, `in progress`, `in review` (pull requests open)
 
 | Phase | Title | Status | Pull requests | Exit criteria met on |
 |---|---|---|---|---|
-| P0 | Repository skeleton and first-hour experiments | in review | [#2](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/2) (`p0/skeleton`, merged), [#3](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/3) (`p0/experiments`) | |
-| P1 | Core path | not started | | |
+| P0 | Repository skeleton and first-hour experiments | done | [#2](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/2) (`p0/skeleton`, merged), [#3](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/3) (`p0/experiments`, merged) | 2026-11-18 |
+| P1 | Core path | in review | [#4](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/4) (`p1/schema-and-store`); `p1/relay-worker-provider` and `p1/compose-e2e` follow | |
 | P2 | API completeness | not started | | |
 | P3 | Delivery robustness | not started | | |
 | P4 | Templates and scheduling | not started | | |
@@ -49,7 +49,7 @@ Filled in as each assumption is confirmed or refuted (ledger section J; mapping 
 | # | Status (open / confirmed / refuted) | Confirmed by | Date |
 |---|---|---|---|
 | U1 | confirmed | E5. The "sent exactly once" provider client test of P1 keeps it confirmed. | 2026-11-18 |
-| U2 | open | | |
+| U2 | open | Partly observed: one probe of the default URL with the reserved fake values answered `202` with a body of the contract's shape (session log, 2026-11-18, P1). The answers at the request cap and after expiry are not observed yet. | |
 | U3 | open | | |
 | U4 | confirmed | E4: the connection's `StateChanged{From: reconnecting, To: open}` is the reconnect event. The reconciliation tests of P3 build on it. | 2026-11-18 |
 | U5 | confirmed | E1: strict order and default priority 4. The client cannot send priority 0, so D7 now maps to 6, 5 and 4. | 2026-11-18 |
@@ -63,6 +63,7 @@ Questions that the ledger and the ADRs do not answer, and problems that are not 
 
 | # | Raised on | Issue | Blocks |
 |---|---|---|---|
+| 5 | 2026-11-18 | **A claim that outlasts its rate-limit slot.** The pacer reserves a slot and claims the row during the wait (D23); the send happens "at the slot time". The ADRs do not say what happens when the claim returns after the slot time has passed. That is the normal case when the worker receives a message before the relay commits: the claim waits on the relay's row lock until the whole lane batch is confirmed and committed, while the pacer goes on reserving the following slots. If each late claim sends at once, several sends leave together next to slots that are used on time. Worked example at 98 msg/s: a batch arrives on an idle channel, the relay commits 30 ms later, the first three claims (slots at 0, 10 and 20 ms) send at 30 ms, and the window `[30 ms, 1030 ms)` then holds 101 arrivals. **Options:** (a) send at once and treat the lateness as jitter, which `load-smoke` measures and a lower rate absorbs; (b) when the slot is missed by more than a small tolerance, give it up and reserve a new slot before sending, so every send leaves at a slot reserved for it (cost: one more Redis call and a later send for those messages, and the wait after a claim is no longer bounded by 250 ms, though it stays far below the 30 s lease). **Recommendation:** (b), with the tolerance as configuration. | The pacer in `p1/relay-worker-provider` |
 
 ## Session log
 
@@ -78,6 +79,36 @@ Newest entry first. One entry per session, in this form:
 - **Open issues:** new entries added to the table above.
 - **Next step:** the first thing the next session does.
 ```
+
+### 2026-11-18 — P1: schema and store (pull request 1 of 3)
+
+- **Done:**
+  - `internal/domain`: the typed values (`Channel`, `Priority` with its AMQP mapping `6 − db_priority`, `Status`, `FailureReason`, `Outcome`), `Recipient` (masked in every formatting and encoding path; only `Reveal` returns the value), `StatusChanged`, the 12 transitions as data, and `DecideRetry` with its final signature and the minimal body of P1.
+  - `migrations/`: the first migration (the four tables with every constraint and index of ADR-0004 §6–8), embedded and applied with golang-migrate v4.20.1 through pgx; `cmd/migrate` (`up`, `down`).
+  - `internal/store`: sqlc queries and the repository functions for create, get, attempts and transitions 1–7: `PublishLane` (the relay's lane transaction, with the publish as a callback while the row locks are held), `Claim` (the one-statement CTE of ADR-0004), `CompleteSent` and `CompleteFailure` (fenced by `attempt_count`; a late write still records the true outcome on its attempt row), `SweepExpiredLeases`, `QueuedCounts`. Every transition returns its `StatusChanged`.
+  - `internal/testutil`: `Eventually` and a Postgres 18.7 container started lazily once per test binary, with a migrated database per test.
+  - CI: the `migrations` job (`up`, `down`, `up`) and the `integration` job (`make test`).
+- **Tests** (33 integration tests in `internal/store`, plus the domain unit tests): `TestClaim_WaitsForRelayCommit` (the claim is started inside the open lane transaction and is seen waiting on the row lock in `pg_stat_activity` before the commit), `TestClaim_DirectAfterRelayRollback`, `TestClaim_TwoWorkersExactlyOne`, expired at claim, the rows that must not be claimed, `TestFencing_LateWriteAffectsZeroRows`, the invariants of transitions 1–7 (version, `updated_at`, event, immutable columns), the database constraints, the lane transaction, the sweeper, and `TestMigrations_UpDownUp`.
+- **Pull requests opened:** [#4](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/4) from `p1/schema-and-store`.
+- **Exit criteria:** this pull request covers the first criterion only. Run and passed: `make generate` (reproducible, byte-identical), `go build ./...`, `go vet` with and without the tag, `make lint` (0 issues), `make test`; the four race and fencing tests with `-race -count=20`; the store package with `-race -count=5`. **Mutation check on this branch:** with the claim guard narrowed to `status = 'queued'`, `TestClaim_WaitsForRelayCommit` and `TestClaim_DirectAfterRelayRollback` fail; restored byte-identically. The phase's closing mutation check (with `TestE2E_IdleSingleNotificationIsSent`) belongs to the last pull request. Remaining: every other P1 criterion (relay, worker, provider, Compose, end to end).
+- **Decisions taken** (within the latitude of the ledger and the ADRs):
+  1. **`lease_expires_at` is cleared when a row leaves `processing`** (transitions 4, 5, 6, 7). ADR-0004 §4 did not say; the claim's expiry branch already sets it to `NULL`. ADR-0004 §4 is updated.
+  2. **A transition to `retrying` clears `queued_at`.** ADR-0004 says a row claimed directly from `retrying` has `queued_at = NULL`; without the reset it would keep the time of its first publish and the queue-wait metric would be wrong. ADR-0004 §3 is updated.
+  3. **One more database constraint:** an attempt has no `finished_at` exactly while it is `in_flight`. The ADR stated the rule in prose; D19 does not list it. ADR-0004 §6 is updated.
+  4. `UNIQUE (notification_id, attempt_no)` is the primary key of `notification_attempts`. `trace_parent` is `NOT NULL DEFAULT ''`.
+  5. **`failures` is also incremented on transition 6** when the outcome consumes budget, so an exhausted row shows `failures = max_failures`. The lease sweeper passes the count before the increment to `DecideRetry` and takes the increment from the decision; with the classification table this is the same as the ADR's "`failures + 1`, then `decideRetry`", because `unknown` always consumes budget.
+  6. The `failures` argument of `DecideRetry` is the count **before** the current outcome. The function is exported, because the store calls it.
+  7. `Recipient` also implements `encoding.TextMarshaler` with the masked form: the JSON log handler would otherwise print the real value of a recipient inside a struct. The consequence: code that passes the real value on (the database, the provider request, the API response) calls `Reveal()` explicitly. A store test reads the column with raw SQL to prove the real value is stored.
+  8. The store's transaction API for the relay is a callback (`PublishLane(ctx, lane, limit, publish)`), so the commit, the rollback and "events only after commit" cannot be forgotten by the caller. `published` must be a subset of the rows selected in that transaction.
+  9. On the zero-row path of a final write only the attempt row is touched; the transaction holds a single lock, so the lock order (notification row before attempt row) cannot be violated there.
+  10. Each test gets its own database, cloned from a migrated template, because the sweeper and the lane queries scan whole tables. The image tag of the tests is one constant, and a unit test compares it with `docker-compose.yml`.
+- **Observed, no change made:**
+  - `now()` is the start of the statement's transaction. A claim that waited on the relay's lock therefore sets its lease from the time it started waiting: the lease is shorter by the wait, at most the 5 s confirm timeout. 25 s still cover the slot wait, the 10 s HTTP timeout and the final write.
+  - The default provider URL answered one probe (reserved fake values) with `202` and `{"messageId","status","timestamp"}`. One request used.
+- **Not verified:** the two new CI jobs on the GitHub runner before this pull request's run; the tests with Go 1.27.4 locally (the machine has 1.27.1; CI uses 1.27.4).
+- **Delegation:** Sonnet for the migrations with `cmd/migrate` and for `internal/domain` (in parallel); Opus for `internal/store` and its tests. The main loop wrote the briefs and the SQL of the claim, the fenced writes, the lane transaction and the sweeper; read every line of the store's transaction code and the race tests; made `Recipient` masking rune-safe; re-ran every command; and repeated the mutation check itself.
+- **Open issues:** 5 (a claim that outlasts its rate-limit slot), raised for the pacer of the next pull request.
+- **Next step:** after the answer to issue 5 and the merge, `p1/relay-worker-provider` from the updated `main`.
 
 ### 2026-11-18 — P0: first-hour experiments (task 3)
 
