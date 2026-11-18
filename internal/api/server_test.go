@@ -56,20 +56,43 @@ type fakeRepo struct {
 	last  store.NewNotification
 }
 
-func (f *fakeRepo) CreateNotification(_ context.Context, n store.NewNotification) (store.Notification, error) {
+func (f *fakeRepo) CreateSingle(_ context.Context, _ *store.IdempotencyKey, n store.NewNotification,
+	respond func(store.Notification) (store.StoredResponse, error),
+) (store.SingleResult, error) {
 	if f.panic {
 		panic("boom")
 	}
 	if f.err != nil {
-		return store.Notification{}, f.err
+		return store.SingleResult{}, f.err
 	}
 	f.last = n
 	now := time.Now()
-	return store.Notification{
+	row := store.Notification{
 		ID: uuid.Must(uuid.NewV7()), Channel: n.Channel, Priority: n.Priority, Recipient: n.Recipient,
 		Status: domain.StatusPending, Version: 1, ExpiresAt: now.Add(n.TTL), MaxFailures: n.MaxFailures,
 		CorrelationID: n.CorrelationID, TraceParent: n.TraceParent, CreatedAt: now, UpdatedAt: now,
-	}, nil
+	}
+	resp, err := respond(row)
+	if err != nil {
+		return store.SingleResult{}, err
+	}
+	return store.SingleResult{Outcome: store.OutcomeCreated, Notification: row, Response: &resp}, nil
+}
+
+func (f *fakeRepo) CreateBatch(context.Context, *store.IdempotencyKey, store.NewBatch,
+	func(store.BatchResult) (store.StoredResponse, error),
+) (store.BatchResult, error) {
+	if f.err != nil {
+		return store.BatchResult{}, f.err
+	}
+	return store.BatchResult{}, errors.New("fakeRepo: batches are tested against Postgres")
+}
+
+func (f *fakeRepo) GetBatch(context.Context, uuid.UUID) (store.Batch, error) {
+	if f.err != nil {
+		return store.Batch{}, f.err
+	}
+	return store.Batch{}, store.ErrBatchNotFound
 }
 
 func (f *fakeRepo) GetNotification(context.Context, uuid.UUID) (store.Notification, error) {

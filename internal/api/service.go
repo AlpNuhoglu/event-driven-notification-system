@@ -42,11 +42,12 @@ func Service(ctx context.Context, cfg config.Config, logger *slog.Logger) error 
 	}
 
 	handler := NewHandler(Options{
-		Repository:   store.New(pool, store.ProfilesFrom(cfg.Retry)),
-		DB:           pool,
-		Logger:       logger,
-		Retry:        cfg.Retry,
-		MaxBodyBytes: cfg.API.MaxBodyBytes,
+		Repository:        store.New(pool, store.ProfilesFrom(cfg.Retry)),
+		DB:                pool,
+		Logger:            logger,
+		Retry:             cfg.Retry,
+		MaxBodyBytes:      cfg.API.MaxBodyBytes,
+		IdempotencyKeyTTL: cfg.API.IdempotencyKeyTTL,
 	})
 	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", cfg.Ports.APIAddr)
 	if err != nil {

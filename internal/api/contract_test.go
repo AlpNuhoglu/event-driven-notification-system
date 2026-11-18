@@ -143,7 +143,7 @@ func (c *contract) check(t testing.TB, req *http.Request, res response) {
 			t.Errorf("%s %s: body: %v", req.Method, req.URL.Path, err)
 			return
 		}
-		if err := c.problem.VisitJSON(v); err != nil {
+		if err := c.problem.VisitJSON(v, uuidFormat); err != nil {
 			t.Errorf("%s %s: body is not a Problem: %v", req.Method, req.URL.Path, err)
 		}
 		return
@@ -152,15 +152,24 @@ func (c *contract) check(t testing.TB, req *http.Request, res response) {
 		RequestValidationInput: &openapi3filter.RequestValidationInput{
 			Request: req, PathParams: params, Route: route,
 		},
-		Status:  res.status,
-		Header:  res.header,
-		Body:    io.NopCloser(bytes.NewReader(res.body)),
-		Options: &openapi3filter.Options{IncludeResponseStatus: true, MultiError: true},
+		Status: res.status,
+		Header: res.header,
+		Body:   io.NopCloser(bytes.NewReader(res.body)),
+		Options: &openapi3filter.Options{
+			IncludeResponseStatus:   true,
+			MultiError:              true,
+			SchemaValidationOptions: []openapi3.SchemaValidationOption{uuidFormat},
+		},
 	}
 	if err := openapi3filter.ValidateResponse(context.Background(), in); err != nil {
 		t.Errorf("%s %s: response %d does not match the spec: %v\nbody: %s", req.Method, req.URL.Path, res.status, err, res.body)
 	}
 }
+
+// uuidFormat makes the check enforce format: uuid, which kin-openapi does not
+// check by default. RFC 9562 includes version 7, the ids of this API.
+var uuidFormat = openapi3.WithStringFormatValidator("uuid",
+	openapi3.NewRegexpFormatValidator(openapi3.FormatOfStringForUUIDOfRFC9562))
 
 // routeMatches reports whether the template with its parameters filled in
 // is the request path.
@@ -207,14 +216,28 @@ func (c *apiClient) do(method, path, body string, headers map[string][]string) r
 	for k, vs := range headers {
 		req.Header.Del(k)
 		for _, v := range vs {
-			if v != "" {
+			switch v {
+			case "":
+			case emptyHeaderValue:
+				req.Header.Add(k, "")
+			default:
 				req.Header.Add(k, v)
 			}
 		}
 	}
+	return c.send(req)
+}
+
+// emptyHeaderValue in the headers of do sends the header with an empty
+// value ("" removes the header).
+const emptyHeaderValue = "\x00empty"
+
+// send sends a request and checks the response against the contract.
+func (c *apiClient) send(req *http.Request) response {
+	c.t.Helper()
 	resp, err := c.srv.Client().Do(req)
 	if err != nil {
-		c.t.Fatalf("%s %s: %v", method, path, err)
+		c.t.Fatalf("%s %s: %v", req.Method, req.URL.Path, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	b, err := io.ReadAll(resp.Body)
@@ -263,6 +286,13 @@ func TestContract_RejectsUndescribedResponses(t *testing.T) {
 		{"unknown path answered 200", http.MethodGet, "/nope", response{200, hdr("application/json"), []byte(`{}`)}},
 		{"missing X-Request-ID", http.MethodGet, "/healthz", response{200, http.Header{"Content-Type": {"application/json"}}, []byte(`{"status":"ok"}`)}},
 		{"problem without correlation id", http.MethodGet, "/v1/notifications/" + "0193f0d2-7c1e-7b3a-9d41-5be0a1c2e3f4", response{404, hdr(problemContentType), []byte(`{"type":"x","title":"t","status":404,"detail":"d"}`)}},
+		{"Idempotent-Replayed not a boolean", http.MethodPost, "/v1/notifications/batch", response{202, withHeaders(hdr("application/json"), "Location", "/v1/batches/"+contractID, "Idempotent-Replayed", "yes"), []byte(contractBatchAccepted)}},
+		{"batch accepted without Location", http.MethodPost, "/v1/notifications/batch", response{202, hdr("application/json"), []byte(contractBatchAccepted)}},
+		{"batch accepted with null lists", http.MethodPost, "/v1/notifications/batch", response{202, withHeaders(hdr("application/json"), "Location", "/v1/batches/"+contractID), []byte(`{"batch_id":"` + contractID + `","accepted":null,"rejected":null}`)}},
+		{"undeclared 409 on the batch endpoint", http.MethodPost, "/v1/notifications/batch", response{409, hdr(problemContentType), fmt.Appendf(nil, contractProblem, 409, "")}},
+		{"rejected item without errors", http.MethodPost, "/v1/notifications/batch", response{422, hdr(problemContentType), fmt.Appendf(nil, contractProblem, 422, `,"rejected":[{"index":0}]`)}},
+		{"existing_id not a UUID", http.MethodPost, "/v1/notifications", response{409, hdr(problemContentType), fmt.Appendf(nil, contractProblem, 409, `,"errors":[{"field":"dedupe_key","code":"duplicate","message":"m","existing_id":"x"}]`)}},
+		{"batch without a status", http.MethodGet, "/v1/batches/" + contractID, response{200, hdr("application/json"), []byte(`{"id":"` + contractID + `","total":1,"accepted":1,"rejected":0,"created_at":"2026-01-01T00:00:00Z","status_counts":{"pending":1,"queued":0,"processing":0,"retrying":0,"sent":0,"failed":0}}`)}},
 	}
 	for _, tt := range tests {
 		req, err := http.NewRequestWithContext(context.Background(), tt.method, "http://127.0.0.1"+tt.path, http.NoBody)
@@ -275,11 +305,35 @@ func TestContract_RejectsUndescribedResponses(t *testing.T) {
 			t.Errorf("%s: accepted", tt.name)
 		}
 	}
-	// And accepts a conforming one.
-	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://127.0.0.1/healthz", http.NoBody)
-	rec := &recordingTB{TB: t}
-	c.check(rec, req, response{200, hdr("application/json"), []byte(`{"status":"ok"}`)})
-	if len(rec.failures) != 0 {
-		t.Errorf("conforming response rejected: %v", rec.failures)
+	// And accepts conforming ones.
+	for _, tt := range []struct {
+		method, path string
+		res          response
+	}{
+		{http.MethodGet, "/healthz", response{200, hdr("application/json"), []byte(`{"status":"ok"}`)}},
+		{http.MethodPost, "/v1/notifications/batch", response{202, withHeaders(hdr("application/json"), "Location", "/v1/batches/"+contractID, "Idempotent-Replayed", "true"), []byte(contractBatchAccepted)}},
+		{http.MethodPost, "/v1/notifications/batch", response{422, hdr(problemContentType), fmt.Appendf(nil, contractProblem, 422, `,"rejected":[{"index":0,"errors":[{"field":"dedupe_key","code":"duplicate","message":"m","existing_id":"`+contractID+`"}]}]`)}},
+	} {
+		req, _ := http.NewRequestWithContext(context.Background(), tt.method, "http://127.0.0.1"+tt.path, http.NoBody)
+		rec := &recordingTB{TB: t}
+		c.check(rec, req, tt.res)
+		if len(rec.failures) != 0 {
+			t.Errorf("%s %s: conforming response rejected: %v", tt.method, tt.path, rec.failures)
+		}
 	}
+}
+
+const (
+	contractID            = "0193f0d2-7c1e-7b3a-9d41-5be0a1c2e3f4"
+	contractBatchAccepted = `{"batch_id":"` + contractID + `","accepted":[{"index":0,"id":"` + contractID + `"}],"rejected":[]}`
+	// contractProblem takes the status and extra members.
+	contractProblem = `{"type":"https://example.com/x","title":"t","status":%d,"detail":"d","correlation_id":"r1"%s}`
+)
+
+// withHeaders returns h with the name/value pairs added.
+func withHeaders(h http.Header, kv ...string) http.Header {
+	for i := 0; i+1 < len(kv); i += 2 {
+		h.Set(kv[i], kv[i+1])
+	}
+	return h
 }

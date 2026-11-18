@@ -7,6 +7,8 @@ import (
 	"mime"
 	"net/http"
 
+	"github.com/google/uuid"
+
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/api/apigen"
 )
 
@@ -56,6 +58,14 @@ var (
 		http.StatusUnprocessableEntity, "validation", "Validation failed",
 		"The request has invalid fields.",
 	}
+	kindDuplicate = kind{
+		http.StatusConflict, "duplicate", "Duplicate notification",
+		"A notification with this dedupe_key already exists.",
+	}
+	kindIdempotencyKeyReused = kind{
+		http.StatusUnprocessableEntity, "idempotency-key-reused", "Idempotency key reused",
+		"This Idempotency-Key was already used with a different request.",
+	}
 	kindInternal = kind{
 		http.StatusInternalServerError, "internal", "Internal server error",
 		"An unexpected error occurred.",
@@ -95,6 +105,9 @@ type problem struct {
 	kind   kind
 	detail string
 	errors []apigen.FieldError
+	// rejected lists the rejected items of a batch whose items were all
+	// rejected: one entry per item, never truncated.
+	rejected []apigen.RejectedItem
 	// checks are the dependency checks of a failed readiness probe.
 	checks []apigen.Check
 	// cause is the underlying error of a 500 or 503. It is logged as a class
@@ -118,6 +131,18 @@ func fieldError(field, code, message string) apigen.FieldError {
 	return apigen.FieldError{Field: field, Code: code, Message: message}
 }
 
+// duplicateFieldError builds the entry of errors[] for a dedupe_key that a
+// notification already holds. existingID is nil when that notification
+// released the key in the same instant; the member is then absent.
+func duplicateFieldError(existingID *uuid.UUID) apigen.FieldError {
+	e := fieldError(fieldDedupeKey, codeDuplicate, "a notification with this dedupe_key already exists")
+	if existingID != nil {
+		id := *existingID
+		e.ExistingId = &id
+	}
+	return e
+}
+
 // body returns the problem document for a request with the given correlation id.
 func (p *problem) body(correlationID string) apigen.Problem {
 	doc := apigen.Problem{
@@ -133,6 +158,9 @@ func (p *problem) body(correlationID string) apigen.Problem {
 			errs = errs[:maxReportedErrors]
 		}
 		doc.Errors = &errs
+	}
+	if len(p.rejected) > 0 {
+		doc.Rejected = &p.rejected
 	}
 	if len(p.checks) > 0 {
 		doc.Checks = &p.checks
