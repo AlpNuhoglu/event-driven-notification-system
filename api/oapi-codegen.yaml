@@ -1,0 +1,8 @@
+# oapi-codegen configuration: models, the net/http server interface and the
+# strict server, generated from api/openapi.yaml by `make generate`.
+package: apigen
+output: internal/api/apigen/api.gen.go
+generate:
+  models: true
+  std-http-server: true
+  strict-server: true
