@@ -8,7 +8,9 @@ The first file every session reads and the last one it updates. The phases and t
 
 **Next step:** complete the repository set-up checks of P0 task 1, then start the skeleton on branch `p0/skeleton`.
 
-**Minimum Compose version:** to be determined in P0 from the features the Compose file uses (D45).
+**Minimum Compose version:** to be determined in P0 from the features the Compose file uses (D45, D70).
+
+**Decision ledger:** v4 (`D1`–`D74`). Section K records the points settled during the preparation session. The ADRs are the primary design documents; the ledger is the decision record.
 
 ## Phase status
 
@@ -53,6 +55,7 @@ Questions that the ledger and the ADRs do not answer, and problems that are not 
 
 | # | Raised on | Issue | Blocks |
 |---|---|---|---|
+| 1 | 2026-11-18 | Three points are in the documents but not yet in the ledger: the `priority` label on `expired_total` and the new `notifications_finished_total{channel,priority,status}` (ADR-0009 §1, decided by the author for D74's expiry rule); and D66 still speaks of values marked "(proposed)" in `.env.example`, which now marks them "(initial value; tuned in P6)" and holds no alert thresholds. No document disagrees on behaviour. The author decides whether the ledger is amended. | Nothing |
 
 ## Session log
 
@@ -69,23 +72,32 @@ Newest entry first. One entry per session, in this form:
 - **Next step:** the first thing the next session does.
 ```
 
+### 2026-11-18 — Preparation: ledger v4 and design review log draft
+
+- **Done:** the decision ledger replaced by v4 (new header; section K with D62–D74) and the first draft of `docs/ai/design-review-log.md` added. The log's turn and finding references in section 2 were checked against the raw review material, and section 4 gained the three reviewer proposals that the material records as not adopted. `CLAUDE.md`, the plan, ADR-0005, ADR-0009 and `.env.example` aligned with v4.
+- **Pull requests opened:** none new; the changes are in the documents pull request.
+- **Exit criteria:** not applicable.
+- **Decisions taken (by the author):** the circuit alert fires when a circuit is **not closed** (open or half-open) for more than 5 minutes; ADR-0009 §3 said 1 minute and D74 said "open", and both were corrected. For D74's expiry rule, `expired_total` gains a `priority` label and ADR-0009 adds `notifications_finished_total{channel,priority,status}`.
+- **Open issues:** 1 (ledger completeness; blocks nothing).
+- **Next step:** P0, task 1.
+
 ### 2026-11-18 — Preparation: starting documents
 
-- **Done:** the ten ADRs, `architecture.md` and `future-work.md` revised to the decision ledger (v3); the implementation plan, `CLAUDE.md`, this file and the repository files written. No application code.
+- **Done:** the ten ADRs, `architecture.md` and `future-work.md` revised to the decision ledger (v3 at the time); the implementation plan, `CLAUDE.md`, this file and the repository files written. No application code.
 - **Pull requests opened:** the documents pull request from `docs/initial-design`.
 - **Exit criteria:** not applicable.
-- **Decisions taken:** the author settled ten points that the ledger (v3) leaves open. The ledger copy is unchanged; the ADRs named here carry the decisions.
+- **Decisions taken:** the author settled ten points that ledger v3 left open. They are recorded in ledger v4, section K (D62–D70), and applied in the ADRs named here.
   1. `success_rate` = `success / (all finished attempts except aborted)` (ADR-0009 §2).
   2. A `2xx` other than `202` is counted in its own metric, `provider_unexpected_2xx_total{channel,provider,code}`; `provider_malformed_response_total` remains for an unparseable `202` body (ADR-0007 §2, ADR-0009 §1).
   3. `requeue-stale` is a relay subcommand: `--older-than=5m` by default, `--all` for every `queued` row; run with `docker-compose run --rm relay requeue-stale` (ADR-0003 §3).
   4. Mock profile: `docker-compose.mock.yml` adds `mockprovider` and points `PROVIDER_URL` at it; `make up-mock` (ADR-0005, ADR-0010 §4).
-  5. The values in `.env.example` for the event buffer, the gateway queue limits and the send queue are kept as initial values and tuned in P6. The two alert thresholds (oldest queued age, expiry rate) had no proposed value: they get first values in P5 and are tuned in P6.
+  5. The values in `.env.example` for the event buffer, the gateway queue limits and the send queue are kept as initial values and tuned in P6. The first alert thresholds are given by D74 and are tuned in P6.
   6. Ports: public API `:8080`, admin `:8081`, gateway `:8082` (ADR-0009 §8).
   7. High-water marks are counted per lane and configured per priority, each value applying to every channel (ADR-0003 §1). The variable names of `.env.example` are the ones P0 implements.
   8. The 1-second back-off floor stays: full jitter can produce near-zero delays, and the floor protects the provider (ADR-0007 §3).
   9. Batch cancel reports a `may_have_been_sent` count (ADR-0006 §7).
   10. The minimum Compose version is determined in P0 from the features used.
-- **Also decided:** the fallback order drops our own additions before any feature the assessment names (plan §12); `make verify-suite` with at least three mutations is never dropped; demo and test data use only reserved fake values, because requests to the default webhook.site URL are publicly visible.
+- **Also decided:** the fallback order drops our own additions before any feature the assessment names (D73, plan §12); `make verify-suite` with at least three mutations is never dropped; demo and test data use only reserved fake values, because requests to the default webhook.site URL are publicly visible (D71); `mockprovider` records body field names only (D72).
 - **Open issues:** none.
 - **Next step:** P0, task 1.
 

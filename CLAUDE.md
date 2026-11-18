@@ -8,8 +8,9 @@ Loaded into every session. An event-driven notification service in Go: REST API 
 |---|---|
 | Progress and next step | `docs/progress.md` |
 | The plan (phases P0–P7, exit criteria) | `docs/plan/implementation-plan.md` |
-| Decisions (`D1`–`D61`, `G1`–`G5`, experiments, assumptions) | `docs/ai/decision-ledger.md` |
-| Design, by topic | `docs/adr/0001` … `0010`, `docs/architecture.md` |
+| Design, by topic (the primary design documents) | `docs/adr/0001` … `0010`, `docs/architecture.md` |
+| Decision record: why the design is as it is (`D1`–`D74`, `G1`–`G5`, experiments, assumptions) | `docs/ai/decision-ledger.md` |
+| How the design was reviewed | `docs/ai/design-review-log.md` |
 | Limitations, interpretations, deferred items | `docs/future-work.md` |
 | Delegation policy | `.claude/skills/fable-orchestration/SKILL.md` |
 
@@ -24,7 +25,9 @@ When sources disagree, the higher one wins:
 3. The orchestration skill.
 4. General best practice and other skills.
 
-Do not invent a decision. If the ledger and the ADRs do not answer a question, write it under "Open issues" in `docs/progress.md` and ask; do not settle it silently in code. Do not change a ledger decision; if one looks wrong, say so and keep the work consistent with it.
+The ADRs have been revised to the ledger and are the primary design documents; the ledger records the decisions behind them. **If an ADR and the ledger disagree, do not pick one silently:** write it under "Open issues" in `docs/progress.md` and ask.
+
+Do not invent a decision. If the ledger and the ADRs do not answer a question, write it under "Open issues" in `docs/progress.md` and ask; do not settle it silently in code. Do not change a ledger decision; if one looks wrong, say so and keep the work consistent with it. Only the author changes the ledger, or approves a change to it explicitly.
 
 ## Session start protocol
 
@@ -68,7 +71,7 @@ Do not invent a decision. If the ledger and the ADRs do not answer a question, w
 - **No secrets in the repository.** `.env` is git-ignored; `.env.example` holds names and local defaults only.
 - **No personal data, local paths or recruiting details** in any tracked file.
 - **Never log a recipient or message content.** Use the `Recipient` type for recipients (D42).
-- **Demo and test data use only reserved fake values** (`+905551234567`, `example.com` addresses); requests to the default webhook.site URL are publicly visible (D44).
+- **Demo and test data use only reserved fake values** (`+905551234567`, `example.com` addresses); requests to the default webhook.site URL are publicly visible, so real recipients never go through it (D71).
 - **Generated code is never edited by hand.** Change `api/openapi.yaml` or the SQL, then run `make generate`.
 - **Pin versions.** Container images use exact tags; GitHub Actions use full commit SHAs (D48, D53).
 

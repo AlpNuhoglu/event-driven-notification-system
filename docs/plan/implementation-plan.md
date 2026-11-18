@@ -2,9 +2,9 @@
 
 The plan that the implementation sessions execute. Each phase is sized for one fresh Claude Code session and one or a few pull requests.
 
-- **What to build** is decided in the [decision ledger](../ai/decision-ledger.md) (`D…`, `G…`) and the [ADRs](../adr/). This plan decides only **in which order**, and **how each step is shown to be done**.
+- **What to build** is specified in the [ADRs](../adr/), the primary design documents, and recorded with its reasons in the [decision ledger](../ai/decision-ledger.md) (v4: `D1`–`D74`, `G1`–`G5`). This plan decides only **in which order**, and **how each step is shown to be done**.
 - **Where things stand** is recorded in [`docs/progress.md`](../progress.md). A session reads that file first.
-- If this plan and the ledger or an ADR disagree, the ledger and the ADRs win; fix the plan in the same pull request and note it under "Known deviations from the plan" in `progress.md`.
+- If this plan and the ledger or an ADR disagree, the ledger and the ADRs win; fix the plan in the same pull request and note it under "Known deviations from the plan" in `progress.md`. If an ADR and the ledger disagree with each other, do not pick one: record it under "Open issues" in `progress.md` and ask.
 
 ## Contents
 
@@ -61,7 +61,7 @@ Delegation tiers used below:
 
 **Goal.** A repository that builds, lints and tests in CI with pinned infrastructure, and six experiments whose results confirm (or replace) the decisions that rest on documentation nobody has run.
 
-**Implements.** D60, D59, D48, D45, D47 (the `healthcheck` subcommand), D53 (first jobs), G5; ledger sections I and J.
+**Implements.** D60, D59, D48, D45, D47 (the `healthcheck` subcommand), D53 (first jobs), D66 (ports), D70, G5; ledger sections I and J.
 
 ### Task 1: repository set-up (D60)
 
@@ -133,7 +133,7 @@ grep -c '^| E[1-6] ' docs/progress.md    # 6: one result row per experiment
 
 **Goal.** One notification created through the API reaches `sent` at the provider through the real path (outbox, relay, broker, worker, rate limiter), with the relay-versus-worker race closed and tested.
 
-**Implements.** D1, D2, D3, D7, D8 (queue argument), D10, D17 (signature), D19, D20, D21, D22, D23, D24, D28, D29, D33 (basic health endpoints), D44, D45, D46, D47, D51 (`load-smoke`), D52.
+**Implements.** D1, D2, D3, D7, D8 (queue argument), D10, D17 (signature), D19, D20, D21, D22, D23, D24, D28, D29, D33 (basic health endpoints), D44, D45, D46, D47, D51 (`load-smoke`), D52, D63, D65, D67, D71, D72.
 
 | ADR | Sections |
 |---|---|
@@ -211,7 +211,7 @@ One manual mutation check closes the phase: revert the claim guard to `status = 
 
 **Goal.** Every endpoint of the Notification Management API behaves as specified, with all three idempotency layers.
 
-**Implements.** D14 (documented in the API), D15, D16, D22, D34, D35, D36, D38. [ADR-0006](../adr/0006-api-contract-and-three-layer-idempotency.md) §1–9 and §11; [ADR-0004](../adr/0004-data-model-state-machine-and-fencing.md) transitions 9 and 11.
+**Implements.** D14 (documented in the API), D15, D16, D22, D34, D35, D36, D38, D69. [ADR-0006](../adr/0006-api-contract-and-three-layer-idempotency.md) §1–9 and §11; [ADR-0004](../adr/0004-data-model-state-machine-and-fencing.md) transitions 9 and 11.
 
 **Scope.** Batch create with partial success; `Idempotency-Key` on both create endpoints; `dedupe_key` with the D15 predicate in the index, in every `ON CONFLICT` and in the conflict look-up; cancel (single and batch) with `may_have_been_sent`; redrive; listing with single-valued filters and a keyset cursor (two `sqlc` queries); attempts and batch endpoints; per-channel validation and SMS segment counting; the 5 MB body limit; `X-Request-ID` validation; embedded Swagger UI; contract tests for every response.
 
@@ -253,7 +253,7 @@ The README gains its API examples (day 2 of D57).
 
 **Goal.** Failures are classified by scope, retried with the right budget, and every recovery path of the design exists and is tested.
 
-**Implements.** D2 (redeclaration on reconnection), D5, D6, D8 (resubscribe safety net), D12, D14, D17 (full), D18, D20, D23 (abort path), D25, D26, D27, D30, D31, D32.
+**Implements.** D2 (redeclaration on reconnection), D5, D6, D8 (resubscribe safety net), D12, D14, D17 (full), D18, D20, D23 (abort path), D25, D26, D27, D30, D31, D32, D64, D68.
 
 | ADR | Sections |
 |---|---|
@@ -344,9 +344,9 @@ gh pr checks
 
 **Goal.** A client can follow a notification in real time, and an operator can see queue depth, rates, latency, traces and health without reading the database.
 
-**Implements.** D9, D11, D13, D33, D37, D39, D41, D42, D43. [ADR-0005](../adr/0005-service-topology-and-status-events.md) (status events, gateway); [ADR-0006](../adr/0006-api-contract-and-three-layer-idempotency.md) §10; [ADR-0009](../adr/0009-observability.md) in full.
+**Implements.** D9, D11, D13, D33, D37, D39, D41, D42, D43, D62, D74. [ADR-0005](../adr/0005-service-topology-and-status-events.md) (status events, gateway); [ADR-0006](../adr/0006-api-contract-and-three-layer-idempotency.md) §10; [ADR-0009](../adr/0009-observability.md) in full.
 
-**Scope.** The lazy, bounded event publisher in api, relay and worker; the gateway with subscription-then-snapshot, origin patterns, the bounded send queue and the bounded event queue; all metrics of ADR-0009 §1; the metrics summary with its two caches; the "Overview" dashboard and the alert rules, with first thresholds for the oldest-queued-age and expiry-rate alerts (tuned in P6); `slog` with the `Recipient` type, key-based and value-based redaction; correlation IDs; hybrid tracing; health endpoints in full, on the public port and in the OpenAPI spec; Prometheus scraping RabbitMQ per object; `make demo`.
+**Scope.** The lazy, bounded event publisher in api, relay and worker; the gateway with subscription-then-snapshot, origin patterns, the bounded send queue and the bounded event queue; all metrics of ADR-0009 §1; the metrics summary with its two caches; the "Overview" dashboard and the alert rules in `alerts.yml` with the first thresholds of D74 and a one-line runbook note per rule (tuned in P6); `slog` with the `Recipient` type, key-based and value-based redaction; correlation IDs; hybrid tracing; health endpoints in full, on the public port and in the OpenAPI spec; Prometheus scraping RabbitMQ per object; `make demo`.
 
 **Files and packages.** `internal/queue` (event publisher), `internal/gateway`, `cmd/gateway`, `internal/platform` (logging, metrics, tracing), `internal/api` (summary, health), `deploy/` (Prometheus, Grafana, Jaeger), `docker-compose.yml`, `Makefile` (`demo`).
 
@@ -360,7 +360,7 @@ gh pr checks
 | Health | `/healthz` and `/readyz` on the public port; readiness per service as in ADR-0009 §7 |
 | Tracing | In-memory exporter: one trace for a first attempt, a new linked trace for a retry and for a scheduled delivery |
 | PII | `Recipient` is masked however it is logged; **canary scan** over all service logs, exported spans and `/metrics` output in the e2e run |
-| Dashboard and alerts | Smoke test: every panel query returns data after the e2e run; `promtool check rules` |
+| Dashboard and alerts | Smoke test: every panel query returns data after the e2e run; `promtool check rules`; the expiry rule uses `expired_total` and `notifications_finished_total` by priority, and the circuit rule fires on "not closed" |
 
 **Exit criteria.**
 
@@ -383,7 +383,7 @@ gh pr checks
 
 **Goal.** The evidence for every claim exists and is itself checked.
 
-**Implements.** D49, D50, D51, D52, D53, D54, D55, D61 (the release run). [ADR-0010](../adr/0010-testing-and-ci.md) in full.
+**Implements.** D49, D50, D51, D52, D53, D54, D55, D61 (the release run), D66 and D74 (tuning of the first values). [ADR-0010](../adr/0010-testing-and-ci.md) in full.
 
 **Scope.**
 
@@ -422,15 +422,15 @@ grep -rnE 'uses: [^@]+@v?[0-9]' .github/workflows   # no output: no action pinne
 
 **Goal.** A reader who clones the repository can run it, understand it and verify its claims from the README alone.
 
-**Implements.** D31 (burst figures in the README), D44 (URL renewal), D56, D57, D58, D61 (clean-clone rehearsal).
+**Implements.** D31 (burst figures in the README), D44 (URL renewal), D56, D57, D58, D61 (clean-clone rehearsal), D70 (the minimum Compose version in the README), D71.
 
 **Scope.**
 
 - **README** in full: quick start with `docker-compose up` and the minimum Compose version; the webhook.site URL with its creation date and how to create a new one; API examples; `make demo`; the requirements map **with the evidence column filled**; interpretations of the assessment; limitations, including the largest burst per priority; load results; **"How AI was used"** and **"How AI output was verified"**.
 - **`docs/architecture.md` regenerated** from the implemented system; the "planned" markers and the top note are removed.
 - **`docs/future-work.md`** checked against everything dropped during implementation.
-- **`docs/ai/`:** the curated `design-review-log.md` (AI mistakes caught, including the reviewer's own; critiques rejected, with reasons; findings reached independently, in their real order), the sanitised review prompt and sample sub-agent briefs. No raw transcripts, personal data or local paths. Its source material is in `.inputs/`.
-- **Markdown link check** switched on in CI. It is enabled here, not in P6, because every ADR links to `docs/ai/design-review-log.md`, which exists only from this phase.
+- **`docs/ai/`:** `design-review-log.md` already exists as a first draft, and P7 completes it from the raw review material in `.inputs/`: section 4 (choices questioned and kept, critiques rejected, with reasons), the three rows of section 2 that the raw material does not confirm as written, and section 6 (experiment results, AI mistakes caught in code review or by `make verify-suite`, decisions changed by evidence). P7 also adds the sanitised review prompt and sample sub-agent briefs. No raw transcripts, personal data or local paths.
+- **Markdown link check** switched on in CI. It stays in this phase, so that its first run covers the finished documents: the README, the regenerated architecture document and the completed review log. The ADRs' links to `docs/ai/design-review-log.md` already resolve.
 - **Clean-clone rehearsal** on another machine or under a fresh user account, following the README from its first line.
 - **webhook.site URL renewed** right before submission: the Compose default and the README date are updated in one commit.
 
@@ -477,7 +477,7 @@ A note on U8: a repeated test can make a violation unlikely, but only the librar
 
 Scope is cut only when correctness cannot be shown by tests within the time, or when a component adds risk without matching value (G2). When time runs short, items are dropped **from the top of this list downwards**, and each drop is recorded in `docs/future-work.md` in the same commit.
 
-**The principle:** our own additions, which the assessment does not ask for, are dropped before any feature the assessment names, including its bonus features.
+**The principle (D73):** our own additions, which the assessment does not ask for, are dropped before any feature the assessment names, including its bonus features.
 
 | Order | Dropped first | What remains |
 |---|---|---|
@@ -519,7 +519,7 @@ Scope is cut only when correctness cannot be shown by tests within the time, or 
 | 8 | The plan is too large for three days | Medium | An unfinished submission | The day-1 gate; the fallback order; bonus features are cut before evidence is |
 | 9 | testcontainers inside a container does not work on macOS | Medium | `make test-docker` cannot be offered | E3; fallback is to document `make test` |
 | 10 | The Postgres 18 image's data path differs from earlier versions | High if unnoticed | Data is lost on container recreation | Called out in P0; checked by recreating the container |
-| 11 | Links to `docs/ai/design-review-log.md` are broken until P7 | Certain | A link check would fail | The link check is enabled in P7 |
+| 11 | **Resolved.** Links to `docs/ai/design-review-log.md` were broken while the log did not exist; a first draft now exists and every link resolves | — | — | None needed. The link check stays in P7, as planned |
 | 12 | A session starts without the context of earlier ones | Certain | Rework or contradicting decisions | `docs/progress.md` is read first and written last in every session |
 | 13 | `docker-compose up` hangs, or a service stays unhealthy, on a clean clone | Medium | The first thing a reader runs fails | The stack needs no `.env` file (D44); every image is on an exact tag (D48); health checks use the binaries' `healthcheck` subcommand and the `depends_on` chain rests on Postgres, RabbitMQ, Redis and `migrate` only (D47); the api's readiness needs Postgres only and event publishers never affect start-up (D11, D39); a CI job runs `docker-compose up` with the standalone binary on every push (D45, D53); the clean-clone rehearsal before submission (D61) |
 | 14 | A `queued` row is silently stuck, because reconciliation covers reconnections only | Low to medium | A notification is not delivered and nobody notices until it expires | The `lane_oldest_queued_age_seconds` gauge with an alert on the `high` lanes and the poison-queue depth alert (D5, D6, D41); the `requeue-stale` relay subcommand (D5); expiry as the final bound, so the row ends `failed / expired` and is visible to the client (D12); the limitation is stated in `future-work.md` (D56) |
