@@ -41,12 +41,12 @@ Integration tests are organised by **pairs of actors** acting on the same notifi
 | | api | relay | worker | lease sweeper | late worker |
 |---|---|---|---|---|---|
 | **api** | `TestCancel_Idempotent`; `TestIdempotencyKey_ConcurrentSameKey` | `TestCancel_DuringRelayPublish`; `TestRedrive_VersusExpiry` | `TestCancel_RacesWithClaim` (never both) | `TestCancel_WhileProcessingReturns409` | `TestLateSuccess_AfterCancel` (`cancelled → sent`); `TestLateSuccess_AfterRedrive` |
-| **relay** | — | `TestRelay_TwoRelaysNeverPublishSameRow` | **`TestClaim_WaitsForRelayCommit`**; **`TestE2E_IdleSingleNotificationIsSent`**; `TestE2E_WorkerFasterThanRelayCommit` (the same race forced through the real broker: the relay's transaction is held open until the claim is seen waiting); `TestClaim_DirectAfterRelayRollback`; `TestExpiry_VersusClaim` | n/a (disjoint states) | `TestLateSuccess_AfterReconcile`; `TestLateSuccess_AfterExpiry` (`failed → sent`) |
+| **relay** | — | `TestRelay_TwoRelaysNeverPublishSameRow` | **`TestClaim_WaitsForRelayCommit`**; **`TestE2E_WorkerFasterThanRelayCommit`** (the same race forced through the real broker: the relay's transaction is held open until the claim is seen waiting); `TestE2E_IdleSingleNotificationIsSent`; `TestClaim_DirectAfterRelayRollback`; `TestExpiry_VersusClaim` | n/a (disjoint states) | `TestLateSuccess_AfterReconcile`; `TestLateSuccess_AfterExpiry` (`failed → sent`) |
 | **worker** | — | — | `TestClaim_TwoWorkersExactlyOne` | `TestLeaseSweeper_VersusFinalWrite` | `TestFencing_LateWriteAffectsZeroRows` |
 | **lease sweeper** | — | — | — | `TestLeaseSweeper_TwoSweepersSkipLocked` | `TestLateSuccess_AfterLeaseSweep` |
 | **late worker** | — | — | — | — | n/a (one late worker per attempt) |
 
-The two tests in bold are the ones that would have caught the dropped-message defect: a single notification on an idle system must reach `sent`, and a claim issued while the relay's transaction is still open must wait and then succeed.
+The two tests in bold are the ones that catch the dropped-message defect: a claim issued while the relay's transaction is still open must wait and then succeed, at the store and through the real broker. `TestE2E_IdleSingleNotificationIsSent` is the plain proof that a single notification on an idle system reaches `sent`; it does **not** catch a narrowed claim guard, because without a forced order the relay's commit can win the race (on the development machine it always did: the relay commits about 1 ms after its publish returns). The mutation check in P1 showed this, and the forced-race test replaced it as the mutation target ([design review log](../ai/design-review-log.md) §6).
 
 #### Other integration tests, by area
 
@@ -78,7 +78,7 @@ The two tests in bold are the ones that would have caught the dropped-message de
 | Scenario | Expected result |
 |---|---|
 | **RabbitMQ wiped with its data and restarted** | Every notification ends `sent`. This is the test of reconciliation and of topology redeclaration. |
-| Postgres restarted during sends | Nothing is lost; duplicates at the provider are counted and **reported**, not failed |
+| Postgres restarted during sends | Nothing is lost; duplicates at the provider are counted and **reported**, not failed; the poison queues stay empty (a claim that fails during the outage must not push its message toward the delivery limit, [ADR-0001](0001-rabbitmq-as-dispatch-broker.md)) |
 | Low-traffic provider outage: three `high` notifications, provider down for 60 seconds | All three end `sent` with `failures = 0` |
 | Worker killed with `SIGKILL` mid-send | The lease sweeper recovers its rows; duplicates are reported |
 | Redis stopped | Sending continues on the fallback limiter; the fallback alert fires |
@@ -128,7 +128,7 @@ A separate binary (`cmd/mockprovider`) with an admin API for fault injection. It
 |---|---|---|
 | **`make test`** | Unit, fuzz seed corpus, integration and contract tests, all with `-race` | Go and Docker |
 | `make up-mock` | Starts the stack with the mock override, `docker-compose.mock.yml`, which adds `mockprovider` and points `PROVIDER_URL` at it ([ADR-0005](0005-service-topology-and-status-events.md)) | Docker |
-| `make test-e2e` | Starts the Compose stack with the mock override; runs the e2e and chaos scenarios, `load-smoke`, the canary scan and the dashboard smoke test | Docker |
+| `make test-e2e` | Starts the Compose stack with the mock override, under its own Compose project so that it never touches a developer's running stack; runs the e2e and chaos scenarios, `load-smoke`, the canary scan and the dashboard smoke test; always stops the stack afterwards. `load-smoke` logs the largest one-second window it saw. | Go and Docker (the tests run on the host against the stack) |
 | `make load` | k6 scenarios against the Compose stack | Docker |
 | `make test-docker` | Same as `make test`, inside a Go container | Docker only |
 | `make verify-suite` | The mutation patches of section 8 | Go and Docker |
@@ -182,7 +182,7 @@ A test suite that passes proves little unless it can also fail. `make verify-sui
 
 | Mutation | Must be caught by |
 |---|---|
-| Claim guard reverted to `status = 'queued'` | The idle-notification and wait-for-commit tests |
+| Claim guard reverted to `status = 'queued'` | `TestClaim_WaitsForRelayCommit` and `TestE2E_WorkerFasterThanRelayCommit` |
 | Fencing condition removed from the final write | The late-write test |
 | Pacer set to exactly 100 msg/s | The deterministic pacer test (fake clock, fixed jitter) |
 | Redirect following re-enabled | The redirect test |

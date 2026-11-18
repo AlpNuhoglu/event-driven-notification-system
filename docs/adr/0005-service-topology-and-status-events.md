@@ -54,6 +54,7 @@ One Go module, one Docker image, one binary per role under `cmd/`. Compose runs 
 | Ports | The api listens on `:8080` and the gateway on `:8082`; both are published to the host. Every service has an admin port, `:8081`, which is internal only ([ADR-0009](0009-observability.md) §8). |
 | Restart policy | `restart: unless-stopped` on every application service |
 | Health checks | Every container has one. The Go binaries have a **`healthcheck` subcommand**, so minimal images need no `curl`. |
+| Configuration | The binaries carry the default of every variable except `PROVIDER_URL`, whose default is in the Compose file. An optional `.env` file reaches every application container through `env_file` with `required: false`; this entry is what sets the minimum Compose version, v2.24.0. |
 | Start order | The `depends_on` chain rests on the health of Postgres, RabbitMQ and Redis and on the completion of `migrate` |
 | Stop | `stop_grace_period: 20s` for the worker, longer than its 15-second drain |
 
@@ -125,6 +126,7 @@ The test is in [ADR-0010](0010-testing-and-ci.md): the connection is broken whil
 - **The recovery budget is configuration:** `AMQP_RECOVERY_MAX_RETRIES` = 24 attempts, each after a wait of `AMQP_RECOVERY_RETRY_INTERVAL` = 5 s, which is about 2 minutes. The library's own default, 5 attempts at 5 s, gave up 26 s into a 60-second outage.
 - A role learns about the connection from the library's state notifications (`NotifyStateChange`): `open → reconnecting` when it is lost, `reconnecting → open` when it is back, and `→ closed` with an error when recovery has given up.
 - **If recovery gives up, the relay, the worker and the gateway exit with a non-zero code** and are restarted by the container runtime. The new process declares the topology at start-up, and the relay runs reconciliation on its first connection ([ADR-0003](0003-bounded-relay-buffer-and-sweepers.md) §3). This exit-and-restart path is also the fallback if the experimental recovery misbehaves ([future work](../future-work.md)).
+- **The relay also exits when its publisher's channel is closed for good** (the return listener is gone, so no later batch could be checked for unroutable messages). A channel error from the broker does not cause this: the library reopens the channel and the listener keeps working (tested). P3 may replace the exit with rebuilding the publisher.
 - **The worker never acks a delivery that arrived before a reconnect** (the connection epoch, above).
 - **The api does not exit.** Its only use of RabbitMQ is the optional event publisher, so it logs the state, keeps serving and reconnects lazily.
 - A worker that receives a server-side consumer cancellation resubscribes ([ADR-0001](0001-rabbitmq-as-dispatch-broker.md)).
