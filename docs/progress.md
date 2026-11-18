@@ -8,7 +8,7 @@ The first file every session reads and the last one it updates. The phases and t
 
 **Next step:** after the author merges the `p0/skeleton` pull request, create `p0/experiments` from the updated `main` and run experiments E1–E6 (P0 task 3).
 
-**Minimum Compose version:** v2.1.1 (D45, D70). It is the first release with `up --wait`, which is the newest feature the P0 file and the exit criteria use; everything else in the file (`healthcheck` with `start_period`, named volumes, short-syntax ports and mounts) is older. The file was checked with the standalone `docker-compose` binary at v5.6.1. See open issue 1 for what was not checked.
+**Minimum Compose version:** v2.1.1, from the release notes (`up --wait`); tested with v5.6.1 (D45, D70). `up --wait` is the newest feature the P0 file and the exit criteria use; everything else in the file (`healthcheck` with `start_period`, named volumes, short-syntax ports and mounts, `${VAR:-default}` interpolation) is older. The number is not run against a v2.1.1 binary. P1 re-derives it from the release notes when the one-shot `migrate` service lands (probably v2.7.0, whose notes list the fix that makes `up --wait` handle one-shot containers). The practical check is the clean-clone rehearsal in P7.
 
 **Decision ledger:** v4 (`D1`–`D75`). Section K records the points settled during the preparation session. The ADRs are the primary design documents; the ledger is the decision record.
 
@@ -55,7 +55,6 @@ Questions that the ledger and the ADRs do not answer, and problems that are not 
 
 | # | Raised on | Issue | Blocks |
 |---|---|---|---|
-| 1 | 2026-11-18 | The minimum Compose version (v2.1.1) is derived from the Compose release notes and was not run against a v2.1.1 binary: downloading older standalone binaries was not permitted in the session. P1 adds a one-shot `migrate` service behind `service_completed_successfully`, and the v2.7.0 release notes list the fix that makes `up --wait` handle one-shot containers, so the number is expected to rise to at least v2.7.0 in P1. The author decides whether to test an old binary by hand or to state a newer, tested version. | The README's version statement (P1) |
 
 ## Session log
 
@@ -71,6 +70,11 @@ Newest entry first. One entry per session, in this form:
 - **Open issues:** new entries added to the table above.
 - **Next step:** the first thing the next session does.
 ```
+
+### 2026-11-18 — P0: first-hour experiments (task 3)
+
+- **Decisions taken (by the author):**
+  1. Open issue 1 is closed without testing an old binary. The minimum Compose version is recorded as "v2.1.1, from the release notes (`up --wait`); tested with v5.6.1". P1 re-derives the minimum from the release notes when the one-shot `migrate` service lands (probably v2.7.0), and the clean-clone rehearsal in P7 is the practical check.
 
 ### 2026-11-18 — P0: repository checks and skeleton (tasks 1 and 2)
 
