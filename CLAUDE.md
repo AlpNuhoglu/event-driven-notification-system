@@ -105,5 +105,6 @@ Defined in P0; until then this table is the target.
 | `make verify-suite` | Mutation patches; each must fail a named test |
 | `make demo` | At most 10 requests through the running stack |
 | `make up-mock` | The stack with `docker-compose.mock.yml`: `mockprovider` as the provider |
+| `make down` | Stop the stack of `make up-mock` and remove its volumes |
 | `docker-compose run --rm relay requeue-stale` | Return stale `queued` rows to `pending` (`--older-than=5m` by default, `--all`) |
 | `docker-compose up` | The whole stack, as the assessment specifies |

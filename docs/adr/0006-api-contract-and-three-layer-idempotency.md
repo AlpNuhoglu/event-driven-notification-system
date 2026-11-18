@@ -77,6 +77,8 @@ Prometheus metrics and `pprof` are served on each service's separate admin port 
 
 The request has the four fields the assessment names (recipient, channel, content, priority) plus the optional ones above. There is no `subject` field.
 
+**A field the API does not know is rejected** (`422`, code `unknown_field`), never ignored: a client that sends a field of a later version, or misspells one, must not get a different behaviour silently. The optional fields above arrive with their phases; until then they are unknown fields. A repeated key is rejected as well (`duplicate_field`).
+
 ### 4. Response model
 
 ```json
@@ -188,6 +190,9 @@ Validation runs **after** template rendering, because variables can push content
 | `413` | Request body over 5 MB |
 | `422` | Validation failure; more than 1,000 batch items (`code: too_many_items`); an `Idempotency-Key` reused with a different request |
 | `503` | Postgres unavailable |
+| `405`, `415`, `500` | A known path with another method (with `Allow`); a create whose `Content-Type` is not `application/json`; an unexpected error, whose cause is never in the answer |
+
+Every non-2xx answer the server can produce is a problem document, including the ones the router writes for an unknown path or method. The problem types and the `code` values are listed in [`docs/errors.md`](../errors.md). Timestamps carry the database's microsecond precision.
 
 ### 10. WebSocket protocol (gateway)
 

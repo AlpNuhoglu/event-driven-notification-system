@@ -10,6 +10,8 @@ Sources are review-turn findings: `T2 F1` means Turn 2, finding F1. "Author" mea
 
 **Amended on 2026-11-18, in P1, by the author's decision on open issue 5:** the new D77 (the missed-slot rule and the send deadline of the pacer), with D20 and D23 amended to it.
 
+**Amended on 2026-11-19, in P1, by the author's decision on open issue 6:** D54 names the two tests the claim-guard mutation must fail.
+
 ## Guiding rules
 
 | ID | Rule |
@@ -107,7 +109,7 @@ Sources are review-turn findings: `T2 F1` means Turn 2, finding F1. "Author" mea
 | D51 | Load: rate scenario **30,000 SMS**, criterion per channel, half-open 1 s window over sorted arrival timestamps at mockprovider (the window computation has its own unit test); strict-priority ordering test plus a saturation scenario reporting `high` p95 and `low` wait; **channel isolation** (mockprovider fails 100 % of SMS; Email throughput is unaffected; this is the evidence for per-channel pacers inside one worker process, D23 and D46); phase 1 = 1 M ingest with flat broker depth; phase 2 = 100 k full drain with each `Idempotency-Key` received exactly once; **load-smoke (60 s) in the e2e job from day 1**. | 0010 | T10 F1, F3, F8, P2 |
 | D52 | All durations configurable and millisecond-scale in tests; back-dating rows only for expiry and lease edge cases. | 0010 | T10 F5 |
 | D53 | CI: third-party actions pinned to full commit SHAs; minimal `permissions`; security scan (`govulncheck`, `trivy`) non-blocking and scheduled; **Dependabot off until after the evaluation**; golangci-lint v2 config format; Markdown link check; `make test-docker` adds `-v $PWD:$PWD -w $PWD`; a job runs `docker-compose up`. | 0010 | T10 F7, N2, N3, T11 P2, final report |
-| D54 | **`make verify-suite`:** mutation patches applied in a temporary worktree; each must make a **named** test fail (not a compile error): claim guard reverted to `status = 'queued'`, fencing condition removed, pacer at exactly 100/s (checked by a deterministic pacer test with fake clock and fixed jitter), redirect following re-enabled, builtin template functions allowed, `mandatory` removed. Written on day 3. | 0010, README | Author, final report |
+| D54 | **`make verify-suite`:** mutation patches applied in a temporary worktree; each must make a **named** test fail (not a compile error): claim guard reverted to `status = 'queued'` (must fail `TestClaim_WaitsForRelayCommit` and `TestE2E_WorkerFasterThanRelayCommit`; **amended in P1:** the idle end-to-end test is not a target, because without a forced order the relay's commit can win the race and the narrowed guard then still finds a `queued` row), fencing condition removed, pacer at exactly 100/s (checked by a deterministic pacer test with fake clock and fixed jitter), redirect following re-enabled, builtin template functions allowed, `mandatory` removed. Written on day 3. | 0010, README | Author, final report |
 | D55 | Additional tests: trace propagation (in-memory exporter), metrics summary values on a known dataset, health endpoints, listing and summary latency on the phase-1 dataset. | 0010 | T10 F6 |
 
 ## H. Documentation and process

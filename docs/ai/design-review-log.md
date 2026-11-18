@@ -88,6 +88,10 @@ The review labelled several facts *Unverified*: they came from documentation or 
 
 *Added from P0 onwards: experiment results, AI mistakes caught in code review or by `make verify-suite`, and any decision changed by evidence.*
 
+| Phase | What was assumed | What the evidence showed | What changed |
+|---|---|---|---|
+| P1 | The plan and ADR-0010 named two tests that "would have caught the dropped-message defect" (a claim guard of `status = 'queued'` only): the store-level wait-for-commit test and the end-to-end test of a single notification on an idle system. The closing mutation check of P1 was to show both failing. | With the guard narrowed, the store-level test failed every time, and the idle end-to-end test **did not fail once in 220 runs**. With one message on an idle system the relay commits about 1 ms after its publish returns, and the worker's claim (delivery, a Redis reservation, then the claim) arrives later, so the narrowed guard still finds a `queued` row. Which side wins depends on the machine: the test could not be relied on to catch the defect. | A forced-race test, `TestE2E_WorkerFasterThanRelayCommit`, holds the relay's transaction open until the worker's claim is seen waiting on the row lock, through the real broker; it fails every time under the mutation and replaced the idle test as the mutation target. The idle test stays as the plain proof that one notification is sent. ADR-0010, the plan and D54 were corrected. The claim about what a test catches was only settled by removing the guarantee and running it. |
+
 ## 7. What this shows about using AI here
 
 - The partner's mistakes were not random: most were confident statements of outdated or unchecked facts (rows 3, 6, 7, 10) and races between two actors (rows 1, 2, 13). The test matrix is organised by actor pairs for this reason (D49).

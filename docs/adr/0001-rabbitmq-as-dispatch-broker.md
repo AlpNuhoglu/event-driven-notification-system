@@ -91,6 +91,7 @@ The broker's dead-letter path is a safety net, not the main defence. The worker 
 
 - `dispatch.{channel}.poison` queues are classic and durable, and have no consumer. Their depth is a metric and an alert ([ADR-0009](0009-observability.md)).
 - A delivery whose body is not a notification id cannot belong to a row. The worker rejects it without requeue, so it goes to the poison queue, and logs its size, never its content.
+- **Requeues use `basic.nack`, not `basic.reject`.** The worker returns a message it has not claimed with a nack and requeue (shutdown, a claim that could not be made). Since RabbitMQ 4.3 a nack with requeue does not increment a quorum queue's delivery count, while a reject does, and the delivery limit is 20: with reject, a message returned often enough during an outage would be dead-lettered although nothing is wrong with it. The behaviour is checked on RabbitMQ 4.4.1 in P3 (one message nacked 25 times must not be dead-lettered). `basic.reject` without requeue is used only for a delivery that can never be processed (the bullet above).
 - A dead-lettered message leaves its row in `queued`. The row is recovered by reconciliation or by the manual `requeue-stale` command ([ADR-0003](0003-bounded-relay-buffer-and-sweepers.md)).
 
 ### Status events

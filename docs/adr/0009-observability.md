@@ -176,7 +176,7 @@ Retries and scheduled deliveries: a new trace, linked to the request
 | relay | | Postgres |
 | gateway | | RabbitMQ and Postgres (for snapshots), and the event consumer is active (same flag) |
 
-The readiness response is JSON, with the status and duration of each check.
+The readiness response is JSON, with the status and duration of each check. On the api's public port a failed readiness is a `503` problem document ([ADR-0006](0006-api-contract-and-three-layer-idempotency.md) §9) that carries the same list in its `checks` member.
 
 ### 8. Admin port
 

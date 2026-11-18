@@ -165,6 +165,7 @@ grep -c '^| E[1-6] ' docs/progress.md    # 6: one result row per experiment
 |---|---|
 | A worker faster than the relay's commit waits and claims (D1) | `TestClaim_WaitsForRelayCommit` |
 | A single notification on an idle system is sent (D1) | `TestE2E_IdleSingleNotificationIsSent` |
+| A worker faster than the relay's commit, through the real broker (D1) | `TestE2E_WorkerFasterThanRelayCommit` |
 | A relay rollback leaves a row that is claimed directly | `TestClaim_DirectAfterRelayRollback` |
 | Two claims, one winner | `TestClaim_TwoWorkersExactlyOne` |
 | Expired at claim: `failed`, no attempt row, `attempt_count` unchanged | Claim test |
@@ -200,7 +201,7 @@ make test-e2e                                          # includes load-smoke: no
 gh pr checks                                           # CI green
 ```
 
-One manual mutation check closes the phase: revert the claim guard to `status = 'queued'` locally and confirm that the two race tests fail; restore it. (`make verify-suite` automates this in P6.)
+One manual mutation check closes the phase: revert the claim guard to `status = 'queued'` locally and confirm that `TestClaim_WaitsForRelayCommit` and `TestE2E_WorkerFasterThanRelayCommit` fail; restore it. (`make verify-suite` automates this in P6.) `TestE2E_IdleSingleNotificationIsSent` is not a target of this mutation: it is the plain proof that one notification is sent, and without a forced order the relay's commit can win the race.
 
 **Pull requests.** `p1/schema-and-store`, `p1/relay-worker-provider`, `p1/compose-e2e`.
 
@@ -285,6 +286,7 @@ The README gains its API examples (day 2 of D57).
 | Fallback limiter | Sending continues with Redis stopped; `limiter_fallback_active` is set |
 | Throttling | `429` with and without `Retry-After`; doubling up to 2 minutes; `failures` unchanged |
 | Consumer | A server-side cancellation is followed by a resubscribe |
+| Claim during a Postgres outage (open issue 7) | A claim that fails with a database error is retried in place with back-off while the worker holds the delivery and the concurrency slot, and is nacked once on shutdown; no rate-limit slot is used per retry. **Check on RabbitMQ 4.4.1:** one message nacked with requeue 25 times is not dead-lettered (a nack does not count toward the delivery limit of 20; a reject would) |
 | Connection epoch (D76) | `TestWorker_ConnectionLossWithBufferedMessages`: the connection is broken while messages sit in the local buffer; every notification ends `sent`, and no ack from an older epoch reaches the broker |
 
 **Exit criteria.**
@@ -395,7 +397,7 @@ gh pr checks
 - **Load scenarios** with k6: 30,000 SMS rate test, strict-priority ordering, saturation report, channel isolation, phase 1 (1 M ingest), phase 2 (100,000 drain), listing and summary latency on the phase-1 dataset. Results go to `docs/load-test.md`; the README gains its load results (day 3 of D57).
 - **Pacing margin:** the main loop reads the jitter measured by the rate scenario and confirms 98 msg/s or adjusts the configured rate (D24).
 - **Tuning:** the values that start as initial defaults are checked against the load and chaos results and adjusted: the event publisher buffer, the gateway queue's `x-max-length` and `x-message-ttl`, the per-connection send queue, and the alert thresholds.
-- **`make verify-suite`:** the six mutation patches of ADR-0010 §8, each failing a named test. At least three of them are never dropped (section 12). **Candidate for a seventh:** the missed-slot rule removed (a late claim sends at once, D77), which must fail the deterministic pacer test and the idle-batch window test.
+- **`make verify-suite`:** the six mutation patches of ADR-0010 §8, each failing a named test. At least three of them are never dropped (section 12). The claim-guard mutation must fail `TestClaim_WaitsForRelayCommit` and `TestE2E_WorkerFasterThanRelayCommit` (not the idle end-to-end test). **Candidate for a seventh:** the missed-slot rule removed (a late claim sends at once, D77), which must fail the deterministic pacer test and the idle-batch window test.
 - **CI hardening:** every third-party action pinned by SHA; minimal permissions; `test-docker`, `migrations` and `compose-up` jobs (the last runs `docker-compose up` with the standalone binary); the scheduled, non-blocking `security` job.
 - **Release workflow,** run once with a test tag.
 
