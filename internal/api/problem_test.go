@@ -11,8 +11,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/puddle/v2"
+
+	"github.com/AlpNuhoglu/event-driven-notification-system/internal/api/apigen"
 )
 
 func TestWriteProblem(t *testing.T) {
@@ -104,6 +107,7 @@ func TestProblemTypesDocumented(t *testing.T) {
 	for _, k := range []kind{
 		kindMalformed, kindNotFound, kindMethodNotAllowed, kindTooLarge,
 		kindUnsupportedMediaType, kindValidation, kindInternal, kindUnavailable,
+		kindDuplicate, kindIdempotencyKeyReused,
 	} {
 		if !strings.Contains(doc, "\n## `"+k.anchor+"`\n") {
 			t.Errorf("docs/errors.md has no section for %s", k.anchor)
@@ -112,6 +116,7 @@ func TestProblemTypesDocumented(t *testing.T) {
 	for _, code := range []string{
 		codeEmptyBody, codeMalformedJSON, codeNotAnObject, codeInvalidUUID, codeRequired, codeInvalidType,
 		codeInvalidValue, codeEmpty, codeTooLong, codeInvalidCharacter, codeUnknownField, codeDuplicateField,
+		codeTooManyItems, codeDuplicate, codeDuplicateInBatch, codeInvalidIdempotencyKey, codeIdempotencyKeyReused,
 	} {
 		if !strings.Contains(doc, "`"+code+"`") {
 			t.Errorf("docs/errors.md does not list code %s", code)
@@ -152,5 +157,27 @@ func TestErrorClass(t *testing.T) {
 	err := fmt.Errorf("x: %w", &pgconn.PgError{Code: "22P02", Message: `invalid input syntax: "+905551234567"`})
 	if got := errorClass(err); got != "postgres error, SQLSTATE 22P02" {
 		t.Errorf("errorClass = %q", got)
+	}
+}
+
+// A problem writes rejected only when it has some, and an entry for a
+// duplicate carries existing_id only when the id is known.
+func TestWriteProblem_RejectedAndExistingID(t *testing.T) {
+	id := uuid.MustParse("0193f0d2-7c1e-7b3a-9d41-5be0a1c2e3f4")
+	p := newProblem(kindValidation, "", duplicateFieldError(&id))
+	p.rejected = []apigen.RejectedItem{{Index: 3, Errors: []apigen.FieldError{duplicateFieldError(nil)}}}
+	doc := p.body("c")
+	if doc.Rejected == nil || len(*doc.Rejected) != 1 || (*doc.Rejected)[0].Index != 3 {
+		t.Fatalf("rejected = %v", doc.Rejected)
+	}
+	e := (*doc.Errors)[0]
+	if e.Code != codeDuplicate || e.Field != fieldDedupeKey || e.ExistingId == nil || *e.ExistingId != id {
+		t.Errorf("errors[0] = %+v", e)
+	}
+	if (*doc.Rejected)[0].Errors[0].ExistingId != nil {
+		t.Error("existing_id set without an id")
+	}
+	if doc := newProblem(kindNotFound, "").body("c"); doc.Rejected != nil {
+		t.Error("rejected present on a problem without items")
 	}
 }

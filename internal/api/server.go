@@ -25,8 +25,12 @@ import (
 
 // Repository is the part of the store the API uses.
 type Repository interface {
-	CreateNotification(ctx context.Context, n store.NewNotification) (store.Notification, error)
+	CreateSingle(ctx context.Context, key *store.IdempotencyKey, n store.NewNotification,
+		respond func(store.Notification) (store.StoredResponse, error)) (store.SingleResult, error)
+	CreateBatch(ctx context.Context, key *store.IdempotencyKey, b store.NewBatch,
+		respond func(store.BatchResult) (store.StoredResponse, error)) (store.BatchResult, error)
 	GetNotification(ctx context.Context, id uuid.UUID) (store.Notification, error)
+	GetBatch(ctx context.Context, id uuid.UUID) (store.Batch, error)
 }
 
 // Pinger checks that the database answers (readiness).
@@ -37,6 +41,10 @@ type Pinger interface {
 // DefaultDBTimeout bounds each database call of a request when
 // Options.DBTimeout is zero.
 const DefaultDBTimeout = 5 * time.Second
+
+// DefaultIdempotencyKeyTTL is the retention of an idempotency key when
+// Options.IdempotencyKeyTTL is zero (the default of IDEMPOTENCY_KEY_TTL).
+const DefaultIdempotencyKeyTTL = 24 * time.Hour
 
 // Options configures NewHandler.
 type Options struct {
@@ -50,12 +58,18 @@ type Options struct {
 	MaxBodyBytes int64
 	// DBTimeout bounds each database call; DefaultDBTimeout when zero.
 	DBTimeout time.Duration
+	// IdempotencyKeyTTL is how long an Idempotency-Key stays live
+	// (IDEMPOTENCY_KEY_TTL); DefaultIdempotencyKeyTTL when zero.
+	IdempotencyKeyTTL time.Duration
 }
 
 // NewHandler returns the API's http.Handler.
 func NewHandler(o Options) http.Handler {
 	if o.DBTimeout <= 0 {
 		o.DBTimeout = DefaultDBTimeout
+	}
+	if o.IdempotencyKeyTTL <= 0 {
+		o.IdempotencyKeyTTL = DefaultIdempotencyKeyTTL
 	}
 	h := &handlers{
 		repo:      o.Repository,
@@ -69,37 +83,125 @@ func NewHandler(o Options) http.Handler {
 		ResponseErrorHandlerFunc: responseError,
 	})
 	mux := http.NewServeMux()
-	apigen.HandlerWithOptions(createGuard{ServerInterface: strict}, apigen.StdHTTPServerOptions{
+	guard := createGuard{ServerInterface: strict, h: h, keyTTL: o.IdempotencyKeyTTL}
+	apigen.HandlerWithOptions(guard, apigen.StdHTTPServerOptions{
 		BaseRouter:       mux,
 		ErrorHandlerFunc: parameterError,
 	})
 	return &frame{next: &router{mux: mux}, logger: o.Logger, maxBodyBytes: o.MaxBodyBytes}
 }
 
-// createGuard enforces the create request's media type, size and schema
-// before the generated code decodes the body (see validateCreate).
+// createGuard runs before the generated code decodes a create request: it
+// checks the media type (415) and the size (413), validates the body (400,
+// 422; see validateCreate and validateBatch), then reads the Idempotency-Key
+// header (400) and hashes the request. Only a request that passes all of
+// this reaches the store, so a request that fails validation never touches
+// idempotency_keys. What it learned reaches the handler through the request
+// context (createInput).
 type createGuard struct {
 	apigen.ServerInterface
+	h      *handlers
+	keyTTL time.Duration
 }
 
-// CreateNotification checks Content-Type (415), reads the body within the
-// limit (413) and validates it (400, 422); a valid body is handed on.
+// CreateNotification hands a valid body on to the strict handler, which
+// decodes it again.
 func (g createGuard) CreateNotification(w http.ResponseWriter, r *http.Request, params apigen.CreateNotificationParams) {
-	if !isJSONContentType(r.Header.Get("Content-Type")) {
-		writeProblem(w, r, newProblem(kindUnsupportedMediaType, ""))
-		return
-	}
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		writeProblem(w, r, bodyReadProblem(err))
+	body, ok := readJSONBody(w, r)
+	if !ok {
 		return
 	}
 	if p := validateCreate(body); p != nil {
 		writeProblem(w, r, p)
 		return
 	}
+	key, p := g.requestKey(r, body)
+	if p != nil {
+		writeProblem(w, r, p)
+		return
+	}
+	r = r.WithContext(withCreateInput(r.Context(), createInput{key: key}))
 	r.Body = io.NopCloser(bytes.NewReader(body))
 	g.ServerInterface.CreateNotification(w, r, params)
+}
+
+// CreateNotificationBatch answers a batch request itself: the strict
+// handler's decoder would refuse a body with an invalid item, and the items
+// have already been parsed by validateBatch. It calls the strict handler's
+// method with the validated input in the context and writes its typed
+// response, as the generated strict wrapper does.
+func (g createGuard) CreateNotificationBatch(w http.ResponseWriter, r *http.Request, params apigen.CreateNotificationBatchParams) {
+	body, ok := readJSONBody(w, r)
+	if !ok {
+		return
+	}
+	in, p := validateBatch(body)
+	if p != nil {
+		writeProblem(w, r, p)
+		return
+	}
+	key, p := g.requestKey(r, body)
+	if p != nil {
+		writeProblem(w, r, p)
+		return
+	}
+	ctx := withCreateInput(r.Context(), createInput{key: key, batch: in})
+	resp, err := g.h.CreateNotificationBatch(ctx, apigen.CreateNotificationBatchRequestObject{Params: params})
+	if err != nil {
+		responseError(w, r, err)
+		return
+	}
+	if err := resp.VisitCreateNotificationBatchResponse(w); err != nil {
+		responseError(w, r, err)
+	}
+}
+
+// readJSONBody checks Content-Type (415) and reads the body within the limit
+// (413). It writes the problem and returns false when either fails.
+func readJSONBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
+	if !isJSONContentType(r.Header.Get("Content-Type")) {
+		writeProblem(w, r, newProblem(kindUnsupportedMediaType, ""))
+		return nil, false
+	}
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeProblem(w, r, bodyReadProblem(err))
+		return nil, false
+	}
+	return body, true
+}
+
+// requestKey reads the Idempotency-Key header (nil when absent) and binds it
+// to the hash of the request as received.
+func (g createGuard) requestKey(r *http.Request, body []byte) (*store.IdempotencyKey, *problem) {
+	key, present, p := idempotencyKey(r.Header)
+	if p != nil || !present {
+		return nil, p
+	}
+	hash, err := requestHash(r.Method, r.URL.Path, body)
+	if err != nil {
+		return nil, &problem{kind: kindInternal, detail: kindInternal.detail, cause: err}
+	}
+	return &store.IdempotencyKey{Key: key, RequestHash: hash, Retention: g.keyTTL}, nil
+}
+
+// createInput is what createGuard hands to the create handlers.
+type createInput struct {
+	// key is nil when the request has no Idempotency-Key.
+	key *store.IdempotencyKey
+	// batch is the validated batch (batch requests only).
+	batch batchInput
+}
+
+type createInputKey struct{}
+
+func withCreateInput(ctx context.Context, in createInput) context.Context {
+	return context.WithValue(ctx, createInputKey{}, in)
+}
+
+func createInputFrom(ctx context.Context) (createInput, bool) {
+	in, ok := ctx.Value(createInputKey{}).(createInput)
+	return in, ok
 }
 
 func isJSONContentType(v string) bool {
@@ -139,9 +241,18 @@ func responseError(w http.ResponseWriter, r *http.Request, err error) {
 }
 
 // parameterError is the generated wrapper's handler for a parameter it
-// cannot bind; the only one that can fail is the id path parameter.
+// cannot bind: the id path parameter, or the Idempotency-Key header when it
+// is sent more than once (the wrapper refuses that before createGuard runs).
+// X-Request-ID and traceparent never fail: the middleware normalises them
+// first.
 func parameterError(w http.ResponseWriter, r *http.Request, err error) {
+	var tooMany *apigen.TooManyValuesForParamError
 	var invalid *apigen.InvalidParamFormatError
+	if (errors.As(err, &tooMany) && tooMany.ParamName == headerIdempotencyKey) ||
+		(errors.As(err, &invalid) && invalid.ParamName == headerIdempotencyKey) {
+		writeProblem(w, r, invalidIdempotencyKeyProblem())
+		return
+	}
 	if errors.As(err, &invalid) {
 		writeProblem(w, r, newProblem(kindMalformed, "A path parameter is invalid.",
 			fieldError(invalid.ParamName, codeInvalidUUID, invalid.ParamName+" must be a UUID")))

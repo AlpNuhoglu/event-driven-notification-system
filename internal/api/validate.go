@@ -28,11 +28,33 @@ const (
 	codeInvalidCharacter = "invalid_character"
 	codeUnknownField     = "unknown_field"
 	codeDuplicateField   = "duplicate_field"
+
+	// 422: a batch is invalid as a whole, or one of its items repeats another.
+	codeTooManyItems     = "too_many_items"
+	codeDuplicateInBatch = "duplicate_in_batch"
+
+	// 409: a dedupe_key is already held.
+	codeDuplicate = "duplicate"
+)
+
+// Codes of the Idempotency-Key header and the key's reuse.
+const (
+	// 400: the header cannot be read.
+	codeInvalidIdempotencyKey = "invalid_idempotency_key"
+
+	// 422: the key was already used with a different request.
+	codeIdempotencyKeyReused = "idempotency_key_reused"
 )
 
 // maxRecipientChars is the longest recipient accepted in this phase, in
 // characters (Unicode code points, as JSON Schema's maxLength counts them).
 const maxRecipientChars = 512
+
+// maxDedupeKeyChars is the longest dedupe_key, in characters.
+const maxDedupeKeyChars = 255
+
+// maxBatchItems is the largest number of notifications in one batch request.
+const maxBatchItems = 1000
 
 // maxEchoedFieldName bounds the length of an unknown field's name when it is
 // echoed in errors[].
@@ -44,13 +66,17 @@ const (
 	fieldRecipient = "recipient"
 	fieldContent   = "content"
 	fieldPriority  = "priority"
+	fieldDedupeKey = "dedupe_key"
 )
+
+// fieldNotifications is the one field of the batch request.
+const fieldNotifications = "notifications"
 
 // createFields lists the fields the create request defines in this phase.
 // Any other field is rejected with unknown_field: a client that sends a
 // field of a later phase (scheduled_at, say) must not get a different
 // behaviour than it asked for.
-var createFields = []string{fieldChannel, fieldRecipient, fieldContent, fieldPriority}
+var createFields = []string{fieldChannel, fieldRecipient, fieldContent, fieldPriority, fieldDedupeKey}
 
 // allowedChannels and allowedPriorities are the enum values of the request.
 var (
@@ -65,6 +91,23 @@ var (
 // problem when the body is not a JSON object, and a 422 problem that lists
 // every invalid field otherwise. No message contains a submitted value.
 func validateCreate(body []byte) *problem {
+	if p := checkBodyIsJSON(body); p != nil {
+		return p
+	}
+	fields, order, dups, ok := objectMembers(body)
+	if !ok {
+		return notAnObject()
+	}
+	errs := validateNotificationMembers(fields, order, dups)
+	if len(errs) == 0 {
+		return nil
+	}
+	return newProblem(kindValidation, fmt.Sprintf("%d field(s) are invalid.", len(errs)), errs...)
+}
+
+// checkBodyIsJSON returns the 400 problem for an empty body or a body that is
+// not valid UTF-8 JSON, and nil otherwise.
+func checkBodyIsJSON(body []byte) *problem {
 	if len(bytes.TrimSpace(body)) == 0 {
 		return newProblem(kindMalformed, "The request body is empty.",
 			fieldError("", codeEmptyBody, "the request body must be a JSON object"))
@@ -73,12 +116,19 @@ func validateCreate(body []byte) *problem {
 		return newProblem(kindMalformed, "The request body is not valid JSON.",
 			fieldError("", codeMalformedJSON, "the request body must be valid UTF-8 JSON"))
 	}
-	fields, order, dups, ok := objectMembers(body)
-	if !ok {
-		return newProblem(kindMalformed, "The request body is not a JSON object.",
-			fieldError("", codeNotAnObject, "the request body must be a JSON object"))
-	}
+	return nil
+}
 
+func notAnObject() *problem {
+	return newProblem(kindMalformed, "The request body is not a JSON object.",
+		fieldError("", codeNotAnObject, "the request body must be a JSON object"))
+}
+
+// validateNotificationMembers checks one notification object, given as its
+// members (the result of objectMembers), and returns every invalid field:
+// the fields of the request in the order channel, recipient, content,
+// priority, dedupe_key, then unknown fields in the order they appear.
+func validateNotificationMembers(fields map[string]json.RawMessage, order []string, dups map[string]bool) []apigen.FieldError {
 	var errs []apigen.FieldError
 	add := func(field, code, msg string) { errs = append(errs, fieldError(field, code, msg)) }
 
@@ -94,9 +144,11 @@ func validateCreate(body []byte) *problem {
 		case fieldPriority:
 			checkEnum(add, name, raw, present, false, allowedPriorities)
 		case fieldRecipient:
-			checkText(add, name, raw, present, maxRecipientChars)
+			checkText(add, name, raw, present, true, maxRecipientChars)
 		case fieldContent:
-			checkText(add, name, raw, present, 0)
+			checkText(add, name, raw, present, true, 0)
+		case fieldDedupeKey:
+			checkText(add, name, raw, present, false, maxDedupeKeyChars)
 		}
 	}
 	reported := map[string]bool{}
@@ -108,10 +160,7 @@ func validateCreate(body []byte) *problem {
 		echoed := truncate(name, maxEchoedFieldName)
 		add(echoed, codeUnknownField, "this field is not defined by the API")
 	}
-	if len(errs) == 0 {
-		return nil
-	}
-	return newProblem(kindValidation, fmt.Sprintf("%d field(s) are invalid.", len(errs)), errs...)
+	return errs
 }
 
 func isCreateField(name string) bool { return slices.Contains(createFields, name) }
@@ -186,11 +235,14 @@ func checkEnum(add addFunc, name string, raw json.RawMessage, present, required 
 	add(name, codeInvalidValue, name+" must be one of: "+strings.Join(allowed, ", "))
 }
 
-// checkText checks a required, non-empty string without U+0000 (Postgres
-// text cannot store it). maxChars of 0 means no length limit.
-func checkText(add addFunc, name string, raw json.RawMessage, present bool, maxChars int) {
+// checkText checks a non-empty string without U+0000 (Postgres text cannot
+// store it); an absent optional field is valid. maxChars of 0 means no length
+// limit.
+func checkText(add addFunc, name string, raw json.RawMessage, present, required bool, maxChars int) {
 	if !present {
-		add(name, codeRequired, name+" is required")
+		if required {
+			add(name, codeRequired, name+" is required")
+		}
 		return
 	}
 	s, ok := stringValue(raw)
@@ -213,4 +265,126 @@ func truncate(s string, maxRunes int) string {
 		return s
 	}
 	return string([]rune(s)[:maxRunes])
+}
+
+// batchItem is one valid item of a batch: its position in the request's
+// array and the parsed request.
+type batchItem struct {
+	index   int
+	request apigen.CreateNotificationRequest
+}
+
+// batchInput is the result of validating a batch body whose top level is
+// valid. total is the number of items in the request; valid and rejected
+// partition them, and rejected is in ascending order of index.
+type batchInput struct {
+	total    int
+	valid    []batchItem
+	rejected []apigen.RejectedItem
+}
+
+// validateBatch checks a batch request body. It returns a 400 problem when
+// the body cannot be read, a 422 problem when the top level is invalid (no
+// item is checked then), and otherwise the items sorted into valid and
+// rejected ones: a batch whose items are all rejected is still returned with
+// a nil problem, and the caller decides what to answer. Among the valid
+// items, the first one with a given dedupe_key stays valid and every later
+// one is rejected; an invalid item never claims its key. The work is linear
+// in the size of the body. No message contains a submitted value.
+func validateBatch(body []byte) (batchInput, *problem) {
+	if p := checkBodyIsJSON(body); p != nil {
+		return batchInput{}, p
+	}
+	fields, order, dups, ok := objectMembers(body)
+	if !ok {
+		return batchInput{}, notAnObject()
+	}
+
+	var errs []apigen.FieldError
+	add := func(field, code, msg string) { errs = append(errs, fieldError(field, code, msg)) }
+	var items []json.RawMessage
+	switch raw, present := fields[fieldNotifications]; {
+	case dups[fieldNotifications]:
+		add(fieldNotifications, codeDuplicateField, fieldNotifications+" must appear only once")
+	case !present:
+		add(fieldNotifications, codeRequired, fieldNotifications+" is required")
+	default:
+		var isArray bool
+		if items, isArray = arrayElements(raw, maxBatchItems+1); !isArray {
+			add(fieldNotifications, codeInvalidType, fieldNotifications+" must be an array")
+		} else if len(items) == 0 {
+			add(fieldNotifications, codeEmpty, fieldNotifications+" must not be empty")
+		} else if len(items) > maxBatchItems {
+			add(fieldNotifications, codeTooManyItems, fmt.Sprintf("%s must have at most %d items", fieldNotifications, maxBatchItems))
+		}
+	}
+	reported := map[string]bool{}
+	for _, name := range order {
+		if name == fieldNotifications || reported[name] {
+			continue
+		}
+		reported[name] = true
+		add(truncate(name, maxEchoedFieldName), codeUnknownField, "this field is not defined by the API")
+	}
+	if len(errs) > 0 {
+		return batchInput{}, newProblem(kindValidation, fmt.Sprintf("%d field(s) are invalid.", len(errs)), errs...)
+	}
+
+	in := batchInput{total: len(items)}
+	claimed := map[string]bool{}
+	for i, raw := range items {
+		itemErrs := validateBatchItem(raw)
+		var req apigen.CreateNotificationRequest
+		if len(itemErrs) == 0 {
+			// The item passed validation, so it decodes.
+			if err := json.Unmarshal(raw, &req); err != nil {
+				itemErrs = []apigen.FieldError{fieldError("", codeInvalidType, "each item must be a JSON object")}
+			} else if req.DedupeKey != nil {
+				if claimed[*req.DedupeKey] {
+					itemErrs = []apigen.FieldError{fieldError(fieldDedupeKey, codeDuplicateInBatch,
+						"another item of this batch has the same dedupe_key")}
+				} else {
+					claimed[*req.DedupeKey] = true
+				}
+			}
+		}
+		if len(itemErrs) > 0 {
+			if len(itemErrs) > maxReportedErrors {
+				itemErrs = itemErrs[:maxReportedErrors]
+			}
+			in.rejected = append(in.rejected, apigen.RejectedItem{Index: i, Errors: itemErrs})
+			continue
+		}
+		in.valid = append(in.valid, batchItem{index: i, request: req})
+	}
+	return in, nil
+}
+
+// validateBatchItem checks one element of the notifications array.
+func validateBatchItem(raw json.RawMessage) []apigen.FieldError {
+	fields, order, dups, ok := objectMembers(raw)
+	if !ok {
+		return []apigen.FieldError{fieldError("", codeInvalidType, "each item must be a JSON object")}
+	}
+	return validateNotificationMembers(fields, order, dups)
+}
+
+// arrayElements splits a JSON array into its raw elements, stopping after
+// limit elements. ok is false when the value is not an array (null included).
+func arrayElements(raw json.RawMessage, limit int) (elems []json.RawMessage, ok bool) {
+	if len(raw) == 0 || raw[0] != '[' {
+		return nil, false
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	if _, err := dec.Token(); err != nil {
+		return nil, false
+	}
+	for dec.More() && len(elems) < limit {
+		var e json.RawMessage
+		if err := dec.Decode(&e); err != nil {
+			return nil, false
+		}
+		elems = append(elems, e)
+	}
+	return elems, true
 }

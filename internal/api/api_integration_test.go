@@ -27,6 +27,7 @@ const (
 	itDBTimeout = 5_000 * time.Millisecond
 	itLease     = 60_000 * time.Millisecond
 	itMaxBody   = 4_096
+	itKeyTTL    = 86_400_000 * time.Millisecond
 	traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
 	email       = "user@example.com"
 )
@@ -45,17 +46,23 @@ func newTestAPI(t *testing.T) *testAPI {
 	return newTestAPIOn(t, pool, &syncBuffer{})
 }
 
-func newTestAPIOn(t *testing.T, pool *pgxpool.Pool, logs *syncBuffer) *testAPI {
+// newTestAPIOn builds the API on pool; mods change the options.
+func newTestAPIOn(t *testing.T, pool *pgxpool.Pool, logs *syncBuffer, mods ...func(*Options)) *testAPI {
 	t.Helper()
 	st := store.New(pool, store.ProfilesFrom(testRetry()))
-	h := NewHandler(Options{
-		Repository:   st,
-		DB:           pool,
-		Logger:       slog.New(slog.NewJSONHandler(logs, nil)),
-		Retry:        testRetry(),
-		MaxBodyBytes: itMaxBody,
-		DBTimeout:    itDBTimeout,
-	})
+	o := Options{
+		Repository:        st,
+		DB:                pool,
+		Logger:            slog.New(slog.NewJSONHandler(logs, nil)),
+		Retry:             testRetry(),
+		MaxBodyBytes:      itMaxBody,
+		DBTimeout:         itDBTimeout,
+		IdempotencyKeyTTL: itKeyTTL,
+	}
+	for _, m := range mods {
+		m(&o)
+	}
+	h := NewHandler(o)
 	return &testAPI{apiClient: newAPIClient(t, h), pool: pool, store: st, logs: logs}
 }
 
@@ -295,7 +302,10 @@ func TestCreate_Validation(t *testing.T) {
 		{"recipient too long", `{"channel":"push","recipient":"` + strings.Repeat("t", 513) + `","content":"x"}`, 422, []string{"recipient:too_long"}},
 		{"NUL in content", `{"channel":"sms","recipient":"+905551234567","content":"a\u0000"}`, 422, []string{"content:invalid_character"}},
 		{"unknown field", `{"channel":"sms","recipient":"+905551234567","content":"x","scheduled_at":"2030-01-01T00:00:00Z"}`, 422, []string{"scheduled_at:unknown_field"}},
-		{"dedupe_key is not known yet", `{"channel":"sms","recipient":"+905551234567","content":"x","dedupe_key":"k"}`, 422, []string{"dedupe_key:unknown_field"}},
+		{"dedupe_key wrong type", `{"channel":"sms","recipient":"+905551234567","content":"x","dedupe_key":5}`, 422, []string{"dedupe_key:invalid_type"}},
+		{"dedupe_key null", `{"channel":"sms","recipient":"+905551234567","content":"x","dedupe_key":null}`, 422, []string{"dedupe_key:invalid_type"}},
+		{"dedupe_key empty", `{"channel":"sms","recipient":"+905551234567","content":"x","dedupe_key":""}`, 422, []string{"dedupe_key:empty"}},
+		{"dedupe_key too long", `{"channel":"sms","recipient":"+905551234567","content":"x","dedupe_key":"` + strings.Repeat("k", 256) + `"}`, 422, []string{"dedupe_key:too_long"}},
 		{
 			"wrong types", `{"channel":1,"recipient":[],"content":false,"priority":2}`, 422,
 			[]string{"channel:invalid_type", "recipient:invalid_type", "content:invalid_type", "priority:invalid_type"},
@@ -500,7 +510,37 @@ func TestNoPersonalDataInLogsOrErrors(t *testing.T) {
 			errorBodies = append(errorBodies, string(res.body))
 		}
 	}
-	for _, secret := range []string{"905551234567", email, content} {
+	// A dedupe_key and an Idempotency-Key appear in no log line and in no
+	// answer: not in the 202s, the 409, the 422s or the 400s.
+	const (
+		dedupe = "canary-dedupe-3c9e"
+		key    = "canary-key-b81d"
+	)
+	withDedupe := `{"channel":"sms","recipient":"` + phone + `","content":"` + content + `","dedupe_key":"` + dedupe + `"}`
+	keyed := func(path, body string, keys ...string) response {
+		return a.do(http.MethodPost, path, body, map[string][]string{"Idempotency-Key": keys})
+	}
+	var keyBodies []string
+	for _, res := range []struct {
+		res    response
+		status int
+	}{
+		{keyed("/v1/notifications", withDedupe, key), http.StatusAccepted},
+		{keyed("/v1/notifications", withDedupe, key), http.StatusAccepted}, // replay
+		{keyed("/v1/notifications", withDedupe, key+"-other"), http.StatusConflict},
+		{keyed("/v1/notifications", body("sms", phone), key), http.StatusUnprocessableEntity}, // reused
+		{keyed("/v1/notifications", body("sms", phone), key+" x"), http.StatusBadRequest},
+		{keyed("/v1/notifications/batch", `{"notifications":[`+withDedupe+`,`+body("sms", phone)+`]}`, key+"-batch"), http.StatusAccepted},
+		{keyed("/v1/notifications/batch", `{"notifications":[`+withDedupe+`,`+withDedupe+`]}`), http.StatusUnprocessableEntity},
+		{keyed("/v1/notifications/batch", `{"notifications":[`+withDedupe+`]}`, key+"-1", key+"-2"), http.StatusBadRequest},
+	} {
+		if res.res.status != res.status {
+			t.Fatalf("status %d, want %d: %s", res.res.status, res.status, res.res.body)
+		}
+		keyBodies = append(keyBodies, string(res.res.body))
+	}
+
+	for _, secret := range []string{"905551234567", email, content, dedupe, key} {
 		if strings.Contains(logs.String(), secret) {
 			t.Errorf("log contains %q:\n%s", secret, logs)
 		}
@@ -510,7 +550,14 @@ func TestNoPersonalDataInLogsOrErrors(t *testing.T) {
 			}
 		}
 	}
-	if strings.Count(logs.String(), "\n") != 10 {
-		t.Errorf("want one log line per request (10), got:\n%s", logs)
+	for _, secret := range []string{content, dedupe, key} {
+		for _, b := range keyBodies {
+			if strings.Contains(b, secret) {
+				t.Errorf("answer contains %q: %s", secret, b)
+			}
+		}
+	}
+	if strings.Count(logs.String(), "\n") != 18 {
+		t.Errorf("want one log line per request (18), got:\n%s", logs)
 	}
 }

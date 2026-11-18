@@ -168,6 +168,44 @@ func (e Status) Valid() bool {
 	}
 }
 
+// Batch defines model for Batch.
+type Batch struct {
+	// Accepted The number of items stored.
+	Accepted  int32              `json:"accepted"`
+	CreatedAt time.Time          `json:"created_at"`
+	Id        openapi_types.UUID `json:"id"`
+
+	// Rejected The number of items rejected.
+	Rejected     int32             `json:"rejected"`
+	StatusCounts BatchStatusCounts `json:"status_counts"`
+
+	// Total The number of items in the request.
+	Total int32 `json:"total"`
+}
+
+// BatchAccepted defines model for BatchAccepted.
+type BatchAccepted struct {
+	Accepted []struct {
+		Id openapi_types.UUID `json:"id"`
+
+		// Index The item's position in the request's array.
+		Index int `json:"index"`
+	} `json:"accepted"`
+	BatchId  openapi_types.UUID `json:"batch_id"`
+	Rejected []RejectedItem     `json:"rejected"`
+}
+
+// BatchStatusCounts defines model for BatchStatusCounts.
+type BatchStatusCounts struct {
+	Cancelled  int32 `json:"cancelled"`
+	Failed     int32 `json:"failed"`
+	Pending    int32 `json:"pending"`
+	Processing int32 `json:"processing"`
+	Queued     int32 `json:"queued"`
+	Retrying   int32 `json:"retrying"`
+	Sent       int32 `json:"sent"`
+}
+
 // Channel defines model for Channel.
 type Channel string
 
@@ -181,13 +219,22 @@ type Check struct {
 // CheckStatus defines model for Check.Status.
 type CheckStatus string
 
+// CreateBatchRequest defines model for CreateBatchRequest.
+type CreateBatchRequest struct {
+	Notifications []CreateNotificationRequest `json:"notifications"`
+}
+
 // CreateNotificationRequest defines model for CreateNotificationRequest.
 type CreateNotificationRequest struct {
 	Channel Channel `json:"channel"`
 
 	// Content The message. Must not contain U+0000.
-	Content  string    `json:"content"`
-	Priority *Priority `json:"priority,omitempty"`
+	Content string `json:"content"`
+
+	// DedupeKey Optional. A second notification with the same key is refused (`409`)
+	// while the first holds it. Must not contain U+0000.
+	DedupeKey *string   `json:"dedupe_key,omitempty"`
+	Priority  *Priority `json:"priority,omitempty"`
 
 	// Recipient Phone number, e-mail address or device token. Must not contain U+0000.
 	Recipient string `json:"recipient"`
@@ -200,6 +247,11 @@ type FailureReason string
 type FieldError struct {
 	// Code Stable and machine-readable; listed in docs/errors.md.
 	Code string `json:"code"`
+
+	// ExistingId Only with the code `duplicate`: the id of the notification that
+	// already holds the `dedupe_key`. Absent when that notification
+	// released the key in the same instant.
+	ExistingId *openapi_types.UUID `json:"existing_id,omitempty"`
 
 	// Field The request field or path parameter; empty when the request body as a whole is concerned.
 	Field string `json:"field"`
@@ -258,8 +310,12 @@ type Problem struct {
 	// Errors The invalid fields (`422`) or the malformed part of the request
 	// (`400`). At most 50 entries are listed.
 	Errors *[]FieldError `json:"errors,omitempty"`
-	Status int32         `json:"status"`
-	Title  string        `json:"title"`
+
+	// Rejected Only on the `422` of the batch endpoint when every item was
+	// rejected: one entry per item, never truncated.
+	Rejected *[]RejectedItem `json:"rejected,omitempty"`
+	Status   int32           `json:"status"`
+	Title    string          `json:"title"`
 
 	// Type A stable URL that documents the problem type.
 	Type string `json:"type"`
@@ -274,9 +330,20 @@ type Readiness struct {
 // ReadinessStatus defines model for Readiness.Status.
 type ReadinessStatus string
 
+// RejectedItem defines model for RejectedItem.
+type RejectedItem struct {
+	Errors []FieldError `json:"errors"`
+
+	// Index The item's position in the request's array.
+	Index int `json:"index"`
+}
+
 // Status `sent` is final. `cancelled` and `failed` can still become `sent` when
 // a late provider result proves that the message was delivered.
 type Status string
+
+// IdempotencyKey defines model for IdempotencyKey.
+type IdempotencyKey = string
 
 // TraceParent defines model for TraceParent.
 type TraceParent = string
@@ -286,6 +353,9 @@ type XRequestID = string
 
 // BadRequest RFC 9457 Problem Details.
 type BadRequest = Problem
+
+// Duplicate RFC 9457 Problem Details.
+type Duplicate = Problem
 
 // InternalError RFC 9457 Problem Details.
 type InternalError = Problem
@@ -305,6 +375,18 @@ type UnsupportedMediaType = Problem
 // ValidationFailed RFC 9457 Problem Details.
 type ValidationFailed = Problem
 
+// GetBatchParams defines parameters for GetBatch.
+type GetBatchParams struct {
+	// XRequestID Correlation id. Accepted when it is at most 128 characters of
+	// `[A-Za-z0-9._-]`; otherwise it is ignored and a new id is generated.
+	// An invalid value is not an error.
+	XRequestID *XRequestID `json:"X-Request-ID,omitempty"`
+
+	// Traceparent W3C Trace Context. Stored with the notification when it is well
+	// formed; otherwise ignored. An invalid value is not an error.
+	Traceparent *TraceParent `json:"traceparent,omitempty"`
+}
+
 // CreateNotificationParams defines parameters for CreateNotification.
 type CreateNotificationParams struct {
 	// XRequestID Correlation id. Accepted when it is at most 128 characters of
@@ -315,6 +397,28 @@ type CreateNotificationParams struct {
 	// Traceparent W3C Trace Context. Stored with the notification when it is well
 	// formed; otherwise ignored. An invalid value is not an error.
 	Traceparent *TraceParent `json:"traceparent,omitempty"`
+
+	// IdempotencyKey Makes the request safe to retry: 1 to 255 characters, each in the
+	// range U+0021 to U+007E. A retry with the same key and the same request
+	// returns the stored answer. The header must be sent at most once.
+	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
+}
+
+// CreateNotificationBatchParams defines parameters for CreateNotificationBatch.
+type CreateNotificationBatchParams struct {
+	// XRequestID Correlation id. Accepted when it is at most 128 characters of
+	// `[A-Za-z0-9._-]`; otherwise it is ignored and a new id is generated.
+	// An invalid value is not an error.
+	XRequestID *XRequestID `json:"X-Request-ID,omitempty"`
+
+	// Traceparent W3C Trace Context. Stored with the notification when it is well
+	// formed; otherwise ignored. An invalid value is not an error.
+	Traceparent *TraceParent `json:"traceparent,omitempty"`
+
+	// IdempotencyKey Makes the request safe to retry: 1 to 255 characters, each in the
+	// range U+0021 to U+007E. A retry with the same key and the same request
+	// returns the stored answer. The header must be sent at most once.
+	IdempotencyKey *IdempotencyKey `json:"Idempotency-Key,omitempty"`
 }
 
 // GetNotificationParams defines parameters for GetNotification.
@@ -332,6 +436,9 @@ type GetNotificationParams struct {
 // CreateNotificationJSONRequestBody defines body for CreateNotification for application/json ContentType.
 type CreateNotificationJSONRequestBody = CreateNotificationRequest
 
+// CreateNotificationBatchJSONRequestBody defines body for CreateNotificationBatch for application/json ContentType.
+type CreateNotificationBatchJSONRequestBody = CreateBatchRequest
+
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
 	// GetHealthz Liveness
@@ -343,9 +450,15 @@ type ServerInterface interface {
 	// GetReadyz Readiness
 	// (GET /readyz)
 	GetReadyz(w http.ResponseWriter, r *http.Request)
+	// GetBatch Read a batch
+	// (GET /v1/batches/{id})
+	GetBatch(w http.ResponseWriter, r *http.Request, id openapi_types.UUID, params GetBatchParams)
 	// CreateNotification Create a notification
 	// (POST /v1/notifications)
 	CreateNotification(w http.ResponseWriter, r *http.Request, params CreateNotificationParams)
+	// CreateNotificationBatch Create a batch of notifications
+	// (POST /v1/notifications/batch)
+	CreateNotificationBatch(w http.ResponseWriter, r *http.Request, params CreateNotificationBatchParams)
 	// GetNotification Read a notification
 	// (GET /v1/notifications/{id})
 	GetNotification(w http.ResponseWriter, r *http.Request, id openapi_types.UUID, params GetNotificationParams)
@@ -393,6 +506,75 @@ func (siw *ServerInterfaceWrapper) GetReadyz(w http.ResponseWriter, r *http.Requ
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetReadyz(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetBatch operation middleware
+func (siw *ServerInterfaceWrapper) GetBatch(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id openapi_types.UUID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetBatchParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Request-ID" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Request-ID")]; found {
+		var XRequestID XRequestID
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Request-ID", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Request-ID", valueList[0], &XRequestID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Request-ID", Err: err})
+			return
+		}
+
+		params.XRequestID = &XRequestID
+
+	}
+
+	// ------------- Optional header parameter "traceparent" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("traceparent")]; found {
+		var Traceparent TraceParent
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "traceparent", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "traceparent", valueList[0], &Traceparent, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "traceparent", Err: err})
+			return
+		}
+
+		params.Traceparent = &Traceparent
+
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetBatch(w, r, id, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -451,8 +633,106 @@ func (siw *ServerInterfaceWrapper) CreateNotification(w http.ResponseWriter, r *
 
 	}
 
+	// ------------- Optional header parameter "Idempotency-Key" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("Idempotency-Key")]; found {
+		var IdempotencyKey IdempotencyKey
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "Idempotency-Key", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "Idempotency-Key", valueList[0], &IdempotencyKey, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "Idempotency-Key", Err: err})
+			return
+		}
+
+		params.IdempotencyKey = &IdempotencyKey
+
+	}
+
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.CreateNotification(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateNotificationBatch operation middleware
+func (siw *ServerInterfaceWrapper) CreateNotificationBatch(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params CreateNotificationBatchParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Request-ID" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Request-ID")]; found {
+		var XRequestID XRequestID
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Request-ID", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Request-ID", valueList[0], &XRequestID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Request-ID", Err: err})
+			return
+		}
+
+		params.XRequestID = &XRequestID
+
+	}
+
+	// ------------- Optional header parameter "traceparent" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("traceparent")]; found {
+		var Traceparent TraceParent
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "traceparent", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "traceparent", valueList[0], &Traceparent, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "traceparent", Err: err})
+			return
+		}
+
+		params.Traceparent = &Traceparent
+
+	}
+
+	// ------------- Optional header parameter "Idempotency-Key" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("Idempotency-Key")]; found {
+		var IdempotencyKey IdempotencyKey
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "Idempotency-Key", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "Idempotency-Key", valueList[0], &IdempotencyKey, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "Idempotency-Key", Err: err})
+			return
+		}
+
+		params.IdempotencyKey = &IdempotencyKey
+
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateNotificationBatch(w, r, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -653,6 +933,8 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/notifications", wrapper.CreateNotification)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/notifications/{id}", wrapper.GetNotification)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/notifications/batch", wrapper.CreateNotificationBatch)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/batches/{id}", wrapper.GetBatch)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/healthz", wrapper.GetHealthz)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/readyz", wrapper.GetReadyz)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/openapi.yaml", wrapper.GetOpenAPISpec)
@@ -661,6 +943,8 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 }
 
 type BadRequestApplicationProblemPlusJSONResponse Problem
+
+type DuplicateApplicationProblemPlusJSONResponse Problem
 
 type InternalErrorApplicationProblemPlusJSONResponse Problem
 
@@ -829,6 +1113,101 @@ func (response GetReadyz503ApplicationProblemPlusJSONResponse) VisitGetReadyzRes
 	return err
 }
 
+type GetBatchRequestObject struct {
+	Id     openapi_types.UUID `json:"id"`
+	Params GetBatchParams
+}
+
+type GetBatchResponseObject interface {
+	VisitGetBatchResponse(w http.ResponseWriter) error
+}
+
+type GetBatch200ResponseHeaders struct {
+	XRequestID string
+}
+
+type GetBatch200JSONResponse struct {
+	Body    Batch
+	Headers GetBatch200ResponseHeaders
+}
+
+func (response GetBatch200JSONResponse) VisitGetBatchResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-ID", fmt.Sprint(response.Headers.XRequestID))
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetBatch400ApplicationProblemPlusJSONResponse struct {
+	BadRequestApplicationProblemPlusJSONResponse
+}
+
+func (response GetBatch400ApplicationProblemPlusJSONResponse) VisitGetBatchResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetBatch404ApplicationProblemPlusJSONResponse struct {
+	NotFoundApplicationProblemPlusJSONResponse
+}
+
+func (response GetBatch404ApplicationProblemPlusJSONResponse) VisitGetBatchResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetBatch500ApplicationProblemPlusJSONResponse struct {
+	InternalErrorApplicationProblemPlusJSONResponse
+}
+
+func (response GetBatch500ApplicationProblemPlusJSONResponse) VisitGetBatchResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetBatch503ApplicationProblemPlusJSONResponse struct {
+	UnavailableApplicationProblemPlusJSONResponse
+}
+
+func (response GetBatch503ApplicationProblemPlusJSONResponse) VisitGetBatchResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(503)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type CreateNotificationRequestObject struct {
 	Params CreateNotificationParams
 	Body   *CreateNotificationJSONRequestBody
@@ -839,8 +1218,9 @@ type CreateNotificationResponseObject interface {
 }
 
 type CreateNotification202ResponseHeaders struct {
-	Location   string
-	XRequestID string
+	IdempotentReplayed *bool
+	Location           string
+	XRequestID         string
 }
 
 type CreateNotification202JSONResponse struct {
@@ -855,6 +1235,9 @@ func (response CreateNotification202JSONResponse) VisitCreateNotificationRespons
 		return err
 	}
 	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.IdempotentReplayed != nil {
+		w.Header().Set("Idempotent-Replayed", fmt.Sprint(*response.Headers.IdempotentReplayed))
+	}
 	w.Header().Set("Location", fmt.Sprint(response.Headers.Location))
 	w.Header().Set("X-Request-ID", fmt.Sprint(response.Headers.XRequestID))
 	w.WriteHeader(202)
@@ -874,6 +1257,22 @@ func (response CreateNotification400ApplicationProblemPlusJSONResponse) VisitCre
 	}
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateNotification409ApplicationProblemPlusJSONResponse struct {
+	DuplicateApplicationProblemPlusJSONResponse
+}
+
+func (response CreateNotification409ApplicationProblemPlusJSONResponse) VisitCreateNotificationResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(409)
 	_, err := buf.WriteTo(w)
 	return err
 }
@@ -947,6 +1346,139 @@ type CreateNotification503ApplicationProblemPlusJSONResponse struct {
 }
 
 func (response CreateNotification503ApplicationProblemPlusJSONResponse) VisitCreateNotificationResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(503)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateNotificationBatchRequestObject struct {
+	Params CreateNotificationBatchParams
+	Body   *CreateNotificationBatchJSONRequestBody
+}
+
+type CreateNotificationBatchResponseObject interface {
+	VisitCreateNotificationBatchResponse(w http.ResponseWriter) error
+}
+
+type CreateNotificationBatch202ResponseHeaders struct {
+	IdempotentReplayed *bool
+	Location           string
+	XRequestID         string
+}
+
+type CreateNotificationBatch202JSONResponse struct {
+	Body    BatchAccepted
+	Headers CreateNotificationBatch202ResponseHeaders
+}
+
+func (response CreateNotificationBatch202JSONResponse) VisitCreateNotificationBatchResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if response.Headers.IdempotentReplayed != nil {
+		w.Header().Set("Idempotent-Replayed", fmt.Sprint(*response.Headers.IdempotentReplayed))
+	}
+	w.Header().Set("Location", fmt.Sprint(response.Headers.Location))
+	w.Header().Set("X-Request-ID", fmt.Sprint(response.Headers.XRequestID))
+	w.WriteHeader(202)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateNotificationBatch400ApplicationProblemPlusJSONResponse struct {
+	BadRequestApplicationProblemPlusJSONResponse
+}
+
+func (response CreateNotificationBatch400ApplicationProblemPlusJSONResponse) VisitCreateNotificationBatchResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateNotificationBatch413ApplicationProblemPlusJSONResponse struct {
+	PayloadTooLargeApplicationProblemPlusJSONResponse
+}
+
+func (response CreateNotificationBatch413ApplicationProblemPlusJSONResponse) VisitCreateNotificationBatchResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(413)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateNotificationBatch415ApplicationProblemPlusJSONResponse struct {
+	UnsupportedMediaTypeApplicationProblemPlusJSONResponse
+}
+
+func (response CreateNotificationBatch415ApplicationProblemPlusJSONResponse) VisitCreateNotificationBatchResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(415)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateNotificationBatch422ApplicationProblemPlusJSONResponse struct {
+	ValidationFailedApplicationProblemPlusJSONResponse
+}
+
+func (response CreateNotificationBatch422ApplicationProblemPlusJSONResponse) VisitCreateNotificationBatchResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(422)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateNotificationBatch500ApplicationProblemPlusJSONResponse struct {
+	InternalErrorApplicationProblemPlusJSONResponse
+}
+
+func (response CreateNotificationBatch500ApplicationProblemPlusJSONResponse) VisitCreateNotificationBatchResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateNotificationBatch503ApplicationProblemPlusJSONResponse struct {
+	UnavailableApplicationProblemPlusJSONResponse
+}
+
+func (response CreateNotificationBatch503ApplicationProblemPlusJSONResponse) VisitCreateNotificationBatchResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response); err != nil {
@@ -1064,9 +1596,15 @@ type StrictServerInterface interface {
 	// GetReadyz Readiness
 	// (GET /readyz)
 	GetReadyz(ctx context.Context, request GetReadyzRequestObject) (GetReadyzResponseObject, error)
+	// GetBatch Read a batch
+	// (GET /v1/batches/{id})
+	GetBatch(ctx context.Context, request GetBatchRequestObject) (GetBatchResponseObject, error)
 	// CreateNotification Create a notification
 	// (POST /v1/notifications)
 	CreateNotification(ctx context.Context, request CreateNotificationRequestObject) (CreateNotificationResponseObject, error)
+	// CreateNotificationBatch Create a batch of notifications
+	// (POST /v1/notifications/batch)
+	CreateNotificationBatch(ctx context.Context, request CreateNotificationBatchRequestObject) (CreateNotificationBatchResponseObject, error)
 	// GetNotification Read a notification
 	// (GET /v1/notifications/{id})
 	GetNotification(ctx context.Context, request GetNotificationRequestObject) (GetNotificationResponseObject, error)
@@ -1183,6 +1721,33 @@ func (sh *strictHandler) GetReadyz(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// GetBatch operation middleware
+func (sh *strictHandler) GetBatch(w http.ResponseWriter, r *http.Request, id openapi_types.UUID, params GetBatchParams) {
+	var request GetBatchRequestObject
+
+	request.Id = id
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetBatch(ctx, request.(GetBatchRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetBatch")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetBatchResponseObject); ok {
+		if err := validResponse.VisitGetBatchResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // CreateNotification operation middleware
 func (sh *strictHandler) CreateNotification(w http.ResponseWriter, r *http.Request, params CreateNotificationParams) {
 	var request CreateNotificationRequestObject
@@ -1209,6 +1774,39 @@ func (sh *strictHandler) CreateNotification(w http.ResponseWriter, r *http.Reque
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(CreateNotificationResponseObject); ok {
 		if err := validResponse.VisitCreateNotificationResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// CreateNotificationBatch operation middleware
+func (sh *strictHandler) CreateNotificationBatch(w http.ResponseWriter, r *http.Request, params CreateNotificationBatchParams) {
+	var request CreateNotificationBatchRequestObject
+
+	request.Params = params
+
+	var body CreateNotificationBatchJSONRequestBody
+	if err := runtime.BindJSONBody(r, &body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.CreateNotificationBatch(ctx, request.(CreateNotificationBatchRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "CreateNotificationBatch")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(CreateNotificationBatchResponseObject); ok {
+		if err := validResponse.VisitCreateNotificationBatchResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
