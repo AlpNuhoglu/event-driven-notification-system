@@ -10,7 +10,7 @@ The first file every session reads and the last one it updates. The phases and t
 
 **Minimum Compose version:** to be determined in P0 from the features the Compose file uses (D45, D70).
 
-**Decision ledger:** v4 (`D1`–`D74`). Section K records the points settled during the preparation session. The ADRs are the primary design documents; the ledger is the decision record.
+**Decision ledger:** v4 (`D1`–`D75`). Section K records the points settled during the preparation session. The ADRs are the primary design documents; the ledger is the decision record.
 
 ## Phase status
 
@@ -55,7 +55,6 @@ Questions that the ledger and the ADRs do not answer, and problems that are not 
 
 | # | Raised on | Issue | Blocks |
 |---|---|---|---|
-| 1 | 2026-11-18 | Three points are in the documents but not yet in the ledger: the `priority` label on `expired_total` and the new `notifications_finished_total{channel,priority,status}` (ADR-0009 §1, decided by the author for D74's expiry rule); and D66 still speaks of values marked "(proposed)" in `.env.example`, which now marks them "(initial value; tuned in P6)" and holds no alert thresholds. No document disagrees on behaviour. The author decides whether the ledger is amended. | Nothing |
 
 ## Session log
 
@@ -74,11 +73,11 @@ Newest entry first. One entry per session, in this form:
 
 ### 2026-11-18 — Preparation: ledger v4 and design review log draft
 
-- **Done:** the decision ledger replaced by v4 (new header; section K with D62–D74) and the first draft of `docs/ai/design-review-log.md` added. The log's turn and finding references in section 2 were checked against the raw review material, and section 4 gained the three reviewer proposals that the material records as not adopted. `CLAUDE.md`, the plan, ADR-0005, ADR-0009 and `.env.example` aligned with v4.
+- **Done:** the decision ledger replaced by v4 (new header; section K with D62–D74, and D75 added afterwards) and the first draft of `docs/ai/design-review-log.md` added. The log's turn and finding references in section 2 were checked against the raw review material, and section 4 gained the three reviewer proposals that the material records as not adopted. On the author's instruction, section 2 was then corrected to 15 rows: the latency row moved to section 4 as a decision that was attacked and held, the pacer row was rewritten to its finding, and the container count moved to section 3 as the reviewer's own miscount. `CLAUDE.md`, the plan, ADR-0005, ADR-0009 and `.env.example` aligned with v4.
 - **Pull requests opened:** none new; the changes are in the documents pull request.
 - **Exit criteria:** not applicable.
 - **Decisions taken (by the author):** the circuit alert fires when a circuit is **not closed** (open or half-open) for more than 5 minutes; ADR-0009 §3 said 1 minute and D74 said "open", and both were corrected. For D74's expiry rule, `expired_total` gains a `priority` label and ADR-0009 adds `notifications_finished_total{channel,priority,status}`.
-- **Open issues:** 1 (ledger completeness; blocks nothing).
+- **Open issues:** none. One was raised in this session (three points in the documents but not in the ledger) and resolved by the author the same day: D75 records the `priority` label on `expired_total` and `notifications_finished_total`, and D66 now names the marker that `.env.example` uses and points to D74 for the alert thresholds.
 - **Next step:** P0, task 1.
 
 ### 2026-11-18 — Preparation: starting documents

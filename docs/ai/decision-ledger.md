@@ -155,7 +155,7 @@ Applied in the ADRs, the plan and `.env.example` (commit `f91792d`); recorded he
 | D63 | A `2xx` other than `202` increments its own metric, `provider_unexpected_2xx_total{channel,provider,code}`; malformed bodies keep `provider_malformed_response_total`. | 0007, 0009 |
 | D64 | `requeue-stale` is a relay subcommand: `--older-than=5m` by default, `--all` for every `queued` row; run with `docker-compose run --rm relay requeue-stale`. | 0003, 0005 |
 | D65 | The mock profile is an override file, `docker-compose.mock.yml`, which adds `mockprovider` and points `PROVIDER_URL` at it; `make up-mock`. | 0005, 0010 |
-| D66 | Ports: api `:8080`, admin `:8081` (internal only), gateway `:8082`. Numeric values marked "(proposed)" in `.env.example` (buffers, queue limits, alert thresholds) are first values and are tuned in P6. | 0005, 0009, `.env.example` |
+| D66 | Ports: api `:8080`, admin `:8081` (internal only), gateway `:8082`. Numeric values marked "(initial value; tuned in P6)" in `.env.example` (buffers, queue limits) are first values and are tuned in P6. The alert thresholds are in D74, not in `.env.example`. | 0005, 0009, `.env.example` |
 | D67 | High-water marks are counted per lane (channel × priority) and configured per priority, the same values applying to every channel. | 0003 |
 | D68 | The 1 s back-off floor stays: full jitter can produce near-zero delays, and the floor protects the provider. | 0007 |
 | D69 | Batch cancel reports a `may_have_been_sent` count alongside `cancelled` and `not_cancellable`. | 0006 |
@@ -164,6 +164,7 @@ Applied in the ADRs, the plan and `.env.example` (commit `f91792d`); recorded he
 | D72 | `mockprovider` records the **field names** of each request body, never the values, so CI can prove the body is exactly `to`, `channel`, `content` (R23). | 0010 |
 | D73 | **Fallback principle:** our own additions that the assessment does not ask for are dropped before any feature the assessment names, including its bonus features. The ordered list is in plan §12. | plan |
 | D74 | **First alert thresholds (P5; tuned in P6):** `high`-lane oldest queued age above 2 min, sustained for 2 min; any `high`-priority expiry in a 10 min window, or `normal`-priority expiries above 1 % of finished notifications over 15 min; poison-queue depth above 0 for 5 min; circuit breaker not closed (open or half-open) for more than 5 min. Each rule carries a one-line runbook note in `alerts.yml`. | 0009, plan P5 |
+| D75 | **Metrics for the expiry rule (supports D74):** `expired_total` gains a `priority` label. A new counter, `notifications_finished_total{channel,priority,status}` (`sent`, `failed`, `cancelled`), is incremented on every final transition. Transition 12 can count a row a second time as `sent`; this is accepted and documented in ADR-0009. | 0009 |
 
 ## Statements to correct in the documents
 

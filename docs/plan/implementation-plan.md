@@ -2,7 +2,7 @@
 
 The plan that the implementation sessions execute. Each phase is sized for one fresh Claude Code session and one or a few pull requests.
 
-- **What to build** is specified in the [ADRs](../adr/), the primary design documents, and recorded with its reasons in the [decision ledger](../ai/decision-ledger.md) (v4: `D1`–`D74`, `G1`–`G5`). This plan decides only **in which order**, and **how each step is shown to be done**.
+- **What to build** is specified in the [ADRs](../adr/), the primary design documents, and recorded with its reasons in the [decision ledger](../ai/decision-ledger.md) (v4: `D1`–`D75`, `G1`–`G5`). This plan decides only **in which order**, and **how each step is shown to be done**.
 - **Where things stand** is recorded in [`docs/progress.md`](../progress.md). A session reads that file first.
 - If this plan and the ledger or an ADR disagree, the ledger and the ADRs win; fix the plan in the same pull request and note it under "Known deviations from the plan" in `progress.md`. If an ADR and the ledger disagree with each other, do not pick one: record it under "Open issues" in `progress.md` and ask.
 
@@ -344,7 +344,7 @@ gh pr checks
 
 **Goal.** A client can follow a notification in real time, and an operator can see queue depth, rates, latency, traces and health without reading the database.
 
-**Implements.** D9, D11, D13, D33, D37, D39, D41, D42, D43, D62, D74. [ADR-0005](../adr/0005-service-topology-and-status-events.md) (status events, gateway); [ADR-0006](../adr/0006-api-contract-and-three-layer-idempotency.md) §10; [ADR-0009](../adr/0009-observability.md) in full.
+**Implements.** D9, D11, D13, D33, D37, D39, D41, D42, D43, D62, D74, D75. [ADR-0005](../adr/0005-service-topology-and-status-events.md) (status events, gateway); [ADR-0006](../adr/0006-api-contract-and-three-layer-idempotency.md) §10; [ADR-0009](../adr/0009-observability.md) in full.
 
 **Scope.** The lazy, bounded event publisher in api, relay and worker; the gateway with subscription-then-snapshot, origin patterns, the bounded send queue and the bounded event queue; all metrics of ADR-0009 §1; the metrics summary with its two caches; the "Overview" dashboard and the alert rules in `alerts.yml` with the first thresholds of D74 and a one-line runbook note per rule (tuned in P6); `slog` with the `Recipient` type, key-based and value-based redaction; correlation IDs; hybrid tracing; health endpoints in full, on the public port and in the OpenAPI spec; Prometheus scraping RabbitMQ per object; `make demo`.
 
@@ -429,7 +429,7 @@ grep -rnE 'uses: [^@]+@v?[0-9]' .github/workflows   # no output: no action pinne
 - **README** in full: quick start with `docker-compose up` and the minimum Compose version; the webhook.site URL with its creation date and how to create a new one; API examples; `make demo`; the requirements map **with the evidence column filled**; interpretations of the assessment; limitations, including the largest burst per priority; load results; **"How AI was used"** and **"How AI output was verified"**.
 - **`docs/architecture.md` regenerated** from the implemented system; the "planned" markers and the top note are removed.
 - **`docs/future-work.md`** checked against everything dropped during implementation.
-- **`docs/ai/`:** `design-review-log.md` already exists as a first draft, and P7 completes it from the raw review material in `.inputs/`: section 4 (choices questioned and kept, critiques rejected, with reasons), the three rows of section 2 that the raw material does not confirm as written, and section 6 (experiment results, AI mistakes caught in code review or by `make verify-suite`, decisions changed by evidence). P7 also adds the sanitised review prompt and sample sub-agent briefs. No raw transcripts, personal data or local paths.
+- **`docs/ai/`:** `design-review-log.md` already exists as a first draft, and P7 completes it from the raw review material in `.inputs/`: section 4 (choices questioned and kept, critiques rejected, with reasons), and section 6 (experiment results, AI mistakes caught in code review or by `make verify-suite`, decisions changed by evidence). P7 also adds the sanitised review prompt and sample sub-agent briefs. No raw transcripts, personal data or local paths.
 - **Markdown link check** switched on in CI. It stays in this phase, so that its first run covers the finished documents: the README, the regenerated architecture document and the completed review log. The ADRs' links to `docs/ai/design-review-log.md` already resolve.
 - **Clean-clone rehearsal** on another machine or under a fresh user account, following the README from its first line.
 - **webhook.site URL renewed** right before submission: the Compose default and the README date are updated in one commit.

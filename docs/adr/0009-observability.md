@@ -228,7 +228,7 @@ Each service serves `/metrics`, `/healthz`, `/readyz` and `/debug/pprof/*` on a 
 Changes made after the design review, recorded in the [design review log](../ai/design-review-log.md):
 
 - Health endpoints are also served on the api's public port, because the admin port is not published and the required endpoint was unreachable from the host. (D33)
-- Four dashboards and five untested alerts became one "Overview" dashboard with a panel smoke test and `promtool`-checked rules; metrics for leadership and stale events were replaced by reconciliation and oldest-queued-age metrics, and the alerts received first thresholds. (D41, D74)
+- Four dashboards and five untested alerts became one "Overview" dashboard with a panel smoke test and `promtool`-checked rules; metrics for leadership and stale events were replaced by reconciliation and oldest-queued-age metrics, and the alerts received first thresholds, with the two metrics the expiry rule needs. (D41, D74, D75)
 - Redaction gained a `Recipient` log type and a canary scan over logs, spans and metrics, because key-based redaction misses values outside named attributes. (D42)
 - The trace rule became hybrid: the first attempt of a non-scheduled notification sits under the request's trace, and retries and scheduled deliveries start linked traces. (D13)
 - The summary dropped its `circuits` field and gained a defined `success_rate` and a separate `backlog_due` cache; RabbitMQ is scraped per object; `X-Request-ID` is validated; Jaeger is pinned to 2.x. (D39, D9, D35, D43)
