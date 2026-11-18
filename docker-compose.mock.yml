@@ -1,0 +1,29 @@
+# Mock profile: an override file that adds the local mockprovider and points the
+# worker at it. Use it together with docker-compose.yml:
+#
+#   docker-compose -f docker-compose.yml -f docker-compose.mock.yml up -d --build --wait
+#
+# (make up-mock). Use this profile for anything beyond a few requests, so that
+# nothing is sent to the public webhook.site URL. The host port of mockprovider
+# can be changed with MOCKPROVIDER_PORT; its report is at /admin/report.
+services:
+  mockprovider:
+    build: .
+    image: event-driven-notification-system:local
+    command: ["mockprovider"]
+    ports:
+      - "${MOCKPROVIDER_PORT:-8090}:8090"
+    healthcheck:
+      test: ["CMD", "mockprovider", "healthcheck"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  worker:
+    environment:
+      PROVIDER_URL: http://mockprovider:8090/
+    depends_on:
+      mockprovider:
+        condition: service_healthy

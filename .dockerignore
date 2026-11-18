@@ -13,3 +13,6 @@ Dockerfile
 .dockerignore
 coverage.*
 *.out
+test
+e2e-logs
+experiments
