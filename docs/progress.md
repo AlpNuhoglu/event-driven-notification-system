@@ -4,7 +4,7 @@ The first file every session reads and the last one it updates. The phases and t
 
 ## Current phase
 
-**P2: API completeness** — in progress (pull request 1 of 3, `p2/batch-and-idempotency`). P1 is done: its three pull requests are merged.
+**P2: API completeness** — in review (pull request 1 of 3, `p2/batch-and-idempotency`, [#7](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/7)). P1 is done: its three pull requests are merged.
 
 **Next step:** the author merges the `p2/batch-and-idempotency` pull request. Then `p2/cancel-redrive-listing` from the updated `main`, then `p2/validation`. Open issue 7 belongs to P3.
 
@@ -22,7 +22,7 @@ Status is one of: `not started`, `in progress`, `in review` (pull requests open)
 |---|---|---|---|---|
 | P0 | Repository skeleton and first-hour experiments | done | [#2](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/2) (`p0/skeleton`, merged), [#3](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/3) (`p0/experiments`, merged) | 2026-11-18 |
 | P1 | Core path | done | [#4](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/4) (`p1/schema-and-store`, merged), [#5](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/5) (`p1/relay-worker-provider`, merged), [#6](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/6) (`p1/compose-e2e`, merged) | 2026-11-19 |
-| P2 | API completeness | in progress | | |
+| P2 | API completeness | in review | [#7](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/7) (`p2/batch-and-idempotency`) | |
 | P3 | Delivery robustness | not started | | |
 | P4 | Templates and scheduling | not started | | |
 | P5 | Real-time and observability | not started | | |
@@ -98,7 +98,7 @@ Newest entry first. One entry per session, in this form:
   - **Strict bodies:** the batch body accepts exactly `notifications`, an item exactly `channel`, `recipient`, `content`, `priority`, `dedupe_key`; two tests compare the validators with the schemas of `api/openapi.yaml`.
   - **Documents:** ADR-0006 §2, §6 and §11 (the decisions below), `docs/errors.md` (two problem types, five codes, the batch answers), the README's API examples, which say to use `make up-mock`.
 - **Tests:** in `internal/store`: `TestIdempotencyKey_ConcurrentSameKey` (the second request is seen waiting on the claim statement in `pg_stat_activity` while the first transaction is open, then replays; one notification), the same with a rollback (the second proceeds as new), the key's lifecycle (replay, other hash refused, expired key taken over, nothing stored after a failed create or a dedupe conflict), `TestCreateSingle_Dedupe` (the key is held by `pending`, `failed`, `sent` and cancelled-after-an-attempt rows and released only by a row cancelled with `attempt_count = 0`; the cancelled rows are set up with SQL until transition 9 exists), two concurrent creates with one `dedupe_key`, batch conflicts through the partial index, 1,000 items, nothing inserted, `TestCreateBatch_ConcurrentOverlappingKeysNoDeadlock`. In `internal/api`, over HTTP against Postgres: `TestIdempotencyKey_ConcurrentSameKey` (N identical requests at once, single and batch: one notification or batch, N−1 replays), replay, takeover of an expired key, another body and the other endpoint with the same key (`422`), no key stored after a validation failure, a `409` or an all-rejected batch, dedupe conflicts, 1,000 and 1,001 items, partial success, all rejected, the invalid key header, strictness, and the contract check of every answer of the three operations (it now also enforces `format: uuid`).
-- **Pull requests opened:** from `p2/batch-and-idempotency` (number in the phase table).
+- **Pull requests opened:** [#7](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/7) from `p2/batch-and-idempotency`.
 - **Exit criteria** (the ones that apply to this pull request): `make test` green, with the contract tests; `make generate` twice without a change; `make lint` with 0 issues; `go test -race -tags=integration -count=20 -run 'TestIdempotencyKey_ConcurrentSameKey$' ./internal/api/ ./internal/store/` green. `make fuzz` and the Swagger UI check belong to `p2/validation`. `gh pr checks` is reported on the pull request.
 - **Mutation check, `TestIdempotencyKey_ConcurrentSameKey`:** the guard `WHERE idempotency_keys.expires_at <= now()` was removed from the claim statement (a live key is then taken over like an expired one) and the code regenerated. Both tests of that name, in `internal/store` and in `internal/api`, failed 5 of 5 (in the store test the second request was created instead of replayed). The statement was restored byte-identically (checksum of the SQL and the generated file compared), and both pass again.
 - **Reviewed line by line by the main loop:** the claim statement and its transaction, and every use of the dedupe predicate:
