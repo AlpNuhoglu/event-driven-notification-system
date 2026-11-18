@@ -1,5 +1,10 @@
 # Infrastructure services for local development. Application services are
 # added in a later phase.
+#
+# Only the three user interfaces publish a host port. Each host port can be
+# changed with a variable (GRAFANA_PORT, PROMETHEUS_PORT, JAEGER_UI_PORT), in
+# the environment or in .env, when the default is taken on the machine; see
+# .env.example. The container ports stay the same.
 services:
   postgres:
     image: postgres:18.7
@@ -57,7 +62,7 @@ services:
     volumes:
       - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
     ports:
-      - "9090:9090"
+      - "${PROMETHEUS_PORT:-9090}:9090"
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9090/-/healthy"]
       interval: 10s
@@ -69,7 +74,7 @@ services:
   grafana:
     image: grafana/grafana:13.3.1
     ports:
-      - "3000:3000"
+      - "${GRAFANA_PORT:-3000}:3000"
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/api/health"]
       interval: 10s
@@ -84,7 +89,7 @@ services:
     # default, so other containers reach jaeger:4317; only the UI is published.
     image: jaegertracing/jaeger:2.23.0
     ports:
-      - "16686:16686"
+      - "${JAEGER_UI_PORT:-16686}:16686"
     healthcheck:
       # health-check extension (port 13133, all interfaces), path /status
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:13133/status"]
