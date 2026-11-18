@@ -1,6 +1,8 @@
-# Decision ledger (v3, after the second ledger review)
+# Decision ledger (v4, after the preparation session)
 
-The authoritative list of decisions taken during the design review (12 review turns plus the final report). **Where this ledger and an ADR disagree, this ledger wins** until the ADRs have been revised. After the revision, the ADRs are authoritative and this file becomes the source for `docs/ai/design-review-log.md`.
+The record of decisions taken during the design review (12 review turns, the final report, two ledger reviews and the preparation session).
+
+**Status: the ADRs have been revised to this ledger and are now the primary design documents.** This file is the decision record: it explains *why* each part of the design is the way it is, and it is the source for `docs/ai/design-review-log.md`. If an ADR and this ledger ever disagree, do not pick one silently: record it under "Open issues" in `docs/progress.md` and ask.
 
 Sources are review-turn findings: `T2 F1` means Turn 2, finding F1. "Author" means a decision taken in discussion without a specific finding.
 
@@ -142,6 +144,26 @@ Stated as facts elsewhere but not yet run. Treat them as hypotheses until a test
 | U6 | strict-server works with the standard-library router (D48) | E2 |
 | U7 | `x-consumer-timeout` behaves as documented (D8) | E6 |
 | U8 | amqp091-go enqueues a `basic.return` on the return channel before delivering the matching publisher confirm (D2); reported as a non-goal of the library | The D2 integration test in P1 (publish without a binding; the row must stay `pending`), repeated 100 times |
+
+## K. Settled during the preparation session
+
+Applied in the ADRs, the plan and `.env.example` (commit `f91792d`); recorded here so the ledger stays complete.
+
+| ID | Decision | Affects |
+|---|---|---|
+| D62 | `success_rate` = successful attempts ÷ all finished attempts except `aborted`. | 0009 |
+| D63 | A `2xx` other than `202` increments its own metric, `provider_unexpected_2xx_total{channel,provider,code}`; malformed bodies keep `provider_malformed_response_total`. | 0007, 0009 |
+| D64 | `requeue-stale` is a relay subcommand: `--older-than=5m` by default, `--all` for every `queued` row; run with `docker-compose run --rm relay requeue-stale`. | 0003, 0005 |
+| D65 | The mock profile is an override file, `docker-compose.mock.yml`, which adds `mockprovider` and points `PROVIDER_URL` at it; `make up-mock`. | 0005, 0010 |
+| D66 | Ports: api `:8080`, admin `:8081` (internal only), gateway `:8082`. Numeric values marked "(proposed)" in `.env.example` (buffers, queue limits, alert thresholds) are first values and are tuned in P6. | 0005, 0009, `.env.example` |
+| D67 | High-water marks are counted per lane (channel × priority) and configured per priority, the same values applying to every channel. | 0003 |
+| D68 | The 1 s back-off floor stays: full jitter can produce near-zero delays, and the floor protects the provider. | 0007 |
+| D69 | Batch cancel reports a `may_have_been_sent` count alongside `cancelled` and `not_cancellable`. | 0006 |
+| D70 | The minimum Docker Compose version is determined in P0 from the features actually used and written in the README. | README, plan |
+| D71 | **Public request log (extends D44):** anyone with the default webhook.site URL can read the requests it received. Demo and test data use only reserved fake values (`+905551234567`, `example.com` addresses); real recipients never go through the default URL. | CLAUDE.md, future-work |
+| D72 | `mockprovider` records the **field names** of each request body, never the values, so CI can prove the body is exactly `to`, `channel`, `content` (R23). | 0010 |
+| D73 | **Fallback principle:** our own additions that the assessment does not ask for are dropped before any feature the assessment names, including its bonus features. The ordered list is in plan §12. | plan |
+| D74 | **First alert thresholds (P5; tuned in P6):** `high`-lane oldest queued age above 2 min, sustained for 2 min; any `high`-priority expiry in a 10 min window, or `normal`-priority expiries above 1 % of finished notifications over 15 min; poison-queue depth above 0 for 5 min; circuit breaker not closed (open or half-open) for more than 5 min. Each rule carries a one-line runbook note in `alerts.yml`. | 0009, plan P5 |
 
 ## Statements to correct in the documents
 
