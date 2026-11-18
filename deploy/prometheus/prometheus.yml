@@ -1,0 +1,17 @@
+# Application scrape targets and alert rules are added in a later phase.
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  - job_name: rabbitmq
+    # Per-object endpoint; the default /metrics endpoint is aggregated and
+    # has no per-queue series.
+    metrics_path: /metrics/detailed
+    params:
+      family: [queue_coarse_metrics, queue_consumer_count]
+    static_configs:
+      - targets: ["rabbitmq:15692"]
