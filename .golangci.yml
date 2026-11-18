@@ -1,9 +1,10 @@
 version: "2"
 
 run:
-  # Integration-tagged files are linted too.
+  # Integration- and e2e-tagged files are linted too.
   build-tags:
     - integration
+    - e2e
 
 linters:
   # "standard" is golangci-lint's default set: errcheck, govet, ineffassign,

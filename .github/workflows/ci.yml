@@ -11,6 +11,13 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  # The standalone docker-compose binary the project is tested with, for the
+  # compose-up and e2e jobs. The SHA-256 is the value published for
+  # docker-compose-linux-x86_64 in the release's checksums.txt.
+  COMPOSE_VERSION: v5.6.1
+  COMPOSE_SHA256: 47737f4236e6d3ccea7291995203f8f018058783b4c3a9469119811a0b5db8c0
+
 jobs:
   lint:
     runs-on: ubuntu-24.04
@@ -125,3 +132,84 @@ jobs:
       # Unit and integration tests with -race; testcontainers-go starts
       # Postgres on the runner's Docker daemon.
       - run: make test
+      # The rate-limit margin of the in-process scenario (D77), visible in the
+      # log: the line with the largest one-second window at the fake provider.
+      - name: Rate-limit margin (in-process)
+        run: |
+          out="$RUNNER_TEMP/late-relay-commit.txt"
+          status=0
+          go test -tags integration -race -count=1 -v \
+            -run TestE2E_LateRelayCommitKeepsRateLimit ./internal/integration/ \
+            > "$out" 2>&1 || status=$?
+          if [ "$status" -ne 0 ]; then
+            cat "$out"
+            exit "$status"
+          fi
+          grep 'one-second window' "$out" | tee -a "$GITHUB_STEP_SUMMARY"
+
+  compose-up:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the standalone docker-compose
+        run: |
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/docker-compose" \
+            "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-linux-x86_64"
+          echo "${COMPOSE_SHA256}  $RUNNER_TEMP/docker-compose" | sha256sum -c -
+          sudo install -m 0755 "$RUNNER_TEMP/docker-compose" /usr/local/bin/docker-compose
+          test "$(docker-compose version --short)" = "${COMPOSE_VERSION#v}"
+      # The assessment's command, from the checkout, with no .env file. The
+      # default stack points the worker at the public webhook.site URL, so
+      # this job creates no notification: nothing is sent.
+      - name: docker-compose up
+        run: |
+          test ! -e .env
+          docker-compose up -d --wait --wait-timeout 600
+      - run: docker-compose ps
+      - name: Health and readiness on the public port
+        run: |
+          curl -fsS localhost:8080/healthz
+          echo
+          curl -fsS localhost:8080/readyz
+          echo
+      - name: Service logs
+        if: failure()
+        run: docker-compose logs --no-color --timestamps
+      - name: docker-compose down
+        if: always()
+        run: docker-compose down -v
+
+  e2e:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version: "1.27.4"
+          cache-dependency-path: |
+            go.mod
+            go.sum
+            Makefile
+      - name: Install the standalone docker-compose
+        run: |
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/docker-compose" \
+            "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-linux-x86_64"
+          echo "${COMPOSE_SHA256}  $RUNNER_TEMP/docker-compose" | sha256sum -c -
+          sudo install -m 0755 "$RUNNER_TEMP/docker-compose" /usr/local/bin/docker-compose
+          test "$(docker-compose version --short)" = "${COMPOSE_VERSION#v}"
+      # The stack with the mock override, the e2e tests and load-smoke; the
+      # load-smoke line also goes to the job summary. On failure the target
+      # writes every service's log to e2e-logs/ before it stops the stack.
+      - run: make test-e2e
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure()
+        with:
+          name: e2e-logs
+          path: e2e-logs/
+          if-no-files-found: warn
