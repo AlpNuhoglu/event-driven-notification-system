@@ -73,3 +73,37 @@ jobs:
             echo "$untracked" >&2
             exit 1
           fi
+
+  migrations:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:18.7
+        env:
+          POSTGRES_USER: notifications
+          POSTGRES_PASSWORD: notifications
+          POSTGRES_DB: notifications
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U notifications -d notifications"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://notifications:notifications@localhost:5432/notifications?sslmode=disable
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version: "1.27.4"
+          cache-dependency-path: |
+            go.mod
+            go.sum
+            Makefile
+      - run: go run ./cmd/migrate up
+      - run: go run ./cmd/migrate down
+      - run: go run ./cmd/migrate up

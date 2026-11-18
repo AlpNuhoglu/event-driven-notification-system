@@ -93,21 +93,3 @@ func TestInvalidConfig(t *testing.T) {
 		t.Errorf("stderr leaks value: %q", se.String())
 	}
 }
-
-func TestRunOneShot(t *testing.T) {
-	var so, se bytes.Buffer
-	if code := RunOneShot("migrate", nil, &so, &se); code != 0 || so.String() != "migrate: no migrations yet\n" {
-		t.Errorf("code=%d stdout=%q", code, so.String())
-	}
-	so.Reset()
-	if code := RunOneShot("migrate", []string{"healthcheck"}, &so, &se); code != 1 {
-		t.Errorf("code = %d, want 1", code)
-	}
-	if want := "healthcheck: migrate is a one-shot command and has no health endpoint\n"; se.String() != want {
-		t.Errorf("stderr = %q", se.String())
-	}
-	se.Reset()
-	if code := RunOneShot("migrate", []string{"x"}, &so, &se); code != 2 {
-		t.Errorf("code = %d, want 2", code)
-	}
-}

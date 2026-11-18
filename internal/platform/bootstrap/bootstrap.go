@@ -43,20 +43,6 @@ func Run(ctx context.Context, role string, args []string, lookup func(string) (s
 	return serve(ctx, ln, role, stdout, stderr)
 }
 
-// RunOneShot executes a role that runs once and exits, such as migrate. It has
-// no health endpoint.
-func RunOneShot(role string, args []string, stdout, stderr io.Writer) int {
-	if len(args) == 0 {
-		_, _ = fmt.Fprintf(stdout, "%s: no migrations yet\n", role)
-		return 0
-	}
-	if args[0] == "healthcheck" {
-		_, _ = fmt.Fprintf(stderr, "healthcheck: %s is a one-shot command and has no health endpoint\n", role)
-		return 1
-	}
-	return usage(role, stderr)
-}
-
 func usage(role string, stderr io.Writer) int {
 	_, _ = fmt.Fprintf(stderr, "usage: %s [healthcheck]\n", role)
 	return 2
