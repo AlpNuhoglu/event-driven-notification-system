@@ -44,7 +44,7 @@ Prometheus metrics and `pprof` are served on each service's separate admin port 
 
 | Header | Rule |
 |---|---|
-| `Idempotency-Key` | Optional. Applies **only to the two create endpoints** (section 11) |
+| `Idempotency-Key` | Optional. Applies **only to the two create endpoints** (section 11); other endpoints ignore it. A key is 1 to 255 visible ASCII characters (U+0021 to U+007E), sent once; anything else, an empty value included, is a `400` (`invalid_idempotency_key`) rather than a request that silently runs without idempotency |
 | `X-Request-ID` | Optional. Accepted if it is at most 128 characters of `[A-Za-z0-9._-]`; otherwise it is ignored and a new one is generated. Echoed in the response ([ADR-0009](0009-observability.md) §5) |
 | `traceparent` | W3C Trace Context |
 
@@ -132,18 +132,20 @@ Validation runs **after** template rendering, because variables can push content
 
 ### 6. Batch semantics: partial success
 
+The request body is `{"notifications": [ ... ]}`: an object with that one field, whose items have the fields of the single create (section 3). It is as strict as the single create: another top-level field, or an unknown field inside an item, is rejected. A top-level error (`notifications` missing, not an array, empty, or over the limit) is one `422` and no item is checked; otherwise every item is validated on its own.
+
 | Outcome | Status | Body |
 |---|---|---|
-| At least one item accepted | `202` | `{"batch_id", "accepted": [{"index", "id"}], "rejected": [{"index", "errors": [...]}]}` |
-| Every item rejected | `422` | Problem Details listing the per-index errors; no batch is created |
+| At least one item accepted | `202` | `{"batch_id", "accepted": [{"index", "id"}], "rejected": [{"index", "errors": [...]}]}`, with `Location: /v1/batches/{batch_id}` |
+| Every item rejected | `422` | Problem Details listing the per-index errors in a `rejected` member of the same shape as in the `202`, complete and never truncated; no batch is created |
 | More than 1,000 items | `422` | `code: too_many_items`; nothing is processed |
 
 - One invalid phone number must not block the other 999 messages in a flash sale.
 - `207 Multi-Status` is not used, because it is WebDAV-specific. There is no atomic mode (YAGNI).
-- **Duplicate `dedupe_key` values inside the same batch** are rejected in the application, before the database, with `code: duplicate_in_batch`. Otherwise `ON CONFLICT DO NOTHING` would silently skip the second item.
-- **Insert:** one statement, `INSERT ... SELECT FROM unnest($1::uuid[], ...) ON CONFLICT (dedupe_key) WHERE dedupe_key IS NOT NULL AND NOT (status = 'cancelled' AND attempt_count = 0) DO NOTHING RETURNING id, dedupe_key`. The `WHERE` clause in the `ON CONFLICT` target is required: Postgres can only infer a **partial** unique index if the predicate is repeated. `COPY` is not used, because a single conflict would abort the whole operation.
-- **Conflicting items:** `RETURNING` lists only inserted rows, so the keys that were not inserted are looked up with one more query that uses the same predicate (`WHERE dedupe_key = ANY($1) AND NOT (status = 'cancelled' AND attempt_count = 0)`). They are reported as `{code: "duplicate", existing_id}`. If the conflicting row is cancelled between the two statements, `existing_id` is `null`. This race is harmless.
-- The `batches` row records `total`, `accepted` and `rejected`. Per-status progress is computed with `GROUP BY status`.
+- **Duplicate `dedupe_key` values inside the same batch** are rejected in the application, before the database, with `code: duplicate_in_batch`. Otherwise `ON CONFLICT DO NOTHING` would silently skip the second item. Among the items that pass validation, the first one with a key keeps it and every later one is rejected; an invalid item never claims its key.
+- **Insert:** one statement, `INSERT ... SELECT FROM unnest($1::uuid[], ...) ON CONFLICT (dedupe_key) WHERE dedupe_key IS NOT NULL AND NOT (status = 'cancelled' AND attempt_count = 0) DO NOTHING RETURNING id, dedupe_key`. The `WHERE` clause in the `ON CONFLICT` target is required: Postgres can only infer a **partial** unique index if the predicate is repeated. `COPY` is not used, because a single conflict would abort the whole operation. **The rows are inserted in `dedupe_key` order** (`ORDER BY` in the `SELECT`): an insert that meets another transaction's uncommitted entry for the same key waits for it, so two concurrent batches whose keys overlap in different orders would otherwise deadlock (`40P01`); a test runs such batches against each other.
+- **Conflicting items:** `RETURNING` lists only inserted rows, so the keys that were not inserted are looked up with one more query that uses the same predicate (`WHERE dedupe_key = ANY($1) AND NOT (status = 'cancelled' AND attempt_count = 0)`). They are reported as `{code: "duplicate", existing_id}`. If the conflicting row is cancelled between the two statements, the error has no `existing_id` member. This race is harmless. The single create reports its conflict the same way.
+- The `batches` row records `total` (items in the request), `accepted` (items stored) and `rejected` (items rejected in validation plus duplicates). Per-status progress is computed with `GROUP BY status`; `GET /v1/batches/{id}` returns the three counts and `status_counts`, with every status present.
 - Templates are recommended for large email batches, because of the 5 MB body limit.
 
 ### 7. Cancel and redrive
@@ -253,7 +255,9 @@ RETURNING key;
 
 - **Concurrency needs no extra lock.** `INSERT ... ON CONFLICT` waits for a concurrent uncommitted insert of the same key. If that transaction rolls back, the waiting request proceeds as new. The draft's `409 Conflict` for in-progress requests is therefore never needed.
 - **Canonical hashing.** `request_hash` covers the **method, the path** and the parsed and re-serialised request body, not the raw bytes. JSON key order and whitespace do not matter, and the same key used on the other create endpoint counts as a different request.
-- **Validation failures are not stored.** As in Stripe's model, a request rejected before any work is done (malformed, or a `422` batch with no accepted items) does not record its key, so the client can fix the request and retry with the same key. Requests that created anything, including partially successful batches, are stored.
+- **Validation failures are not stored.** As in Stripe's model, a request rejected before any work is done (malformed, or a `422` batch with no accepted items) does not record its key, so the client can fix the request and retry with the same key. Requests that created anything, including partially successful batches, are stored. **The rule is "stored if and only if something was created":** a single create refused with `409` for its `dedupe_key`, and a batch whose remaining items were all duplicates, roll back and leave no key either.
+- **What a replay returns.** The stored status and body, with `Idempotent-Replayed: true`. The body is stored as `jsonb`, so it is the same JSON value, not necessarily the same bytes (key order and whitespace can differ). It is the answer of the first request, so a notification that has been sent since still shows `pending` in it. `Location` is rebuilt from the stored id, and `X-Request-ID` is the correlation id of the replaying request, not of the first one.
+- **A reused key** is its own problem type (`idempotency-key-reused`, `422`), so a client can tell it from a validation failure.
 - **Retention:** 24 hours. Expired keys are taken over on write, so the relay's periodic cleanup exists only to keep the table small, not for correctness.
 - **Scope:** global, because there are no tenants. A future multi-tenant version would scope keys by `(tenant_id, key)`.
 
