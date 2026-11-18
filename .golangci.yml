@@ -1,0 +1,57 @@
+version: "2"
+
+run:
+  # Integration-tagged files are linted too.
+  build-tags:
+    - integration
+
+linters:
+  # "standard" is golangci-lint's default set: errcheck, govet, ineffassign,
+  # staticcheck and unused. It is listed explicitly so nothing relies on the
+  # default staying the same.
+  default: standard
+  enable:
+    - bodyclose
+    - contextcheck
+    - gosec
+    - noctx
+    - revive
+    - sqlclosecheck
+  settings:
+    revive:
+      # Revive's default rules, plus exported and package-comments.
+      rules:
+        - name: blank-imports
+        - name: context-as-argument
+        - name: context-keys-type
+        - name: dot-imports
+        - name: empty-block
+        - name: error-naming
+        - name: error-return
+        - name: error-strings
+        - name: errorf
+        - name: exported
+        - name: increment-decrement
+        - name: indent-error-flow
+        - name: package-comments
+        - name: range
+        - name: receiver-naming
+        - name: redefines-builtin-id
+        - name: superfluous-else
+        - name: time-naming
+        - name: unexported-return
+        - name: unreachable-code
+        - name: unused-parameter
+        - name: var-declaration
+        - name: var-naming
+  exclusions:
+    # Skip generated code (sqlc, oapi-codegen).
+    generated: lax
+    # No presets: they would hide missing doc comments on exported identifiers.
+    presets: []
+
+formatters:
+  enable:
+    - gofumpt
+  exclusions:
+    generated: lax
