@@ -62,15 +62,16 @@ Use **RabbitMQ 4.4.x** as the dispatch broker, pinned to an exact image tag in `
 
 Priority is interpreted as **strict** (R16): a `high` message is always delivered before a `normal` or `low` one in the same channel.
 
-- The AMQP priority is `2 − db_priority`, that is `high` = 2, `normal` = 1, `low` = 0 ([ADR-0004](0004-data-model-state-machine-and-fencing.md) stores `high` as 0).
-- **The priority is set explicitly on every message.** RabbitMQ treats a message without a priority as priority 4, which would overtake `high`. A test asserts that every published message carries the field ([ADR-0010](0010-testing-and-ci.md)).
+- The AMQP priority is `6 − db_priority`, that is `high` = 6, `normal` = 5, `low` = 4 ([ADR-0004](0004-data-model-state-machine-and-fencing.md) stores `high` as 0).
+- **The range starts at 4 on purpose.** RabbitMQ treats a message without a priority as priority 4, and the client library, `amqp091-go`, leaves the priority property off the wire when its value is 0, so a priority of 0 cannot be sent at all. With `low` at 4, a message that loses its priority through a defect is delivered as `low`; it never overtakes `high`. Experiment E1 ran this on RabbitMQ 4.4.1: with priorities 4, 5 and 6 and messages without a priority interleaved in one queue, every 6 was delivered before every 5 and every 5 before every 4, and the messages without a priority were delivered among the 4s in publishing order.
+- **The priority is set explicitly on every message.** A test asserts that every published message carries the field, with the value that belongs to its row ([ADR-0010](0010-testing-and-ci.md)).
 - The worker's pacer picks the highest-priority message in its local prefetch buffer ([ADR-0005](0005-service-topology-and-status-events.md)), so strictness also holds for the messages already delivered to a consumer.
 - Per-priority buffer limits (high-water marks) are counted in Postgres, not in the broker ([ADR-0003](0003-bounded-relay-buffer-and-sweepers.md)).
 
 Two limitations follow and are documented in [future work](../future-work.md):
 
 - Under sustained `high` traffic at the channel's full rate, `low` waits. Its expiry time bounds the wait.
-- A message that is returned to the queue (a nack on `SIGTERM`, a lost connection) loses its position within its priority.
+- A message that is returned to the queue (a nack on `SIGTERM`, a lost connection) loses its priority: the broker delivers returned messages first, before messages that are already waiting, whatever their priority (observed in experiment E1).
 
 ### Unroutable publishes
 
@@ -144,6 +145,7 @@ The topic exchange is also the extension point for future durable consumers such
 Changes made after the design review, recorded in the [design review log](../ai/design-review-log.md):
 
 - Nine lane queues with a weighted 6:3:1 dispatcher became one queue per channel with built-in strict priority, because the weighting contradicted the goal for urgent messages and quorum queues have supported strict priorities since RabbitMQ 4.3. (D7)
+- After experiment E1 (P0), the AMQP priority changed from `2 − db_priority` to `6 − db_priority`: the client library cannot send a priority of 0, which the broker would then sort as 4, ahead of `high`. The description of a requeued message was corrected to what the experiment observed. (D7)
 - Publishes became `mandatory`, and every role now declares the topology on each connection, because publisher confirms also confirm unroutable messages. (D2)
 - The custom delivery limit of 5 was removed: it could not catch a real poison message and could dead-letter healthy ones. (D6)
 - A 24-hour consumer timeout was added so that messages waiting during an open circuit do not get their consumer cancelled after 30 minutes. (D8)

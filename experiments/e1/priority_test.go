@@ -13,7 +13,10 @@
 //   - a quorum queue needs no declaration argument; x-max-priority is rejected (406);
 //   - priorities above 31 sort like 31;
 //   - with prefetch > 1, the first delivery the broker sends after an ack is a newly published high;
-//   - (extra) a nacked-and-requeued low is delivered before highs that were already waiting.
+//   - (extra) a nacked-and-requeued low is delivered before highs that were already waiting;
+//   - (extension, for the mapping 6 − db_priority) with priorities 4, 5 and 6 and messages
+//     without a priority interleaved, every 6 comes before every 5 before every 4, and the
+//     messages without a priority are delivered in the class of 4, never before a 5.
 //
 // amqp091-go publishes use publisher confirms; every test polls the queue's ready count
 // before consuming, so the consumed order reflects the queue and not client buffering.
@@ -528,4 +531,56 @@ func TestRequeuedLowVersusWaitingHighs(t *testing.T) {
 		t.Logf("delivered %-6s redelivered=%v", g.Body, g.Redelivered)
 	}
 	assertExact(t, got, []string{"low", "high-0", "high-1", "high-2"})
+}
+
+// Extension for the 6 − db_priority mapping (high 6, normal 5, low 4): priorities
+// 4, 5 and 6 and messages without a priority, interleaved in one quorum queue.
+// Pass: every 6 before every 5 before every 4, and a message without a priority
+// is delivered in the class of 4 (in publishing order with the 4s, never before a 5).
+func TestLevelsFourFiveSixAndNoPriority(t *testing.T) {
+	const rounds = 50
+	for _, mode := range []string{"get", "consume-prefetch1"} {
+		t.Run(mode, func(t *testing.T) {
+			conn := dial(t)
+			queue := "e1.four-five-six." + mode
+			declareQuorum(t, conn, queue)
+			p := newPublisher(t, conn, queue)
+
+			// Published against the priority order: none, 4, 5, 6 in every round.
+			var sixes, fives, lowClass []string
+			for i := 0; i < rounds; i++ {
+				for _, m := range []struct {
+					label string
+					prio  int
+				}{{"none", noPriority}, {"p4", 4}, {"p5", 5}, {"p6", 6}} {
+					body := fmt.Sprintf("%s-%03d", m.label, i)
+					p.publish(body, m.prio)
+					switch m.prio {
+					case 6:
+						sixes = append(sixes, body)
+					case 5:
+						fives = append(fives, body)
+					default:
+						lowClass = append(lowClass, body) // none and 4, in publishing order
+					}
+				}
+			}
+			waitReady(t, conn, queue, 4*rounds)
+
+			ch := channel(t, conn)
+			var got []amqp.Delivery
+			if mode == "get" {
+				got = drainGet(t, ch, queue, 4*rounds)
+			} else {
+				got = drainConsume(t, ch, queue, 4*rounds)
+			}
+			t.Logf("first 4: %v", bodies(got[:4]))
+			t.Logf("around the 5/4 boundary: %v", bodies(got[2*rounds-2:2*rounds+4]))
+			n6, n5 := shape(got[:rounds]), shape(got[rounds:2*rounds])
+			t.Logf("consumed: %s, %s, then %d messages alternating none and p4", n6, n5, len(got)-2*rounds)
+
+			want := append(append(append([]string{}, sixes...), fives...), lowClass...)
+			assertExact(t, got, want)
+		})
+	}
 }
