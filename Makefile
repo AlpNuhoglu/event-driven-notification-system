@@ -10,12 +10,23 @@ SQLC          = go run github.com/sqlc-dev/sqlc/cmd/sqlc@$(SQLC_VERSION)
 OAPI_CODEGEN  = go run github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@$(OAPI_CODEGEN_VERSION)
 MIGRATE       = go run -tags postgres github.com/golang-migrate/migrate/v4/cmd/migrate@$(MIGRATE_VERSION)
 
+COMPOSE_MOCK = docker-compose -f docker-compose.yml -f docker-compose.mock.yml
+
+# make test-e2e runs the stack under its own Compose project, so it never
+# reuses or removes the stack of make up-mock. The host ports can be changed
+# when the defaults are taken (the other host ports as in .env.example).
+E2E_PROJECT       ?= edns-e2e
+E2E_TIMEOUT       ?= 10m
+API_PORT          ?= 8080
+MOCKPROVIDER_PORT ?= 8090
+E2E_COMPOSE        = API_PORT=$(API_PORT) MOCKPROVIDER_PORT=$(MOCKPROVIDER_PORT) $(COMPOSE_MOCK) -p $(E2E_PROJECT)
+
 TEST_CMD = go test -race -tags=integration -count=1 ./...
 
 .DEFAULT_GOAL := help
 
 .PHONY: help build generate lint fmt test test-docker tools image \
-	test-e2e load demo up-mock verify-suite fuzz
+	test-e2e load demo up-mock down verify-suite fuzz
 
 help: ## Show this help
 	@echo "Targets:"
@@ -26,13 +37,9 @@ help: ## Show this help
 build: ## Build all packages
 	go build ./...
 
-generate: ## Run sqlc, and oapi-codegen when its input exists
+generate: ## Run sqlc and oapi-codegen
 	$(SQLC) generate
-	@if [ -f api/openapi.yaml ]; then \
-		echo "oapi-codegen"; $(OAPI_CODEGEN) --config api/oapi-codegen.yaml api/openapi.yaml || exit 1; \
-	else \
-		echo "generate: skipped oapi-codegen, input file api/openapi.yaml is absent"; \
-	fi
+	$(OAPI_CODEGEN) --config api/oapi-codegen.yaml api/openapi.yaml
 
 lint: ## Run golangci-lint (also checks formatting)
 	$(GOLANGCI_LINT) run ./...
@@ -63,8 +70,25 @@ tools: ## Print the version of each pinned tool
 image: ## Build the container image notifications:dev
 	docker build -t notifications:dev .
 
-test-e2e: ## Not implemented yet
-	@echo "test-e2e: not implemented yet; see docs/plan/implementation-plan.md" >&2; exit 1
+test-e2e: ## Compose stack with the mock override, e2e tests and load-smoke (needs Go and Docker)
+	@rm -rf e2e-logs; \
+	trap '$(E2E_COMPOSE) down -v --remove-orphans' EXIT; \
+	trap 'exit 130' INT TERM; \
+	status=0; \
+	$(E2E_COMPOSE) up -d --build --wait || status=$$?; \
+	if [ $$status -eq 0 ]; then \
+		E2E_API_URL=http://localhost:$(API_PORT) E2E_MOCK_URL=http://localhost:$(MOCKPROVIDER_PORT) \
+			go test -tags e2e -count=1 -v -timeout $(E2E_TIMEOUT) ./test/e2e/... || status=$$?; \
+	fi; \
+	if [ $$status -ne 0 ]; then \
+		mkdir -p e2e-logs; \
+		$(E2E_COMPOSE) ps -a > e2e-logs/ps.log 2>&1; \
+		for svc in $$($(E2E_COMPOSE) config --services); do \
+			$(E2E_COMPOSE) logs --no-color --timestamps $$svc > e2e-logs/$$svc.log 2>&1; \
+		done; \
+		echo "test-e2e: failed (exit $$status); service logs are in e2e-logs/" >&2; \
+	fi; \
+	exit $$status
 
 load: ## Not implemented yet
 	@echo "load: not implemented yet; see docs/plan/implementation-plan.md" >&2; exit 1
@@ -72,8 +96,11 @@ load: ## Not implemented yet
 demo: ## Not implemented yet
 	@echo "demo: not implemented yet; see docs/plan/implementation-plan.md" >&2; exit 1
 
-up-mock: ## Not implemented yet
-	@echo "up-mock: not implemented yet; see docs/plan/implementation-plan.md" >&2; exit 1
+up-mock: ## Start the stack with mockprovider as the provider
+	$(COMPOSE_MOCK) up -d --build --wait
+
+down: ## Stop the stack and remove its volumes
+	$(COMPOSE_MOCK) down -v
 
 verify-suite: ## Not implemented yet
 	@echo "verify-suite: not implemented yet; see docs/plan/implementation-plan.md" >&2; exit 1
