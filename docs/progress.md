@@ -4,11 +4,11 @@ The first file every session reads and the last one it updates. The phases and t
 
 ## Current phase
 
-**P0: repository skeleton and first-hour experiments** — not started.
+**P0: repository skeleton and first-hour experiments** — in review (task 2, the skeleton).
 
-**Next step:** complete the repository set-up checks of P0 task 1, then start the skeleton on branch `p0/skeleton`.
+**Next step:** after the author merges the `p0/skeleton` pull request, create `p0/experiments` from the updated `main` and run experiments E1–E6 (P0 task 3).
 
-**Minimum Compose version:** to be determined in P0 from the features the Compose file uses (D45, D70).
+**Minimum Compose version:** v2.1.1 (D45, D70). It is the first release with `up --wait`, which is the newest feature the P0 file and the exit criteria use; everything else in the file (`healthcheck` with `start_period`, named volumes, short-syntax ports and mounts) is older. The file was checked with the standalone `docker-compose` binary at v5.6.1. See open issue 1 for what was not checked.
 
 **Decision ledger:** v4 (`D1`–`D75`). Section K records the points settled during the preparation session. The ADRs are the primary design documents; the ledger is the decision record.
 
@@ -18,7 +18,7 @@ Status is one of: `not started`, `in progress`, `in review` (pull requests open)
 
 | Phase | Title | Status | Pull requests | Exit criteria met on |
 |---|---|---|---|---|
-| P0 | Repository skeleton and first-hour experiments | not started | | |
+| P0 | Repository skeleton and first-hour experiments | in review | [#2](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/2) (`p0/skeleton`) | |
 | P1 | Core path | not started | | |
 | P2 | API completeness | not started | | |
 | P3 | Delivery robustness | not started | | |
@@ -55,6 +55,7 @@ Questions that the ledger and the ADRs do not answer, and problems that are not 
 
 | # | Raised on | Issue | Blocks |
 |---|---|---|---|
+| 1 | 2026-11-18 | The minimum Compose version (v2.1.1) is derived from the Compose release notes and was not run against a v2.1.1 binary: downloading older standalone binaries was not permitted in the session. P1 adds a one-shot `migrate` service behind `service_completed_successfully`, and the v2.7.0 release notes list the fix that makes `up --wait` handle one-shot containers, so the number is expected to rise to at least v2.7.0 in P1. The author decides whether to test an old binary by hand or to state a newer, tested version. | The README's version statement (P1) |
 
 ## Session log
 
@@ -70,6 +71,39 @@ Newest entry first. One entry per session, in this form:
 - **Open issues:** new entries added to the table above.
 - **Next step:** the first thing the next session does.
 ```
+
+### 2026-11-18 — P0: repository checks and skeleton (tasks 1 and 2)
+
+- **Done (task 1):** the five repository checks. Four passed at once. The protection check failed on the first run: the `main` ruleset existed with the right rules (no deletion, no force push, pull request required) but its enforcement was `disabled`. The session stopped; the author set it to `active`; the check then passed (`rules/branches/main` lists `deletion`, `non_fast_forward`, `pull_request`; `branches/main` reports `protected: true`). Merge methods print `[true,false,false]`; Dependabot is off (no `dependabot.yml`, security updates `disabled`); `git ls-files .inputs` prints nothing.
+- **Done (task 2):** the Go module (Go 1.27) with the six role stubs, each with a `healthcheck` subcommand; `internal/platform/config`, which reads every variable of `.env.example` (two tests fail if the file and the loader disagree on a name or a default); `health`, `shutdown` and a temporary `bootstrap` runner; the `Makefile`, `.golangci.yml` (v2 format), one `Dockerfile` for all roles (a `scratch` runtime stage, non-root, 37 MB); `docker-compose.yml` with the six infrastructure services; the CI workflow with `lint`, `unit` and `codegen-drift`.
+- **Pull requests opened:** [#2](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/2) from `p0/skeleton`.
+- **Exit criteria:** run and passed: `git rev-parse --show-toplevel`; `go build ./... && make lint && make test`; `docker-compose up -d --wait postgres rabbitmq redis` (all healthy); `docker-compose config | grep 'image:'` (six exact tags); `grep 'Minimum Compose version' docs/progress.md`. `gh pr checks` is reported on the pull request. Remaining: the six experiment rows (task 3).
+- **Image tags (chosen by the main loop; D48).** Each is the newest patch release of its line on Docker Hub on 2026-11-18, and that version had the same digest as `latest` that day (for the two Alpine variants, the non-Alpine tag of the same version did).
+
+  | Service | Tag | Why this tag |
+  |---|---|---|
+  | Postgres | `postgres:18.7` | Newest 18.x. The Debian variant, not Alpine: glibc collations, and it is the image's default variant. |
+  | RabbitMQ | `rabbitmq:4.4.1-alpine` | Newest 4.4.x, published 2026-11-17. Without the management plugin: the design reads broker metrics from `rabbitmq_prometheus` and never from the management API (ADR-0003), so the UI would be an addition of our own. |
+  | Redis | `redis:8.10.3-alpine` | Newest stable release; 8.12 exists only as a release candidate. |
+  | Prometheus | `prom/prometheus:v3.16.0` | Newest stable release. |
+  | Grafana | `grafana/grafana:13.3.1` | Newest stable release. |
+  | Jaeger | `jaegertracing/jaeger:2.23.0` | Newest 2.x; the v2 image, not the v1 all-in-one (D43). |
+
+- **Tool and action versions:** Go 1.27.4 in CI and in the images (`golang:1.27.4-alpine3.24` to build, `golang:1.27.4-trixie` for `make test-docker`, because the race detector needs cgo); `go 1.27.0` in `go.mod`; golangci-lint v2.15.0, sqlc v1.31.1, oapi-codegen v2.8.2, golang-migrate v4.20.1, each run with `go run <package>@<version>` from one variable in the `Makefile`. Actions by commit SHA: `actions/checkout` v7.0.1, `actions/setup-go` v7.1.0, `actions/upload-artifact` v7.0.2.
+- **The two Compose cautions, checked by recreating the containers:** a table row in Postgres and a vhost in RabbitMQ both survived `up -d --force-recreate`. Postgres reports `data_directory = /var/lib/postgresql/18/docker` on the named volume mounted at `/var/lib/postgresql`, and no anonymous volume is created. RabbitMQ reports node `rabbit@rabbitmq` and stores under `/var/lib/rabbitmq/mnesia/rabbit@rabbitmq`.
+- **Decisions taken** (within the latitude of the ledger and the ADRs):
+  1. Postgres, RabbitMQ and Redis publish **no host ports**; only the three user interfaces do (Grafana `3000`, Prometheus `9090`, Jaeger `16686`). A clean clone must not fail because a local Postgres or Redis already holds a port (plan risk 13). The experiments and tests reach the infrastructure through testcontainers or the Compose network.
+  2. The infrastructure services also have `restart: unless-stopped`; ADR-0005 requires it only for application services.
+  3. Health checks: Postgres is probed over TCP (`pg_isready -h 127.0.0.1`), because the image's first initialisation runs a temporary server on the Unix socket only; Jaeger is probed on its health-check extension (`:13133/status`).
+  4. `migrate healthcheck` exits 1 with a message: `migrate` is one-shot and has no health endpoint. The other five stubs serve `/healthz` and `/readyz` on the admin port.
+  5. `PROVIDER_URL` has no default in the binary; the default lives in the Compose file (D44), which gains it in P1. Which roles require it is decided where each role is wired (P1).
+  6. `make generate` skips `sqlc` and `oapi-codegen` with a message while `sqlc.yaml` and `api/openapi.yaml` do not exist; P1 adds both files and removes the conditions. The `Makefile` targets that later phases implement (`test-e2e`, `load`, `demo`, `up-mock`, `verify-suite`, `fuzz`) exist and fail with "not implemented yet".
+  7. The `Dockerfile` has no `ENTRYPOINT` and no `CMD`: Compose names the role, and a missing command fails instead of starting an arbitrary role. It has no `# syntax=` line either, because that would be a floating image reference.
+  8. Configuration files for the infrastructure are under `deploy/` (`deploy/prometheus/prometheus.yml`, `deploy/rabbitmq/enabled_plugins`), the directory the plan and `architecture.md` name. Prometheus scrapes RabbitMQ on `/metrics/detailed` (D9); application targets and alert rules arrive in P5.
+- **Not verified:** the workflow's Go cache (there is no `go.sum` yet; the key hashes `go.mod` and the `Makefile`); the `sqlc` and `oapi-codegen` branches of `make generate`; the Compose file with a Compose release older than v5.6.1 (open issue 1). On the development machine, ports `3000`, `9090` and `16686` were held by another project, so the full six-service start was checked with a scratch override that remaps those three ports; the repository file itself was started for Postgres, RabbitMQ and Redis.
+- **Delegation:** three Sonnet delegates (Go module and stubs; Compose; Makefile, lint, Dockerfile and CI). The main loop chose the tags and versions, read every file, re-ran the checks and changed three things: the `# syntax=` line removed, `math.IsNaN` in place of `f != f`, and a doc comment corrected.
+- **Open issues:** 1 (minimum Compose version not run against an old binary).
+- **Next step:** after the merge, `p0/experiments` from the updated `main`: E1–E6 and the U8 code reading.
 
 ### 2026-11-18 — Preparation: ledger v4 and design review log draft
 
