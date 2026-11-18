@@ -26,12 +26,8 @@ help: ## Show this help
 build: ## Build all packages
 	go build ./...
 
-generate: ## Run sqlc and oapi-codegen when their inputs exist
-	@if [ -f sqlc.yaml ]; then \
-		echo "sqlc generate"; $(SQLC) generate || exit 1; \
-	else \
-		echo "generate: skipped sqlc, input file sqlc.yaml is absent"; \
-	fi
+generate: ## Run sqlc, and oapi-codegen when its input exists
+	$(SQLC) generate
 	@if [ -f api/openapi.yaml ]; then \
 		echo "oapi-codegen"; $(OAPI_CODEGEN) --config api/oapi-codegen.yaml api/openapi.yaml || exit 1; \
 	else \
