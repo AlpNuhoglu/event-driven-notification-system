@@ -186,6 +186,60 @@ func (s *Store) CompleteFailure(ctx context.Context, id uuid.UUID, attemptNo int
 	return event, nil
 }
 
+// AbortAttempt closes an attempt that sent nothing: transition 5 without
+// consuming budget. In one transaction, the fenced MarkRetrying leaves
+// failures unchanged and sets due_at = now() + delay, then the attempt row
+// gets the outcome aborted. It is used when the send deadline passes before
+// the send can start (D77) and, from P3, when the circuit opens between the
+// claim and the send (D23).
+//
+// When the fenced statement matches zero rows, the attempt row is still
+// closed as aborted (nothing was sent, whatever happened to the row since)
+// and the transaction commits; ErrNotApplied is then returned.
+func (s *Store) AbortAttempt(ctx context.Context, id uuid.UUID, attemptNo int, delay time.Duration) (domain.StatusChanged, error) {
+	if delay < 0 {
+		return domain.StatusChanged{}, fmt.Errorf("abort attempt: negative delay %s", delay)
+	}
+	no, err := toInt32(attemptNo)
+	if err != nil {
+		return domain.StatusChanged{}, fmt.Errorf("abort attempt: attempt number: %w", err)
+	}
+	finish := db.FinishAttemptParams{
+		Outcome:        string(domain.OutcomeAborted),
+		NotificationID: id,
+		AttemptNo:      no,
+	}
+	var (
+		event   domain.StatusChanged
+		applied bool
+	)
+	err = s.inTx(ctx, func(q *db.Queries) error {
+		row, err := q.MarkRetrying(ctx, db.MarkRetryingParams{
+			FailuresDelta: 0,
+			Delay:         interval(delay),
+			ID:            id,
+			AttemptNo:     no,
+		})
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			applied = false
+		case err != nil:
+			return fmt.Errorf("mark retrying: %w", err)
+		default:
+			applied = true
+			event = fromRow(row).Event()
+		}
+		return finishAttempt(ctx, q, finish, applied)
+	})
+	if err != nil {
+		return domain.StatusChanged{}, fmt.Errorf("abort attempt: %w", err)
+	}
+	if !applied {
+		return domain.StatusChanged{}, ErrNotApplied
+	}
+	return event, nil
+}
+
 // finishAttempt writes the true outcome of an attempt. When the fenced
 // transition was applied, the attempt was in_flight under the row lock this
 // transaction holds, so exactly one row must change.
