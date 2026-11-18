@@ -51,7 +51,7 @@ LIMIT $3                -- min(200, lane headroom); see ADR-0003
 FOR UPDATE SKIP LOCKED;
 
 -- publish each id to notifications.dispatch: routing key {channel}, mandatory,
--- persistent, MessageId = id, priority = 2 - db priority;
+-- persistent, MessageId = id, priority = 6 - db priority;
 -- wait for publisher confirms (at most 5 s), then collect basic.return frames
 
 UPDATE notifications
