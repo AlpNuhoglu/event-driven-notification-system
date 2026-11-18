@@ -31,7 +31,7 @@ A **lane** is a channel × priority pair. The broker has one queue per channel (
 - **Per lane, not per channel.** With a single per-channel limit, 2,000 `low` messages could fill the buffer and stop the relay from publishing a newly arrived `high` message. Per-lane limits keep headroom for `high` at all times; the broker's strict priority then delivers it first.
 - **Headroom calculation.** Each relay cycle runs a single query, `SELECT channel, priority, count(*) FROM notifications WHERE status = 'queued' GROUP BY channel, priority`, served by the partial index `(channel, priority, queued_at) WHERE status = 'queued'`. Each lane's `LIMIT` is `min(200, HWM − queued count)` ([ADR-0002](0002-postgres-as-outbox-scheduler-and-retry-delay.md)).
 - **Drain time.** A full channel buffer of 2,000 messages is about 20 seconds of work at 98 msg/s.
-- **The values are starting points,** chosen so that a full buffer is seconds of work, not derived from a model. They are configurable, and the load tests check that the relay refills the buffer faster than the workers drain it ([ADR-0010](0010-testing-and-ci.md)).
+- **The values are starting points,** chosen so that a full buffer is seconds of work, not derived from a model. They are **counted per lane and configured per priority**: one value for `high`, one for `normal` and one for `low`, each applied to every channel. The load tests check that the relay refills the buffer faster than the workers drain it ([ADR-0010](0010-testing-and-ci.md)).
 - **Soft limit.** If two relay instances ever run at the same time, both may see the same headroom and exceed the HWM by up to one batch each. This does not affect correctness.
 
 ### 2. The backpressure chain
@@ -66,7 +66,7 @@ The rule is deliberately coarse. After a reconnection the relay cannot know whet
 **What reconciliation does not cover.** A message that disappears while the connection stays up is not detected automatically: a message dead-lettered to a poison queue ([ADR-0001](0001-rabbitmq-as-dispatch-broker.md)), or a publish wrongly recorded as `queued`. For these there are two tools and one bound:
 
 - the gauge `lane_oldest_queued_age_seconds{channel,priority}`, with an alert on the `high` lanes ([ADR-0009](0009-observability.md));
-- a manual **`requeue-stale`** command that applies transition 8 on demand;
+- a manual **`requeue-stale`** subcommand of the relay binary that applies transition 8 on demand, run as `docker-compose run --rm relay requeue-stale`. By default it takes `queued` rows older than 5 minutes (`--older-than=5m`); `--all` takes every `queued` row;
 - expiry: a row that is never recovered fails as `expired` when its time runs out.
 
 ### 4. Lease sweeper (transition 7)

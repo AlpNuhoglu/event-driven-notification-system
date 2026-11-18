@@ -68,6 +68,7 @@ Do not invent a decision. If the ledger and the ADRs do not answer a question, w
 - **No secrets in the repository.** `.env` is git-ignored; `.env.example` holds names and local defaults only.
 - **No personal data, local paths or recruiting details** in any tracked file.
 - **Never log a recipient or message content.** Use the `Recipient` type for recipients (D42).
+- **Demo and test data use only reserved fake values** (`+905551234567`, `example.com` addresses); requests to the default webhook.site URL are publicly visible (D44).
 - **Generated code is never edited by hand.** Change `api/openapi.yaml` or the SQL, then run `make generate`.
 - **Pin versions.** Container images use exact tags; GitHub Actions use full commit SHAs (D48, D53).
 
@@ -100,4 +101,6 @@ Defined in P0; until then this table is the target.
 | `make load` | k6 load scenarios |
 | `make verify-suite` | Mutation patches; each must fail a named test |
 | `make demo` | At most 10 requests through the running stack |
+| `make up-mock` | The stack with `docker-compose.mock.yml`: `mockprovider` as the provider |
+| `docker-compose run --rm relay requeue-stale` | Return stale `queued` rows to `pending` (`--older-than=5m` by default, `--all`) |
 | `docker-compose up` | The whole stack, as the assessment specifies |
