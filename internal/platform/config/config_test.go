@@ -40,10 +40,25 @@ func lookup(m map[string]string) func(string) (string, bool) {
 	return func(k string) (string, bool) { v, ok := m[k]; return v, ok }
 }
 
+// composeOnly lists the variables of .env.example that docker-compose.yml
+// interpolates itself (published host ports) and that no service reads.
+var composeOnly = []string{"GRAFANA_PORT", "PROMETHEUS_PORT", "JAEGER_UI_PORT"}
+
 func TestKeysMatchEnvExample(t *testing.T) {
 	file := envFile(t)
 	keys := Keys()
+	for _, name := range composeOnly {
+		if slices.Contains(keys, name) {
+			t.Errorf("%s is listed as Compose-only but is read by the loader", name)
+		}
+		if _, ok := file[name]; !ok {
+			t.Errorf("%s is listed as Compose-only but missing from .env.example", name)
+		}
+	}
 	for name := range file {
+		if slices.Contains(composeOnly, name) {
+			continue
+		}
 		if !slices.Contains(keys, name) {
 			t.Errorf("%s is in .env.example but not read by the loader", name)
 		}
