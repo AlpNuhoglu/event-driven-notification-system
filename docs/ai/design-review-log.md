@@ -2,7 +2,7 @@
 
 How the design was reviewed before any code was written, which AI mistakes the review caught, which critiques were kept or rejected, and which claims were turned into experiments instead of being trusted.
 
-The decisions themselves are in the [decision ledger](decision-ledger.md) (`D1`–`D75`); the final design is in the [ADRs](../adr/). This log records the *path* to them. It is curated: no raw transcripts.
+The decisions themselves are in the [decision ledger](decision-ledger.md) (`D1`–`D76`); the final design is in the [ADRs](../adr/). This log records the *path* to them. It is curated: no raw transcripts.
 
 > **Status:** first draft, written at the end of the design phase while both sides of the review were still available. P7 completes section 4 from the raw review material and adds the implementation-phase entries (section 6).
 

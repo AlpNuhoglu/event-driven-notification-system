@@ -40,7 +40,7 @@ The one place where fan-out *is* needed is **status-change events** (`notificati
 
 ## Decision
 
-Use **RabbitMQ 4.4.x** as the dispatch broker, pinned to an exact image tag in `docker-compose.yml`, with `rabbitmq/amqp091-go` ≥ v1.13.0 as the client (automatic connection recovery since v1.12.0, topology recovery since v1.13.0).
+Use **RabbitMQ 4.4.x** as the dispatch broker, pinned to an exact image tag in `docker-compose.yml`, with `rabbitmq/amqp091-go` ≥ v1.13.0 as the client (automatic connection recovery since v1.12.0, topology recovery since v1.13.0). The recovery is off by default and the library marks it experimental; it is enabled explicitly, with the budget given in [ADR-0005](0005-service-topology-and-status-events.md).
 
 ### Delivery topology
 
@@ -146,6 +146,7 @@ Changes made after the design review, recorded in the [design review log](../ai/
 
 - Nine lane queues with a weighted 6:3:1 dispatcher became one queue per channel with built-in strict priority, because the weighting contradicted the goal for urgent messages and quorum queues have supported strict priorities since RabbitMQ 4.3. (D7)
 - After experiment E1 (P0), the AMQP priority changed from `2 − db_priority` to `6 − db_priority`: the client library cannot send a priority of 0, which the broker would then sort as 4, ahead of `high`. The description of a requeued message was corrected to what the experiment observed. (D7)
+- After experiment E4 (P0), the client's recovery is described as what it is: opt-in and experimental, enabled explicitly. (D5)
 - Publishes became `mandatory`, and every role now declares the topology on each connection, because publisher confirms also confirm unroutable messages. (D2)
 - The custom delivery limit of 5 was removed: it could not catch a real poison message and could dead-letter healthy ones. (D6)
 - A 24-hour consumer timeout was added so that messages waiting during an open circuit do not get their consumer cancelled after 30 minutes. (D8)

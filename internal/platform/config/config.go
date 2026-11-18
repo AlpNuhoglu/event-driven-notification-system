@@ -34,6 +34,11 @@ type Connections struct {
 	DatabaseURL string
 	RabbitMQURL string
 	RedisURL    string
+	// AMQPRecoveryRetryInterval and AMQPRecoveryMaxRetries are the budget of
+	// the RabbitMQ client's automatic connection recovery: the wait before
+	// each reconnection attempt and the number of attempts (D5).
+	AMQPRecoveryRetryInterval time.Duration
+	AMQPRecoveryMaxRetries    int
 }
 
 // Ports holds the listen addresses.
@@ -303,6 +308,9 @@ func (l *loader) load() Config {
 		DatabaseURL: l.str("DATABASE_URL", "postgres://notifications:notifications@postgres:5432/notifications?sslmode=disable"),
 		RabbitMQURL: l.str("RABBITMQ_URL", "amqp://guest:guest@rabbitmq:5672/"),
 		RedisURL:    l.str("REDIS_URL", "redis://redis:6379/0"),
+
+		AMQPRecoveryRetryInterval: l.dur("AMQP_RECOVERY_RETRY_INTERVAL", 5*time.Second),
+		AMQPRecoveryMaxRetries:    l.intv("AMQP_RECOVERY_MAX_RETRIES", 24),
 	}
 	c.Ports = Ports{
 		APIAddr:     l.str("API_ADDR", ":8080"),

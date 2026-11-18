@@ -100,6 +100,9 @@ func TestOverrides(t *testing.T) {
 		"PHONE_VALIDATION":        "strict",
 		"LOG_LEVEL":               "debug",
 		"RATE_LIMIT_PER_SECOND":   "10",
+
+		"AMQP_RECOVERY_RETRY_INTERVAL": "20ms",
+		"AMQP_RECOVERY_MAX_RETRIES":    "3",
 	}))
 	if err != nil {
 		t.Fatal(err)
@@ -117,6 +120,8 @@ func TestOverrides(t *testing.T) {
 		cfg.Retry.Low.Cap != time.Hour,
 		cfg.API.PhoneValidation != "strict",
 		cfg.Observability.LogLevel != "debug",
+		cfg.Connections.AMQPRecoveryRetryInterval != 20*time.Millisecond,
+		cfg.Connections.AMQPRecoveryMaxRetries != 3,
 		cfg.RateLimit.PerSecond != 10:
 		t.Errorf("overrides not applied: %+v", cfg)
 	}
@@ -132,6 +137,8 @@ func TestInvalid(t *testing.T) {
 		{"PROVIDER_TIMEOUT", "-5s"},
 		{"RELAY_BATCH_SIZE", secret},
 		{"RELAY_BATCH_SIZE", "0"},
+		{"AMQP_RECOVERY_RETRY_INTERVAL", "0s"},
+		{"AMQP_RECOVERY_MAX_RETRIES", "0"},
 		{"MAX_BODY_BYTES", "-1"},
 		{"TEMPLATE_MAX_BODY_BYTES", secret},
 		{"BREAKER_FAILURE_RATIO", "0"},
