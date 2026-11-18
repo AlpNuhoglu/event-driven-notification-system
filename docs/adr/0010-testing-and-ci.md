@@ -64,6 +64,7 @@ The two tests in bold are the ones that would have caught the dropped-message de
 | Listing | **Pagination walk:** 500 rows created in the same second, `limit=7`, every row returned exactly once. An `EXPLAIN` check asserts that both listing queries use their index. |
 | Outbox | With RabbitMQ stopped, the api keeps accepting; after restart, everything is published |
 | Rate limiter | GCRA keeps every one-second window at or below 100 across several concurrent clients; the script returns a relative wait ([ADR-0007](0007-retry-policy-and-circuit-breaker.md) §5) |
+| Connection epoch | `TestWorker_ConnectionLossWithBufferedMessages`: the connection to RabbitMQ is broken while messages sit in the worker's local buffer. Every notification ends `sent`, and no ack from an older connection epoch reaches the broker ([ADR-0005](0005-service-topology-and-status-events.md), D76). |
 | Pacer | The highest-priority buffered message is taken; the slot is kept when a claim affects zero rows; a circuit that opens after the claim yields `aborted` and `retrying` without budget |
 | Provider client | The request body has exactly three fields (also asserted end to end on `mockprovider`'s report); a `202` body is parsed; another `2xx` is success and increments `provider_unexpected_2xx_total`; a redirect is not followed; the request is sent exactly once when the server closes the connection; connections are reused (`httptrace.GotConnInfo.Reused`) |
 | Templates | Builtin functions and multi-template sources are rejected; concurrent version creation produces consecutive versions ([ADR-0008](0008-templates-and-scheduling.md)) |
@@ -235,3 +236,4 @@ Changes made after the design review, recorded in the [design review log](../ai/
 - Chaos scenarios gained a broker data wipe, a Postgres restart and a low-traffic outage, and lost the leader scenario. (D50)
 - `make verify-suite` was added so that removing a guarantee must make a named test fail. (D54)
 - CI was hardened (actions pinned by SHA, minimal permissions, non-blocking scheduled scans, Dependabot off, a `docker-compose up` job), and the Git workflow with pull requests was defined. (D53, D59, D61)
+- After the first-hour experiments (P0), `TestRelay_PrioritySetOnEveryMessage` checks the mapping `6 − db_priority`, and `TestWorker_ConnectionLossWithBufferedMessages` was added for the connection epoch. (D7, D76)

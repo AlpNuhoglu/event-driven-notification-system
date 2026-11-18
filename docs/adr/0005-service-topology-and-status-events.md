@@ -71,6 +71,7 @@ For each channel the worker runs **one pacer loop** and one semaphore:
 
 ```
 consumer (prefetch = 25) ──► local buffer, ordered by priority
+                              (each delivery is stamped with the connection epoch)
 
 pacer loop (one per channel):
   1. acquire a concurrency slot              (semaphore, 25 per channel)
@@ -79,7 +80,7 @@ pacer loop (one per channel):
   4. reserve a rate-limit slot               (GCRA, at most 250 ms ahead)
   5. take the highest-priority buffered message and claim it during the wait
         claim affects 0 rows ──► ack, drop; keep the slot and take the next message
-  6. ack; emit the processing event
+  6. ack, unless the delivery is from an older connection epoch; emit the processing event
   7. at the slot time:
         circuit opened meanwhile ──► attempt 'aborted', row back to retrying
         otherwise ──► call the provider ──► final transition (fenced) ──► emit event
@@ -94,10 +95,26 @@ pacer loop (one per channel):
 - **The message is acked as soon as the claim commits.** From that point the database owns the work: the row is `processing` with a lease, and the lease sweeper recovers it if the worker dies ([ADR-0003](0003-bounded-relay-buffer-and-sweepers.md)). Only unclaimed messages are ever unacknowledged.
 - **The final write is retried** with back-off for up to 60 seconds if Postgres is unavailable ([ADR-0004](0004-data-model-state-machine-and-fencing.md) §4).
 
+#### Connection epoch (D76)
+
+After a recovery the client library keeps the same channel object and the broker's delivery tags start again at 1. An ack sent for a delivery that arrived before the reconnect therefore acknowledges whichever message carries that tag on the recovered channel, a different one (observed in experiment E4). The worker prevents this with a connection epoch:
+
+- The worker keeps a connection epoch, a counter that advances every time the connection is lost. A channel that the library reopens after a channel error also restarts its delivery tags, so it advances the epoch in the same way.
+- **Each delivery carries the epoch it arrived on.**
+- **On a reconnect, deliveries from an older epoch are removed from the pacer's local buffer without an ack or a nack.** The broker requeued them when the connection dropped and delivers them again.
+- **A delivery from an older epoch is never acked.** If the connection is lost between a claim and its ack (steps 5 and 6), the claim stands: the row is `processing`, the send goes ahead, and no ack is sent.
+- **A redelivered duplicate is handled by the claim guard.** Its claim affects zero rows, and it is acked and dropped (step 5, [ADR-0004](0004-data-model-state-machine-and-fencing.md)).
+
+The test is in [ADR-0010](0010-testing-and-ci.md): the connection is broken while messages sit in the local buffer; every notification ends `sent`, and no ack from an older epoch reaches the broker.
+
 ### Connections to RabbitMQ
 
 - Every role declares the topology it uses at start-up and on every (re)connection ([ADR-0001](0001-rabbitmq-as-dispatch-broker.md)).
-- Reconnection uses the client library's automatic recovery. **If recovery gives up, the relay, the worker and the gateway exit with a non-zero code** and are restarted by the container runtime; for the relay this also triggers reconciliation.
+- Reconnection uses the client library's automatic recovery, including its topology recovery. The library has it off by default and marks it experimental (experiment E4), so every role enables it explicitly (`Config.Recovery`).
+- **The recovery budget is configuration:** `AMQP_RECOVERY_MAX_RETRIES` = 24 attempts, each after a wait of `AMQP_RECOVERY_RETRY_INTERVAL` = 5 s, which is about 2 minutes. The library's own default, 5 attempts at 5 s, gave up 26 s into a 60-second outage.
+- A role learns about the connection from the library's state notifications (`NotifyStateChange`): `open → reconnecting` when it is lost, `reconnecting → open` when it is back, and `→ closed` with an error when recovery has given up.
+- **If recovery gives up, the relay, the worker and the gateway exit with a non-zero code** and are restarted by the container runtime. The new process declares the topology at start-up, and the relay runs reconciliation on its first connection ([ADR-0003](0003-bounded-relay-buffer-and-sweepers.md) §3). This exit-and-restart path is also the fallback if the experimental recovery misbehaves ([future work](../future-work.md)).
+- **The worker never acks a delivery that arrived before a reconnect** (the connection epoch, above).
 - **The api does not exit.** Its only use of RabbitMQ is the optional event publisher, so it logs the state, keeps serving and reconnects lazily.
 - A worker that receives a server-side consumer cancellation resubscribes ([ADR-0001](0001-rabbitmq-as-dispatch-broker.md)).
 
@@ -202,3 +219,4 @@ Changes made after the design review, recorded in the [design review log](../ai/
 - The default Compose stack runs one worker container for all channels and uses webhook.site as the default provider. (D46, D44)
 - The gateway sends a snapshot on subscribe and no longer keeps a `last_version` map, because a client learns a notification's `id` only after the first events may have been published. (D37)
 - Event publishers became lazy and optional, connection-recovery failure became an exit, and Compose details (fixed RabbitMQ hostname, `healthcheck` subcommand, stop grace period, pinned images) were added. (D11, D5, D9, D47, D48)
+- After experiment E4 (P0), the client's recovery is enabled explicitly with a configured budget of 24 attempts at 5 s, and the worker gained the connection epoch: a delivery that arrived before a reconnect is dropped from the local buffer and never acked, because delivery tags restart on the recovered channel. (D5, D76)

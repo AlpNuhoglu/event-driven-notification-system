@@ -2,7 +2,7 @@
 
 The plan that the implementation sessions execute. Each phase is sized for one fresh Claude Code session and one or a few pull requests.
 
-- **What to build** is specified in the [ADRs](../adr/), the primary design documents, and recorded with its reasons in the [decision ledger](../ai/decision-ledger.md) (v4: `D1`–`D75`, `G1`–`G5`). This plan decides only **in which order**, and **how each step is shown to be done**.
+- **What to build** is specified in the [ADRs](../adr/), the primary design documents, and recorded with its reasons in the [decision ledger](../ai/decision-ledger.md) (v4: `D1`–`D76`, `G1`–`G5`). This plan decides only **in which order**, and **how each step is shown to be done**.
 - **Where things stand** is recorded in [`docs/progress.md`](../progress.md). A session reads that file first.
 - If this plan and the ledger or an ADR disagree, the ledger and the ADRs win; fix the plan in the same pull request and note it under "Known deviations from the plan" in `progress.md`. If an ADR and the ledger disagree with each other, do not pick one: record it under "Open issues" in `progress.md` and ask.
 
@@ -70,7 +70,7 @@ Done by the author in the repository settings, before any code is written. The s
 | Item | Check |
 |---|---|
 | The design documents and agent configuration are on `main` (the documents pull request is merged) | `git log --oneline origin/main` shows only documentation commits |
-| `main` is protected: pull requests required, no direct pushes, no force pushes | `gh api repos/{owner}/{repo}/branches/main/protection` returns the rule |
+| `main` is protected: pull requests required, no direct pushes, no force pushes | `gh api repos/{owner}/{repo}/rules/branches/main` lists the rules `deletion`, `non_fast_forward` and `pull_request`. The protection is a repository ruleset, so the classic endpoint `branches/main/protection` answers 404. |
 | "Rebase and merge" is the only merge method (D59) | `gh api repos/{owner}/{repo} --jq '[.allow_rebase_merge, .allow_merge_commit, .allow_squash_merge]'` prints `[true,false,false]` |
 | Dependabot is off (D53) | No `.github/dependabot.yml`; security updates disabled in settings |
 | `.inputs/` is not tracked (G5) | `git ls-files .inputs` prints nothing |
@@ -253,14 +253,14 @@ The README gains its API examples (day 2 of D57).
 
 **Goal.** Failures are classified by scope, retried with the right budget, and every recovery path of the design exists and is tested.
 
-**Implements.** D2 (redeclaration on reconnection), D5, D6, D8 (resubscribe safety net), D12, D14, D17 (full), D18, D20, D23 (abort path), D25, D26, D27, D30, D31, D32, D64, D68.
+**Implements.** D2 (redeclaration on reconnection), D5, D6, D8 (resubscribe safety net), D12, D14, D17 (full), D18, D20, D23 (abort path), D25, D26, D27, D30, D31, D32, D64, D68, D76 (connection epoch).
 
 | ADR | Sections |
 |---|---|
 | [0002](../adr/0002-postgres-as-outbox-scheduler-and-retry-delay.md) | Expiry |
 | [0003](../adr/0003-bounded-relay-buffer-and-sweepers.md) | §3 (reconciliation, `requeue-stale`), §4, §5 |
 | [0004](../adr/0004-data-model-state-machine-and-fencing.md) | §4 (final-write retry, transition 12), §5; transitions 5–8, 10, 12 in full |
-| [0005](../adr/0005-service-topology-and-status-events.md) | Connections to RabbitMQ (exit when recovery gives up) |
+| [0005](../adr/0005-service-topology-and-status-events.md) | Connections to RabbitMQ (recovery budget, exit when recovery gives up); worker internals: the connection epoch |
 | [0007](../adr/0007-retry-policy-and-circuit-breaker.md) | §1–4, §7–10 |
 
 **Scope.** The full classification table with `unreachable` and `aborted`; `decideRetry` in full with the priority profiles and TTLs; `Retry-After` and consecutive-`429` handling; the in-process circuit breaker; the Redis-down fallback limiter; the expiry pass; reconciliation on (re)connection with the deferred trigger; the `requeue-stale` relay subcommand (`--older-than`, 5 minutes by default; `--all`); transition 12; the 60-second final-write retry; the lease sweeper in full; resubscribe on a server-side consumer cancellation; `mockprovider` fault injection (error rates, `429`, connection close, timeouts, redirects, malformed bodies, per channel).
@@ -284,6 +284,7 @@ The README gains its API examples (day 2 of D57).
 | Fallback limiter | Sending continues with Redis stopped; `limiter_fallback_active` is set |
 | Throttling | `429` with and without `Retry-After`; doubling up to 2 minutes; `failures` unchanged |
 | Consumer | A server-side cancellation is followed by a resubscribe |
+| Connection epoch (D76) | `TestWorker_ConnectionLossWithBufferedMessages`: the connection is broken while messages sit in the local buffer; every notification ends `sent`, and no ack from an older epoch reaches the broker |
 
 **Exit criteria.**
 

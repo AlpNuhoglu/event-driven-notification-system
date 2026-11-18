@@ -54,11 +54,11 @@ Recovers messages that were published but can no longer be consumed.
 
 | Aspect | Rule |
 |---|---|
-| Trigger | **Every (re)connection of the relay to RabbitMQ**, including the first connection after start-up. The relay subscribes to the client library's recovery state notifications (`NotifyStateChange`). |
+| Trigger | **Every (re)connection of the relay to RabbitMQ**, including the first connection after start-up. The relay subscribes to the client library's recovery state notifications (`NotifyStateChange`); the trigger after an outage is the connection's change from `reconnecting` to `open`. `NotifyClose` is not used as the signal: during a recovery it can deliver extra errors, and it is closed without a value both when recovery gives up and on a normal close (experiment E4). |
 | Action | **All** `queued` rows return to `pending` (`version + 1`, event emitted). The normal relay cycle then publishes them again. Reconciliation itself never publishes. |
 | Rate | At most once per 60 seconds. **A trigger that arrives inside that window is deferred, not skipped:** it runs once when the window ends. |
 | Duplicates | A copy of the message may still be in RabbitMQ. Whichever copy is claimed first wins; the other is dropped by the claim guard ([ADR-0004](0004-data-model-state-machine-and-fencing.md)). |
-| When recovery gives up | If the library's connection recovery gives up, the relay exits with a non-zero code. The container runtime restarts it, and the new process reconciles on its first connection ([ADR-0005](0005-service-topology-and-status-events.md)). |
+| When recovery gives up | The recovery budget is 24 attempts at 5 s, about 2 minutes (`AMQP_RECOVERY_MAX_RETRIES`, `AMQP_RECOVERY_RETRY_INTERVAL`). If it is used up, the connection's state changes to `closed` with an error and the relay exits with a non-zero code. The container runtime restarts it, and the new process declares the topology and reconciles on its first connection ([ADR-0005](0005-service-topology-and-status-events.md)). |
 | Dependencies | Postgres and RabbitMQ only |
 
 The rule is deliberately coarse. After a reconnection the relay cannot know whether the broker kept its data, so it treats every `queued` row as possibly lost. The HWM keeps that set small (about 6,000 rows), and the claim guard makes the resulting duplicates harmless.
@@ -127,4 +127,5 @@ Changes made after the design review, recorded in the [design review log](../ai/
 - The recovery paths no longer run in a relay leader: there is one relay, restarted by the container runtime. (D4)
 - The lease now accounts for the rate-limit wait after the claim, and the lease sweeper sets `finished_at` on the attempts it marks `unknown`. (D20)
 - Lanes are counted in Postgres over one broker queue per channel; "about 6,000 messages" became "about 6,000 distinct notifications; duplicates possible". (D7)
+- After experiment E4 (P0), the reconciliation trigger was named exactly (the connection's change from `reconnecting` to `open`), and the recovery budget of 24 attempts at 5 s was added. (D5)
 - The rejection of unbounded publishing no longer cites memory pressure, which does not apply to quorum queues; unbounded backlog in Postgres is now listed as a known limitation. (D56)
