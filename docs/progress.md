@@ -4,13 +4,13 @@ The first file every session reads and the last one it updates. The phases and t
 
 ## Current phase
 
-**P1: core path** — in review (pull request 1 of 3, `p1/schema-and-store`).
+**P1: core path** — in review (pull request 2 of 3, `p1/relay-worker-provider`).
 
-**Next step:** the author answers open issue 5 and merges the `p1/schema-and-store` pull request. Then `p1/relay-worker-provider` from the updated `main`, followed by `p1/compose-e2e`.
+**Next step:** the author answers open issue 6 and merges the `p1/relay-worker-provider` pull request. Then `p1/compose-e2e` from the updated `main`: the API (two endpoints), the application services in Compose, the mock profile, `make test-e2e` with `load-smoke`, the README quick start and the phase's closing mutation check.
 
 **Minimum Compose version:** v2.1.1, from the release notes (`up --wait`); tested with v5.6.1 (D45, D70). `up --wait` is the newest feature the P0 file and the exit criteria use; everything else in the file (`healthcheck` with `start_period`, named volumes, short-syntax ports and mounts, `${VAR:-default}` interpolation) is older. The number is not run against a v2.1.1 binary. P1 re-derives it from the release notes when the one-shot `migrate` service lands (probably v2.7.0, whose notes list the fix that makes `up --wait` handle one-shot containers). The practical check is the clean-clone rehearsal in P7.
 
-**Decision ledger:** v4 (`D1`–`D76`), amended after the first-hour experiments: D5 and D7 were extended and D76 was added, by the author's decision. Section K records the points settled during the preparation session, and D76. The ADRs are the primary design documents; the ledger is the decision record.
+**Decision ledger:** v4 (`D1`–`D77`), amended after the first-hour experiments: D5 and D7 were extended and D76 was added, by the author's decision. In P1 the author added D77 (the pacer's missed-slot rule and send deadline) and amended D20 and D23 to it. Section K records the points settled during the preparation session, and D76. The ADRs are the primary design documents; the ledger is the decision record.
 
 ## Phase status
 
@@ -19,7 +19,7 @@ Status is one of: `not started`, `in progress`, `in review` (pull requests open)
 | Phase | Title | Status | Pull requests | Exit criteria met on |
 |---|---|---|---|---|
 | P0 | Repository skeleton and first-hour experiments | done | [#2](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/2) (`p0/skeleton`, merged), [#3](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/3) (`p0/experiments`, merged) | 2026-11-18 |
-| P1 | Core path | in review | [#4](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/4) (`p1/schema-and-store`); `p1/relay-worker-provider` and `p1/compose-e2e` follow | |
+| P1 | Core path | in review | [#4](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/4) (`p1/schema-and-store`, merged), [#5](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/5) (`p1/relay-worker-provider`); `p1/compose-e2e` follows | |
 | P2 | API completeness | not started | | |
 | P3 | Delivery robustness | not started | | |
 | P4 | Templates and scheduling | not started | | |
@@ -48,14 +48,14 @@ Filled in as each assumption is confirmed or refuted (ledger section J; mapping 
 
 | # | Status (open / confirmed / refuted) | Confirmed by | Date |
 |---|---|---|---|
-| U1 | confirmed | E5. The "sent exactly once" provider client test of P1 keeps it confirmed. | 2026-11-18 |
+| U1 | confirmed | E5, now the permanent test `TestSend_SentExactlyOnce` of the provider client (`-count=20`); `experiments/e5` is deleted. | 2026-11-19 |
 | U2 | open | Partly observed: one probe of the default URL with the reserved fake values answered `202` with a body of the contract's shape (session log, 2026-11-18, P1). The answers at the request cap and after expiry are not observed yet. | |
 | U3 | open | | |
 | U4 | confirmed | E4: the connection's `StateChanged{From: reconnecting, To: open}` is the reconnect event. The reconciliation tests of P3 build on it. | 2026-11-18 |
-| U5 | confirmed | E1: strict order and default priority 4. The client cannot send priority 0, so D7 now maps to 6, 5 and 4. | 2026-11-18 |
+| U5 | confirmed | E1: strict order and default priority 4. The client cannot send priority 0, so D7 now maps to 6, 5 and 4. In P1: `TestRelay_PrioritySetOnEveryMessage` reads the property of every published message. | 2026-11-19 |
 | U6 | confirmed | E2 | 2026-11-18 |
 | U7 | confirmed | E6 | 2026-11-18 |
-| U8 | confirmed | Reading the frame dispatch of `amqp091-go` v1.17.0 (session log, 2026-11-18): the order holds inside the library, under two conditions. `TestRelay_UnroutablePublishStaysPending` with `-count=100` follows in P1. | 2026-11-18 |
+| U8 | confirmed | Reading the frame dispatch of `amqp091-go` v1.17.0 (session log, 2026-11-18): the order holds inside the library, under two conditions. In P1: `TestRelay_UnroutablePublishStaysPending` passes with `-count=100`, and a throwaway probe saw the return already in the listener for 5,000 of 5,000 confirms. | 2026-11-19 |
 
 ## Open issues
 
@@ -63,7 +63,7 @@ Questions that the ledger and the ADRs do not answer, and problems that are not 
 
 | # | Raised on | Issue | Blocks |
 |---|---|---|---|
-| 5 | 2026-11-18 | **A claim that outlasts its rate-limit slot.** The pacer reserves a slot and claims the row during the wait (D23); the send happens "at the slot time". The ADRs do not say what happens when the claim returns after the slot time has passed. That is the normal case when the worker receives a message before the relay commits: the claim waits on the relay's row lock until the whole lane batch is confirmed and committed, while the pacer goes on reserving the following slots. If each late claim sends at once, several sends leave together next to slots that are used on time. Worked example at 98 msg/s: a batch arrives on an idle channel, the relay commits 30 ms later, the first three claims (slots at 0, 10 and 20 ms) send at 30 ms, and the window `[30 ms, 1030 ms)` then holds 101 arrivals. **Options:** (a) send at once and treat the lateness as jitter, which `load-smoke` measures and a lower rate absorbs; (b) when the slot is missed by more than a small tolerance, give it up and reserve a new slot before sending, so every send leaves at a slot reserved for it (cost: one more Redis call and a later send for those messages, and the wait after a claim is no longer bounded by 250 ms, though it stays far below the 30 s lease). **Recommendation:** (b), with the tolerance as configuration. | The pacer in `p1/relay-worker-provider` |
+| 6 | 2026-11-19 | **`TestE2E_IdleSingleNotificationIsSent` does not fail when the claim guard is narrowed to `status = 'queued'`.** The plan's closing mutation check for P1, and ADR-0010 ("the two tests in bold are the ones that would have caught the dropped-message defect"), assume it does. Measured on the development machine: with one message on an idle system the relay commits 0.8–1.3 ms after its publish returns, and the worker's claim arrives later (delivery, a Redis reservation, then the claim; the request reaches the provider after 2.1–2.7 ms). The commit therefore wins the race and the narrowed guard still finds a `queued` row: 0 failures in 20 runs, 0 in a further 200. Which side wins depends on the machine, so the idle test can neither be relied on to catch the defect nor be said never to. **What does catch it:** `TestClaim_WaitsForRelayCommit` (20 of 20 fail under the mutation), and a test added in this pull request, `TestE2E_WorkerFasterThanRelayCommit`, which runs the same path through the real broker and holds the relay's transaction open until the worker's claim is seen waiting on the row lock (20 of 20 fail). The batch tests (duplicate message, send deadline, shutdown, late relay commit) fail under it as well. **Question:** what should the closing mutation check and ADR-0010 name? **Recommendation:** keep the idle test as the plain proof that one notification is sent; name `TestClaim_WaitsForRelayCommit` and `TestE2E_WorkerFasterThanRelayCommit` as the two tests the mutation must fail (plan P1, ADR-0010 §1 and §8); and correct ADR-0010's sentence about the idle test. | The closing mutation check in `p1/compose-e2e` |
 
 ## Session log
 
@@ -79,6 +79,51 @@ Newest entry first. One entry per session, in this form:
 - **Open issues:** new entries added to the table above.
 - **Next step:** the first thing the next session does.
 ```
+
+### 2026-11-19 — P1: relay, worker and provider (pull request 2 of 3)
+
+- **Done:**
+  - `internal/queue`: the connection with the library's recovery enabled explicitly from the two configured variables, a state watcher (open, lost, recovery gave up) and the connection epoch stamped on every delivery (it does not advance yet; P3); the topology (dispatch exchange, one quorum queue per channel with `x-consumer-timeout` as `int64`, dead-letter exchange and poison queues); the relay's publisher (confirm mode, `mandatory`, priority `6 − db_priority` on every message, returns matched by `MessageId` after the confirms); the worker's consumer.
+  - `internal/relay`: the publishing cycle on the 100 ms ticker (one count query, channels × priorities with `high` first, `limit = min(batch, HWM − queued)`, no transaction while the connection is not open, a lane's error does not stop the cycle) and the minimal lease sweeper loop; `relay.Service`; `cmd/relay`.
+  - `internal/ratelimit`: GCRA with zero burst as a Lua script on the Redis clock, returning a relative wait and refusing beyond the horizon.
+  - `internal/worker`: one pacer loop and one semaphore per channel with the order of D23, the missed-slot rule and the send deadline of D77, shutdown with a drain; `worker.Service` and `cmd/worker`. The breaker is an interface with a no-op implementation until P3.
+  - `internal/provider`: the HTTP client of ADR-0007 §6 and §11 (exactly three fields, idempotency header, no replay, no redirect, drained bodies, reused connections, the two anomaly counters).
+  - `internal/mockprovider` and `cmd/mockprovider`: the provider contract, a configurable status code and the report (arrival times, idempotency keys, field names only, `max_per_second`).
+  - `internal/store`: `AbortAttempt` (an attempt that sent nothing: back to `retrying`, `failures` unchanged, outcome `aborted`).
+  - `internal/platform/bootstrap`: `RunService`, so a role runs its own work next to the health endpoints and exits non-zero when that work fails. `internal/events`: the publisher interface with a no-op implementation (P5 adds the real one). `internal/ratewindow`: the one-second window computation, with its unit test.
+  - Configuration: `PACER_SLOT_TOLERANCE` (5 ms) and `MOCKPROVIDER_ADDR` (`:8090`).
+  - Documents, by the author's decision: D77 in the ledger with D20 and D23 amended; ADR-0003, 0004, 0005, 0007, 0009 and 0010; the plan (P1 tests, a seventh mutation candidate in P6); the accepted decisions 4 to 8 of the previous pull request in ADR-0002, 0004, 0007 and 0009.
+  - `experiments/e5` is deleted: its permanent test exists.
+- **Tests:** the relay's `TestRelay_UnroutablePublishStaysPending`, `TestRelay_PrioritySetOnEveryMessage`, `TestRelay_TwoRelaysNeverPublishSameRow`, lane HWM and order, confirm timeout and lost connection; the publisher and consumer against a real broker; the limiter against a real Redis (8 concurrent clients share one schedule, at most 98 slots in any second, relative wait, horizon); the deterministic pacer tests on a fake clock (the twelve guarantees, among them the missed slot, the send deadline, the kept slot, highest priority, pacing at full rate); the provider client (`to` equals the real recipient byte for byte, sent exactly once, connections reused, redirect not followed, the two counters); and, in `internal/integration` with real Postgres, RabbitMQ and Redis and the roles wired as the binaries wire them: `TestE2E_IdleSingleNotificationIsSent`, `TestE2E_WorkerFasterThanRelayCommit`, `TestE2E_DuplicateMessageIsSentOnce`, `TestE2E_SendDeadlineAbortsLateClaim`, `TestE2E_ShutdownRequeuesBufferedAndDrains`, `TestE2E_LateRelayCommitKeepsRateLimit`.
+- **Pull requests opened:** [#5](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/5) from `p1/relay-worker-provider`.
+- **Exit criteria:** run and passed: `make test`; `go test -tags integration -race -count=20 -run 'TestClaim_WaitsForRelayCommit|TestE2E_IdleSingleNotificationIsSent' ./...`; `go test -tags integration -race -count=100 -run TestRelay_UnroutablePublishStaysPending ./...`; `make lint`; `make generate` without drift. Remaining for `p1/compose-e2e`: `docker-compose up` from a clean clone, the `curl` path through the API, `make test-e2e` with `load-smoke`, and the closing mutation check.
+- **Measured:**
+  - **D77 scenario** (200 notifications due at once on an idle channel at 98 msg/s, the relay's transaction held for 100 ms after the first claim is seen waiting): the largest one-second window at the provider held **99** sends in five of five runs, with 11 to 13 missed slots and 14 claims waiting at the release. With the missed-slot rule removed the same test shows **111** (and 104 to 105 with a hold of 30 ms).
+  - **Mutation checks** (each restored byte-identically): claim guard narrowed to `status = 'queued'` → `TestClaim_WaitsForRelayCommit` and `TestE2E_WorkerFasterThanRelayCommit` fail 20 of 20, `TestE2E_IdleSingleNotificationIsSent` passes 20 of 20 (open issue 6); missed-slot rule removed → `TestMissedSlot`, `TestSendDeadline`, `TestPacingAtFullRate` and `TestE2E_LateRelayCommitKeepsRateLimit` fail; deadline checks removed → `TestSendDeadline` fails; `mandatory = false` → `TestRelay_UnroutablePublishStaysPending` fails.
+  - **The binaries**, against throwaway containers: `migrate up`, `relay` and `worker` with `PROVIDER_URL` at `mockprovider`; a row inserted with `psql` reached `sent` with one `success` attempt and one request with the fields `channel`, `content`, `to`; `SIGTERM` gave exit code 0 for both; an unreachable Redis, an unreachable Postgres and a recovery that gave up (budget 2 × 1 s) each gave exit code 1.
+- **Decisions taken (by the author):** open issue 5 is answered with option (b), recorded as **D77**: a tolerance of 5 ms (`PACER_SLOT_TOLERANCE`), a missed slot is given up and a new one reserved through the same limiter call, the same for a stale kept slot, a send deadline of `lease − HTTP timeout − 5 s` after which the attempt is `aborted`, and the breaker asked again at a re-reserved slot. The eight decisions of the previous pull request were accepted, with two additions that are done here: ADR-0007 states that `max_failures` is the total number of budget-consuming failures (the boundary case `max_failures = 1` is in the `DecideRetry` test), and the provider client test asserts the real recipient byte for byte (the API's test follows with the API).
+- **Decisions taken** (within the latitude of the ledger and the ADRs):
+  1. A send-deadline abort returns the row to `retrying` **due at once** (delay 0). The circuit case keeps its own delay, the time to the next half-open probe.
+  2. The 5 s of the send deadline is the part of the lease kept for the final write, and the same 5 s bounds each write after the claim. It is a field of the worker's configuration that the wiring always sets to `DefaultWriteMargin`, not an environment variable; tests shorten it (D52).
+  3. Shutdown: a claimed notification whose send has not started when the drain ends is `aborted`; a send still running then is cancelled and recorded `unknown` (ADR-0005 updated).
+  4. A delivery whose body is not a notification id is rejected without requeue and goes to the poison queue; a delivery without a priority counts as 4 in the worker's buffer (ADR-0001 updated).
+  5. A missed slot is counted when a claim returns late, and for a stale kept slot only if a message was waiting for it.
+  6. The relay finishes its current lane on shutdown and starts no further one (ADR-0005 updated); the lane runs on a context that shutdown does not cancel. A failed count query skips the tick.
+  7. The publisher uses the library's deferred confirmations, one per publish, so no delivery-tag bookkeeping can be confused by a reconnect; the return listener holds two batches and is also read while the confirms are awaited.
+  8. One `provider.Client` per channel, as ADR-0005 says; they share their counters on one registry. The client keeps Go's standard proxy handling (`HTTPS_PROXY` and `NO_PROXY` are honoured), so the default provider stays reachable behind a proxy.
+  9. `mockprovider` listens on `MOCKPROVIDER_ADDR`; its `healthcheck` probes the admin port like every other role.
+  10. The RabbitMQ test container enables the management plugin, only to create a vhost per test quickly; the Compose file is unchanged. Connection loss and confirm timeouts are produced by a TCP proxy in `internal/testutil`, so no test changes the shared broker.
+  11. Classification is `domain.ClassifyResponse(statusCode)` in its three-way form; P3 replaces it and will need more inputs.
+- **Observed, no change made:**
+  - **The largest window in the D77 scenario is 99, one below the limit's margin of two.** That is what a tolerance of 5 ms allows: arrivals spread over up to 5 ms make room for one more slot in a window. The pacing margin is decided from `load-smoke` (P1, next pull request) and the rate scenario (P6).
+  - **Database pool:** `pgxpool` defaults to `max(4, CPUs)` connections; 75 dispatches can ask for one. Claims then wait for a connection, which the missed-slot rule handles, but throughput under a late relay commit depends on it. A candidate for P6 tuning (`pool_max_conns` in `DATABASE_URL`).
+  - **Lost return listener:** if the library reopens the publisher's channel after a channel error, the return listener is gone and every later batch fails (safe: nothing is marked `queued`) until the relay restarts. P3 (recovery) should rebuild the publisher or exit.
+  - While Redis is down, each dispatch that needs a slot logs a warning every retry interval; the fallback limiter of P3 removes the cause.
+  - With a slot tolerance of 5 ms, a machine whose timers fire later than that turns on-time sends into missed slots. `pacer_slots_missed_total` will show it; nothing is sent off-slot.
+- **Not verified:** recovery against a broker that restarts or loses its data (P3); the two error exits of the worker role (recovery gave up, a consumer's stream ended) in an integration test; anything through Compose (next pull request).
+- **Delegation:** five delegates in parallel on disjoint packages (Opus: queue with relay, and the pacer; Sonnet: provider client, mockprovider, limiter), then one Opus delegate for the worker's wiring and the integration tests. The main loop wrote the briefs, the pacer's algorithm, the GCRA script, `AbortAttempt`, the service runner, the window computation and `TestE2E_WorkerFasterThanRelayCommit`; read the publisher, the relay cycle, the pacer, the dispatch, the limiter and the wiring line by line; changed the provider client (atomic write flag, shared counters), the worker (the write margin as a field, the missed-slot count) and the documents; re-ran every command and repeated the three mutation checks itself.
+- **Open issues:** 6 (the idle end-to-end test does not fail under the narrowed claim guard). Issue 5 is closed by D77.
+- **Next step:** after the answer to issue 6 and the merge, `p1/compose-e2e`.
 
 ### 2026-11-18 — P1: schema and store (pull request 1 of 3)
 
