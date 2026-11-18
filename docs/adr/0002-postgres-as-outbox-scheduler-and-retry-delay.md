@@ -71,6 +71,8 @@ COMMIT;
 | Unroutable message (`basic.return`) | Its row is **not** marked `queued` ([ADR-0001](0001-rabbitmq-as-dispatch-broker.md)) |
 | Dependencies | Postgres and RabbitMQ. **The relay does not use Redis.** |
 
+**The lane transaction is one repository function.** `store.PublishLane(lane, limit, publish)` begins the transaction, selects and locks the due rows, calls `publish` with them while the locks are held, marks the ids that `publish` returns as `queued`, and commits; an error from `publish` rolls back. The ids it accepts must be a subset of the rows it selected, and the status events are returned only after the commit. The relay therefore cannot forget the commit, the rollback or the order of the steps.
+
 **Row locks are held across the publish.** This is the one documented exception to the rule that no lock is held across a network call ([ADR-0004](0004-data-model-state-machine-and-fencing.md) §1), and it is deliberate. A worker can receive a message before the relay has committed `queued`. Its claim then waits on the relay's row lock and proceeds after the commit, instead of finding a row it may not claim and dropping the message ([ADR-0004](0004-data-model-state-machine-and-fencing.md), transition 3). The lock duration is bounded by the batch size and the confirm timeout.
 
 **Failure semantics:**

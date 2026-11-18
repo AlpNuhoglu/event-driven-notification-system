@@ -2,7 +2,7 @@
 
 The plan that the implementation sessions execute. Each phase is sized for one fresh Claude Code session and one or a few pull requests.
 
-- **What to build** is specified in the [ADRs](../adr/), the primary design documents, and recorded with its reasons in the [decision ledger](../ai/decision-ledger.md) (v4: `D1`–`D76`, `G1`–`G5`). This plan decides only **in which order**, and **how each step is shown to be done**.
+- **What to build** is specified in the [ADRs](../adr/), the primary design documents, and recorded with its reasons in the [decision ledger](../ai/decision-ledger.md) (v4: `D1`–`D77`, `G1`–`G5`). This plan decides only **in which order**, and **how each step is shown to be done**.
 - **Where things stand** is recorded in [`docs/progress.md`](../progress.md). A session reads that file first.
 - If this plan and the ledger or an ADR disagree, the ledger and the ADRs win; fix the plan in the same pull request and note it under "Known deviations from the plan" in `progress.md`. If an ADR and the ledger disagree with each other, do not pick one: record it under "Open issues" in `progress.md` and ask.
 
@@ -133,7 +133,7 @@ grep -c '^| E[1-6] ' docs/progress.md    # 6: one result row per experiment
 
 **Goal.** One notification created through the API reaches `sent` at the provider through the real path (outbox, relay, broker, worker, rate limiter), with the relay-versus-worker race closed and tested.
 
-**Implements.** D1, D2, D3, D7, D8 (queue argument), D10, D17 (signature), D19, D20, D21, D22, D23, D24, D28, D29, D33 (basic health endpoints), D44, D45, D46, D47, D51 (`load-smoke`), D52, D63, D65, D67, D71, D72.
+**Implements.** D1, D2, D3, D7, D8 (queue argument), D10, D17 (signature), D19, D20, D21, D22, D23, D24, D28, D29, D33 (basic health endpoints), D44, D45, D46, D47, D51 (`load-smoke`), D52, D63, D65, D67, D71, D72, D77.
 
 | ADR | Sections |
 |---|---|
@@ -176,6 +176,7 @@ grep -c '^| E[1-6] ' docs/progress.md    # 6: one result row per experiment
 | Transition invariants and database constraints (D19) | Transition tests for transitions 1–7 |
 | No one-second window above 100 (D24) | GCRA integration test; deterministic pacer test (fake clock, fixed jitter); unit test of the window computation |
 | Pacer rules (D23) | Highest priority taken; slot kept on a zero-row claim |
+| Missed slot and send deadline (D77) | Deterministic pacer test (fake clock): a claim that returns later than slot + tolerance does not send then and sends on a new slot. A batch arrives on an idle channel and the relay commits 30 ms later: no one-second window above 100. A claim that returns after the send deadline ends `aborted`, `failures` unchanged |
 | Provider contract (D28, D29) | Body has exactly three fields, in the client test and end to end on `mockprovider`'s report; `202` parsed; other `2xx` is success and increments `provider_unexpected_2xx_total`; sent exactly once; connections reused; redirect not followed |
 | Migrations are reversible | `up → down → up` |
 
@@ -394,7 +395,7 @@ gh pr checks
 - **Load scenarios** with k6: 30,000 SMS rate test, strict-priority ordering, saturation report, channel isolation, phase 1 (1 M ingest), phase 2 (100,000 drain), listing and summary latency on the phase-1 dataset. Results go to `docs/load-test.md`; the README gains its load results (day 3 of D57).
 - **Pacing margin:** the main loop reads the jitter measured by the rate scenario and confirms 98 msg/s or adjusts the configured rate (D24).
 - **Tuning:** the values that start as initial defaults are checked against the load and chaos results and adjusted: the event publisher buffer, the gateway queue's `x-max-length` and `x-message-ttl`, the per-connection send queue, and the alert thresholds.
-- **`make verify-suite`:** the six mutation patches of ADR-0010 §8, each failing a named test. At least three of them are never dropped (section 12).
+- **`make verify-suite`:** the six mutation patches of ADR-0010 §8, each failing a named test. At least three of them are never dropped (section 12). **Candidate for a seventh:** the missed-slot rule removed (a late claim sends at once, D77), which must fail the deterministic pacer test and the idle-batch window test.
 - **CI hardening:** every third-party action pinned by SHA; minimal permissions; `test-docker`, `migrations` and `compose-up` jobs (the last runs `docker-compose up` with the standalone binary); the scheduled, non-blocking `security` job.
 - **Release workflow,** run once with a test tag.
 

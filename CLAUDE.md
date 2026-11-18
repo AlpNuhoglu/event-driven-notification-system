@@ -9,7 +9,7 @@ Loaded into every session. An event-driven notification service in Go: REST API 
 | Progress and next step | `docs/progress.md` |
 | The plan (phases P0–P7, exit criteria) | `docs/plan/implementation-plan.md` |
 | Design, by topic (the primary design documents) | `docs/adr/0001` … `0010`, `docs/architecture.md` |
-| Decision record: why the design is as it is (`D1`–`D76`, `G1`–`G5`, experiments, assumptions) | `docs/ai/decision-ledger.md` |
+| Decision record: why the design is as it is (`D1`–`D77`, `G1`–`G5`, experiments, assumptions) | `docs/ai/decision-ledger.md` |
 | How the design was reviewed | `docs/ai/design-review-log.md` |
 | Limitations, interpretations, deferred items | `docs/future-work.md` |
 | Delegation policy | `.claude/skills/fable-orchestration/SKILL.md` |
