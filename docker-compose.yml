@@ -1,0 +1,99 @@
+# Infrastructure services for local development. Application services are
+# added in a later phase.
+services:
+  postgres:
+    image: postgres:18.7
+    environment:
+      # Local development defaults, not secrets (match DATABASE_URL in .env.example).
+      POSTGRES_USER: notifications
+      POSTGRES_PASSWORD: notifications
+      POSTGRES_DB: notifications
+    volumes:
+      # Mount at /var/lib/postgresql, not /var/lib/postgresql/data: the
+      # Postgres 18 image keeps its data in a version-specific directory
+      # below it (PGDATA=/var/lib/postgresql/18/docker).
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      # TCP on purpose: during first initialisation the image runs a temporary
+      # server on the Unix socket only, so a socket check would report healthy too early.
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "notifications", "-d", "notifications"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    restart: unless-stopped
+
+  rabbitmq:
+    image: rabbitmq:4.4.1-alpine
+    # Fixed hostname: RabbitMQ stores its data under the node name, which
+    # derives from the hostname. Without it a recreated container gets a new
+    # random hostname and starts with an empty broker.
+    hostname: rabbitmq
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+      - ./deploy/rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_port_connectivity"]
+      interval: 10s
+      timeout: 10s
+      retries: 6
+      start_period: 20s
+    restart: unless-stopped
+
+  redis:
+    image: redis:8.10.3-alpine
+    # No persistence: Redis only holds rate-limit state.
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.16.0
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9090/-/healthy"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:13.3.1
+    ports:
+      - "3000:3000"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+    restart: unless-stopped
+
+  jaeger:
+    # v2 all-in-one with the built-in default configuration (in-memory
+    # storage). OTLP gRPC (4317) and HTTP (4318) listen on all interfaces by
+    # default, so other containers reach jaeger:4317; only the UI is published.
+    image: jaegertracing/jaeger:2.23.0
+    ports:
+      - "16686:16686"
+    healthcheck:
+      # health-check extension (port 13133, all interfaces), path /status
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:13133/status"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  rabbitmq-data:
