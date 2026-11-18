@@ -5,6 +5,7 @@ package mockprovider
 
 import (
 	"encoding/json"
+	"maps"
 	"net/http"
 	"slices"
 	"strings"
@@ -95,6 +96,10 @@ func handleHealth(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) handleProvider(w http.ResponseWriter, r *http.Request) {
+	// The arrival time is taken first, before the body is read and before the
+	// lock: a request must not look later than it was because another request
+	// or a report held the lock. The rate-limit evidence rests on these times.
+	arrived := s.now().UTC()
 	var fields map[string]json.RawMessage
 	names := []string{}
 	channel := unknownChan
@@ -116,7 +121,7 @@ func (s *Server) handleProvider(w http.ResponseWriter, r *http.Request) {
 
 	s.mu.Lock()
 	s.total++
-	s.arrivals[channel] = append(s.arrivals[channel], s.now().UTC())
+	s.arrivals[channel] = append(s.arrivals[channel], arrived)
 	s.keys[r.Header.Get("Idempotency-Key")]++
 	s.fieldSet[strings.Join(names, "\x00")] = names
 	status := s.status
@@ -160,16 +165,26 @@ func (s *Server) handleReport(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) report() Report {
+	// Only the copies are made under the lock; sorting and the window
+	// computation run outside it, so a report never delays the handler that
+	// records arrivals.
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	rep := Report{
 		Total:           s.total,
 		Channels:        map[string]ChannelReport{},
-		IdempotencyKeys: map[string]int{},
+		IdempotencyKeys: maps.Clone(s.keys),
 		FieldNameSets:   [][]string{},
 	}
+	arrivals := make(map[string][]time.Time, len(s.arrivals))
 	for ch, ts := range s.arrivals {
-		sorted := slices.Clone(ts)
+		arrivals[ch] = slices.Clone(ts)
+	}
+	for _, names := range s.fieldSet {
+		rep.FieldNameSets = append(rep.FieldNameSets, slices.Clone(names))
+	}
+	s.mu.Unlock()
+
+	for ch, sorted := range arrivals {
 		slices.SortFunc(sorted, time.Time.Compare)
 		cr := ChannelReport{
 			Count:        len(sorted),
@@ -181,14 +196,10 @@ func (s *Server) report() Report {
 		}
 		rep.Channels[ch] = cr
 	}
-	for k, n := range s.keys {
-		rep.IdempotencyKeys[k] = n
+	for _, n := range rep.IdempotencyKeys {
 		if n > 1 {
 			rep.DuplicateKeys++
 		}
-	}
-	for _, names := range s.fieldSet {
-		rep.FieldNameSets = append(rep.FieldNameSets, slices.Clone(names))
 	}
 	slices.SortFunc(rep.FieldNameSets, func(a, b []string) int {
 		return strings.Compare(strings.Join(a, "\x00"), strings.Join(b, "\x00"))
