@@ -4,9 +4,11 @@ The first file every session reads and the last one it updates. The phases and t
 
 ## Current phase
 
-**P1: core path** — in review (pull request 3 of 3, `p1/compose-e2e`). Every exit criterion has been run; the phase is done when this pull request is merged.
+**P2: API completeness** — in progress (pull request 1 of 3, `p2/batch-and-idempotency`). P1 is done: its three pull requests are merged.
 
-**Next step:** the author merges the `p1/compose-e2e` pull request. Then P2 (API completeness) from the updated `main`. Open issue 7 belongs to P3.
+**Next step:** the author merges the `p2/batch-and-idempotency` pull request. Then `p2/cancel-redrive-listing` from the updated `main`, then `p2/validation`. Open issue 7 belongs to P3.
+
+**Rules of the phase (author):** the default webhook.site URL is not used in P2 at all (48 of its 50 requests are left); every manual check, test and example run goes through the mock profile (`make up-mock`). Request bodies stay strict: each endpoint accepts exactly the fields its schema names.
 
 **Minimum Compose version:** v2.24.0, from Docker's documentation and the release notes; tested with v5.6.1 (D45, D70). Re-derived in P1 when the application services and the one-shot `migrate` service landed. Three features decide it: `up --wait` (introduced in v2.1.1), `up --wait` with a one-shot container that other services wait for with `service_completed_successfully` (fixed in v2.7.0: "Use appropriate dependency condition for one-shot containers when running `compose up --wait`"), and the optional `.env` entry, `env_file` with `required: false` (the documentation says "As of Docker Compose version 2.24.0"); the last is the newest. The number is not run against a v2.24.0 binary; the practical check is the clean-clone rehearsal in P7. CI runs the stack with the standalone v5.6.1 binary.
 
@@ -19,8 +21,8 @@ Status is one of: `not started`, `in progress`, `in review` (pull requests open)
 | Phase | Title | Status | Pull requests | Exit criteria met on |
 |---|---|---|---|---|
 | P0 | Repository skeleton and first-hour experiments | done | [#2](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/2) (`p0/skeleton`, merged), [#3](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/3) (`p0/experiments`, merged) | 2026-11-18 |
-| P1 | Core path | in review | [#4](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/4) (`p1/schema-and-store`, merged), [#5](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/5) (`p1/relay-worker-provider`, merged), [#6](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/6) (`p1/compose-e2e`) | |
-| P2 | API completeness | not started | | |
+| P1 | Core path | done | [#4](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/4) (`p1/schema-and-store`, merged), [#5](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/5) (`p1/relay-worker-provider`, merged), [#6](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/6) (`p1/compose-e2e`, merged) | 2026-11-19 |
+| P2 | API completeness | in progress | | |
 | P3 | Delivery robustness | not started | | |
 | P4 | Templates and scheduling | not started | | |
 | P5 | Real-time and observability | not started | | |
@@ -79,6 +81,15 @@ Newest entry first. One entry per session, in this form:
 - **Open issues:** new entries added to the table above.
 - **Next step:** the first thing the next session does.
 ```
+
+### 2026-11-19 — P2: batch and idempotency (pull request 1 of 3)
+
+- **Before the first change: the assessment's literal command, in the foreground.** From a clean copy of `main` (`git archive` of `12697ba` into an empty directory, no `.env` file, no variable set), `docker-compose up` was started without `-d` and without `--wait`, as a background process under `timeout`, and checked from a second shell with `docker-compose ps`. It was run twice, because the first run found the image in the local cache and built nothing.
+  - **Run 1 (image reused):** all nine long-running services `healthy` 13 s after the start; `migrate` exited 0.
+  - **Run 2 (image tag removed first, so the command builds the image itself; layer cache warm):** image built, all nine services `healthy` 17 s after the start; `migrate` exited 0.
+  - **Both runs:** after a further 75 s and 90 s every container was still running and `healthy` with a restart count of 0; `/healthz` and `/readyz` answered `200`; `schema_migrations` held version 1, not dirty; the application services logged no warning and no error. **No notification was sent:** `notifications` and `notification_attempts` held 0 rows, so nothing reached the default URL. Stopped with an interrupt to the foreground process: every container exited with code 0 within a second, and `docker-compose up` itself returned 130 (interrupted). The check's containers, volumes and network were then removed.
+  - This closes the "not verified" item of the previous entry (`docker-compose up` in the foreground). Still not verified: the image build without a layer cache locally (CI builds from scratch), and a Compose release older than v5.6.1.
+- **Plan, by the author's decision:** P6 gains the repeated `load-smoke` rule (20 runs; a largest window of 100 in any run lowers the rate, 97 msg/s first, and the runs are repeated; the README's load results state the margin).
 
 ### 2026-11-19 — P1: API, Compose and end to end (pull request 3 of 3)
 
