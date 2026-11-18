@@ -248,3 +248,69 @@ func TestFencing_LateWriteAffectsZeroRows(t *testing.T) {
 		})
 	}
 }
+
+// An aborted attempt sent nothing: the row returns to retrying with failures
+// unchanged and the attempt is closed as aborted (D77, D23).
+func TestAbortAttempt(t *testing.T) {
+	t.Run("applied", func(t *testing.T) {
+		s, _ := newTestStore(t, delayed)
+		n := create(t, s)
+		claim(t, s, n.ID)
+		before := get(t, s, n.ID)
+		ev, err := s.AbortAttempt(ctxT(t), n.ID, 1, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		after := get(t, s, n.ID)
+		checkTransition(t, before, after, ev, domain.StatusRetrying)
+		if after.Failures != 0 || after.AttemptCount != 1 || after.LeaseExpiresAt != nil ||
+			after.QueuedAt != nil || !after.DueAt.Equal(after.UpdatedAt) {
+			t.Errorf("row = %+v", after)
+		}
+		a := attempts(t, s, n.ID)
+		if len(a) != 1 || a[0].Outcome != domain.OutcomeAborted || a[0].FinishedAt == nil || a[0].HTTPStatus != nil {
+			t.Errorf("attempt = %+v", a)
+		}
+		// Due at once and budget untouched: the row is claimed again as attempt 2.
+		if c := claim(t, s, n.ID); c.Notification.AttemptCount != 2 || c.Notification.Failures != 0 {
+			t.Errorf("second claim = %+v", c.Notification)
+		}
+	})
+
+	t.Run("with a delay", func(t *testing.T) {
+		s, _ := newTestStore(t, delayed)
+		n := create(t, s)
+		claim(t, s, n.ID)
+		if _, err := s.AbortAttempt(ctxT(t), n.ID, 1, testDelay); err != nil {
+			t.Fatal(err)
+		}
+		after := get(t, s, n.ID)
+		if got := after.DueAt.Sub(after.UpdatedAt); got != testDelay {
+			t.Errorf("due_at - updated_at = %s, want %s", got, testDelay)
+		}
+		if _, _, err := s.Claim(ctxT(t), n.ID, testLease, testProvider); !errors.Is(err, ErrNotApplied) {
+			t.Errorf("claim before due_at: err = %v, want ErrNotApplied", err)
+		}
+	})
+
+	t.Run("late abort after the lease sweeper", func(t *testing.T) {
+		s, pool := newTestStore(t, zeroDelay)
+		n := create(t, s)
+		claim(t, s, n.ID)
+		expireLease(t, pool, n.ID)
+		if _, err := s.SweepExpiredLeases(ctxT(t), 10, func() float64 { return 0 }); err != nil {
+			t.Fatal(err)
+		}
+		before := get(t, s, n.ID)
+		if _, err := s.AbortAttempt(ctxT(t), n.ID, 1, 0); !errors.Is(err, ErrNotApplied) {
+			t.Fatalf("err = %v, want ErrNotApplied", err)
+		}
+		if after := get(t, s, n.ID); !reflect.DeepEqual(before, after) {
+			t.Errorf("row changed by a late abort:\nbefore %+v\nafter  %+v", before, after)
+		}
+		// Nothing was sent, so the attempt's true outcome replaces unknown.
+		if a := attempts(t, s, n.ID); len(a) != 1 || a[0].Outcome != domain.OutcomeAborted {
+			t.Errorf("attempt = %+v", a)
+		}
+	})
+}
