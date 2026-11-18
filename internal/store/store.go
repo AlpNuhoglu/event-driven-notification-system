@@ -22,6 +22,9 @@ import (
 var (
 	// ErrNotFound is returned when no notification has the given id.
 	ErrNotFound = errors.New("store: notification not found")
+	// ErrDuplicate is returned by CreateNotification when another
+	// notification holds the dedupe_key.
+	ErrDuplicate = errors.New("store: dedupe_key is held by another notification")
 	// ErrNotApplied is returned when a transition's guard matched zero rows:
 	// another actor changed the row first.
 	ErrNotApplied = errors.New("store: transition not applied")
@@ -135,17 +138,32 @@ type NewNotification struct {
 	TraceParent     string
 }
 
-// CreateNotification inserts a pending notification with a new UUIDv7 id.
+// CreateNotification inserts a pending notification with a new UUIDv7 id,
+// without an idempotency key. It is CreateSingle for callers that need no
+// more; a dedupe_key conflict returns ErrDuplicate.
 func (s *Store) CreateNotification(ctx context.Context, n NewNotification) (Notification, error) {
+	res, err := s.CreateSingle(ctx, nil, n, nil)
+	if err != nil {
+		return Notification{}, err
+	}
+	if res.Outcome != OutcomeCreated {
+		return Notification{}, ErrDuplicate
+	}
+	return res.Notification, nil
+}
+
+// createParams builds the parameters of the single-row insert with a new
+// UUIDv7 id.
+func createParams(n NewNotification) (db.CreateNotificationParams, error) {
 	id, err := uuid.NewV7()
 	if err != nil {
-		return Notification{}, fmt.Errorf("new id: %w", err)
+		return db.CreateNotificationParams{}, fmt.Errorf("new id: %w", err)
 	}
 	maxFailures, err := toInt32(n.MaxFailures)
 	if err != nil {
-		return Notification{}, fmt.Errorf("max failures: %w", err)
+		return db.CreateNotificationParams{}, fmt.Errorf("max failures: %w", err)
 	}
-	row, err := s.q.CreateNotification(ctx, db.CreateNotificationParams{
+	return db.CreateNotificationParams{
 		ID:              id,
 		BatchID:         n.BatchID,
 		DedupeKey:       n.DedupeKey,
@@ -164,11 +182,7 @@ func (s *Store) CreateNotification(ctx context.Context, n NewNotification) (Noti
 		MaxFailures:     maxFailures,
 		CorrelationID:   n.CorrelationID,
 		TraceParent:     n.TraceParent,
-	})
-	if err != nil {
-		return Notification{}, fmt.Errorf("create notification: %w", err)
-	}
-	return fromRow(row), nil
+	}, nil
 }
 
 // GetNotification returns the notification with the given id, or ErrNotFound.
