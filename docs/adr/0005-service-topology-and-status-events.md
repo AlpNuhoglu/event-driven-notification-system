@@ -51,6 +51,7 @@ One Go module, one Docker image, one binary per role under `cmd/`. Compose runs 
 | File and command | `docker-compose.yml`; the README uses the assessment's command, `docker-compose up` (R33), and states the minimum Compose version. CI runs that command once with the standalone binary ([ADR-0010](0010-testing-and-ci.md)). |
 | Image versions | **Every image is pinned to an exact tag:** Postgres 18.x, RabbitMQ 4.4.x, Redis, Prometheus, Grafana and Jaeger 2.x (not the v1 all-in-one image). The Go toolchain is 1.26 or later. |
 | RabbitMQ | A **fixed hostname and a named volume**. RabbitMQ stores its data under the node name, which defaults to the hostname; without a fixed hostname a recreated container would start with an empty broker. `rabbitmq_prometheus` is enabled explicitly ([ADR-0009](0009-observability.md)). |
+| Ports | The api listens on `:8080` and the gateway on `:8082`; both are published to the host. Every service has an admin port, `:8081`, which is internal only ([ADR-0009](0009-observability.md) §8). |
 | Restart policy | `restart: unless-stopped` on every application service |
 | Health checks | Every container has one. The Go binaries have a **`healthcheck` subcommand**, so minimal images need no `curl`. |
 | Start order | The `depends_on` chain rests on the health of Postgres, RabbitMQ and Redis and on the completion of `migrate` |
@@ -59,6 +60,8 @@ One Go module, one Docker image, one binary per role under `cmd/`. Compose runs 
 ### Relay
 
 A single process with four loops: the publishing cycle on a 100 ms ticker ([ADR-0002](0002-postgres-as-outbox-scheduler-and-retry-delay.md)), the expiry pass, the lease sweeper, and reconciliation on every (re)connection to RabbitMQ ([ADR-0003](0003-bounded-relay-buffer-and-sweepers.md)). It also deletes expired idempotency keys and measures the backlog gauges.
+
+The relay binary carries one operator subcommand, **`requeue-stale`**, run as `docker-compose run --rm relay requeue-stale`. It returns `queued` rows older than 5 minutes to `pending` (`--older-than=5m` by default; `--all` takes every `queued` row), for the cases reconciliation does not cover ([ADR-0003](0003-bounded-relay-buffer-and-sweepers.md) §3).
 
 If the relay stops, nothing is published and nothing is lost: notifications accumulate as `pending` in Postgres. The container runtime restarts it, and the alert `up{job="relay"} == 0` fires meanwhile ([ADR-0009](0009-observability.md)).
 

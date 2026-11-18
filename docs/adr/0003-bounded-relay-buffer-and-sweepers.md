@@ -86,7 +86,7 @@ Rows reach this sweeper whenever a worker stops without finishing its sends: `SI
 
 ### 5. Where the recovery paths run
 
-Reconciliation, the lease sweeper and the expiry pass ([ADR-0002](0002-postgres-as-outbox-scheduler-and-retry-delay.md)) run as goroutines inside the **relay** process ([ADR-0005](0005-service-topology-and-status-events.md)). They are counted in `reconciliation_runs_total`, `reconciled_rows_total`, `sweeper_recovered_total{kind}` and `expired_total{channel}` ([ADR-0009](0009-observability.md)).
+Reconciliation, the lease sweeper and the expiry pass ([ADR-0002](0002-postgres-as-outbox-scheduler-and-retry-delay.md)) run as goroutines inside the **relay** process ([ADR-0005](0005-service-topology-and-status-events.md)). They are counted in `reconciliation_runs_total`, `reconciled_rows_total`, `sweeper_recovered_total{kind}` and `expired_total{channel,priority}` ([ADR-0009](0009-observability.md)).
 
 ## Alternatives considered
 

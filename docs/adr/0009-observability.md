@@ -25,7 +25,7 @@ Three properties of this system make observability harder than in a request/resp
 
 ### 1. Metrics (Prometheus)
 
-**Cardinality rule.** Label values come only from small, fixed sets: `channel`, `priority`, `provider`, `outcome`, `source`, `status_class` (`2xx`/`4xx`/`5xx`), `method`, `code` (an HTTP status code), `route`, `kind`. **`id`, `recipient`, `batch_id`, `template_name` and tenant identifiers are never labels.** `route` is the route template (`/v1/notifications/{id}`), never the raw path, which would create one time series per ID.
+**Cardinality rule.** Label values come only from small, fixed sets: `channel`, `priority`, `provider`, `outcome`, `source`, `status` (a final notification status), `status_class` (`2xx`/`4xx`/`5xx`), `method`, `code` (an HTTP status code), `route`, `kind`. **`id`, `recipient`, `batch_id`, `template_name` and tenant identifiers are never labels.** `route` is the route template (`/v1/notifications/{id}`), never the raw path, which would create one time series per ID.
 
 | Service | Metric | Type | Answers |
 |---|---|---|---|
@@ -34,7 +34,8 @@ Three properties of this system make observability harder than in a request/resp
 | relay | `lane_queued{channel,priority}` | gauge | **Queue depth:** occupancy of each lane's buffer against its HWM |
 | relay | `lane_oldest_queued_age_seconds{channel,priority}` | gauge | Whether queued work is being consumed; the signal for messages lost without a reconnection ([ADR-0003](0003-bounded-relay-buffer-and-sweepers.md)) |
 | relay | `backlog_due{channel,priority}`, `scheduled_future` | gauge | Work waiting in Postgres; measured every 10 s |
-| relay | `relay_published_total{channel,priority}`, `reconciliation_runs_total`, `reconciled_rows_total`, `sweeper_recovered_total{kind}`, `expired_total{channel}` | counter | Control-plane health |
+| relay | `relay_published_total{channel,priority}`, `reconciliation_runs_total`, `reconciled_rows_total`, `sweeper_recovered_total{kind}`, `expired_total{channel,priority}` | counter | Control-plane health |
+| api, relay, worker | `notifications_finished_total{channel,priority,status}` | counter | Notifications reaching a final status (`sent`, `failed`, `cancelled`), incremented by whichever service performs the final transition. It counts transitions, so a notification that is redriven, or that becomes `sent` through a late success, is counted more than once. It is the denominator of the expiry alert. |
 | worker | `delivery_attempts_total{channel,provider,outcome}` | counter | **Success and failure rates**, via `rate()`. `outcome` takes every final value of [ADR-0007](0007-retry-policy-and-circuit-breaker.md) §2, including `unreachable` and `aborted`. |
 | worker | `provider_request_duration_seconds{channel,provider}` | histogram | Provider latency |
 | worker | `end_to_end_latency_seconds{channel,priority}` | histogram | **End-to-end latency**, from `COALESCE(scheduled_at, created_at)` to `sent_at` (see below) |
@@ -98,11 +99,13 @@ Shipped in the repository and provisioned automatically, so they are available r
 | Alert | Condition |
 |---|---|
 | Relay down | `up{job="relay"} == 0` |
-| `high` lane stalled | `lane_oldest_queued_age_seconds{priority="high"}` above its threshold |
-| Poison messages | Any poison queue depth above zero |
-| Expiry spike | The `expired_total` rate above its threshold |
-| Circuit open | A circuit open for more than 1 minute |
+| `high` lane stalled | `lane_oldest_queued_age_seconds{priority="high"}` above 2 minutes, sustained for 2 minutes |
+| Poison messages | Any poison queue depth above zero for 5 minutes |
+| Expiry spike | Any `high`-priority expiry within a 10-minute window (`expired_total{priority="high"}`), or `normal`-priority expiries above 1 % of finished notifications over 15 minutes (`expired_total` against `notifications_finished_total`, both with `priority="normal"`) |
+| Circuit not closed | A circuit **not closed** (open or half-open) for more than 5 minutes. The rule is written on "not closed" because one open period lasts at most 2 minutes ([ADR-0007](0007-retry-policy-and-circuit-breaker.md) §7): during a long outage the circuit alternates between open and half-open and is never continuously open for 5 minutes. |
 | Limiter fallback | `limiter_fallback_active == 1` |
+
+The thresholds are first values, set when the rules are written and tuned against the load and chaos results. Each rule carries a one-line runbook note in `alerts.yml`.
 
 **Both are tested** ([ADR-0010](0010-testing-and-ci.md)): after the end-to-end run, a smoke test executes every dashboard panel query and fails if one returns no data, and `promtool check rules` validates the alert file.
 
@@ -225,7 +228,7 @@ Each service serves `/metrics`, `/healthz`, `/readyz` and `/debug/pprof/*` on a 
 Changes made after the design review, recorded in the [design review log](../ai/design-review-log.md):
 
 - Health endpoints are also served on the api's public port, because the admin port is not published and the required endpoint was unreachable from the host. (D33)
-- Four dashboards and five untested alerts became one "Overview" dashboard with a panel smoke test and `promtool`-checked rules; metrics for leadership and stale events were replaced by reconciliation and oldest-queued-age metrics. (D41)
+- Four dashboards and five untested alerts became one "Overview" dashboard with a panel smoke test and `promtool`-checked rules; metrics for leadership and stale events were replaced by reconciliation and oldest-queued-age metrics, and the alerts received first thresholds. (D41, D74)
 - Redaction gained a `Recipient` log type and a canary scan over logs, spans and metrics, because key-based redaction misses values outside named attributes. (D42)
 - The trace rule became hybrid: the first attempt of a non-scheduled notification sits under the request's trace, and retries and scheduled deliveries start linked traces. (D13)
 - The summary dropped its `circuits` field and gained a defined `success_rate` and a separate `backlog_due` cache; RabbitMQ is scraped per object; `X-Request-ID` is validated; Jaeger is pinned to 2.x. (D39, D9, D35, D43)
