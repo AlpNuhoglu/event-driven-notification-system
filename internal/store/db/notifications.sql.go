@@ -28,6 +28,8 @@ INSERT INTO notifications (
            COALESCE($13::timestamptz, now()) + $15::interval),
   $16, $17, $18
 )
+ON CONFLICT (dedupe_key) WHERE dedupe_key IS NOT NULL AND NOT (status = 'cancelled' AND attempt_count = 0)
+DO NOTHING
 RETURNING id, batch_id, dedupe_key, channel, priority, recipient, content, sms_encoding, sms_segments, template_name, template_version, template_vars, status, failure_reason, due_at, scheduled_at, expires_at, attempt_count, failures, max_failures, queued_at, lease_expires_at, provider, provider_message_id, correlation_id, trace_parent, version, created_at, updated_at, sent_at
 `
 
@@ -52,7 +54,11 @@ type CreateNotificationParams struct {
 	TraceParent     string
 }
 
-// due_at and expires_at are computed from the database clock (one clock).
+// Single create with the record layer (ADR-0006 section 11): on a dedupe_key
+// conflict no row is inserted and none is returned (DO NOTHING). due_at and
+// expires_at are computed from the database clock (one clock). The ON
+// CONFLICT target repeats the predicate of notifications_dedupe_key_uidx
+// verbatim, so that Postgres infers that partial index.
 func (q *Queries) CreateNotification(ctx context.Context, arg CreateNotificationParams) (Notification, error) {
 	row := q.db.QueryRow(ctx, createNotification,
 		arg.ID,
@@ -108,6 +114,41 @@ func (q *Queries) CreateNotification(ctx context.Context, arg CreateNotification
 		&i.SentAt,
 	)
 	return i, err
+}
+
+const findDedupeConflicts = `-- name: FindDedupeConflicts :many
+SELECT id, dedupe_key
+FROM notifications
+WHERE dedupe_key = ANY($1::text[])
+  AND NOT (status = 'cancelled' AND attempt_count = 0)
+`
+
+type FindDedupeConflictsRow struct {
+	ID        uuid.UUID
+	DedupeKey *string
+}
+
+// Conflict look-up of the record layer (ADR-0006 sections 6 and 11): the row
+// that holds each key in notifications_dedupe_key_uidx. A key whose row left
+// the index since the insert has no result row.
+func (q *Queries) FindDedupeConflicts(ctx context.Context, dedupeKeys []string) ([]FindDedupeConflictsRow, error) {
+	rows, err := q.db.Query(ctx, findDedupeConflicts, dedupeKeys)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []FindDedupeConflictsRow
+	for rows.Next() {
+		var i FindDedupeConflictsRow
+		if err := rows.Scan(&i.ID, &i.DedupeKey); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const getNotification = `-- name: GetNotification :one
