@@ -3,6 +3,7 @@ package relay
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"slices"
 	"sync"
@@ -156,7 +157,7 @@ func lanesOf(calls []laneCall) []store.Lane {
 func TestCycle_LaneOrderHighFirstWithinEachChannel(t *testing.T) {
 	st := &fakeStore{}
 	r, _, _, _ := newUnit(st, unitConfig)
-	r.cycle(context.Background())
+	runCycle(t, r, context.Background())
 
 	want := []store.Lane{
 		{Channel: domain.ChannelSMS, Priority: domain.PriorityHigh},
@@ -190,7 +191,7 @@ func TestCycle_HeadroomArithmetic(t *testing.T) {
 	}}
 	cfg := unitConfig
 	r, _, _, _ := newUnit(st, cfg)
-	r.cycle(context.Background())
+	runCycle(t, r, context.Background())
 
 	want := []laneCall{
 		{sms(domain.PriorityHigh), 1},
@@ -210,7 +211,7 @@ func TestCycle_HeadroomArithmetic(t *testing.T) {
 	cfg.BatchSize = 1000
 	cfg.HWMHigh, cfg.HWMNormal, cfg.HWMLow = 3, 7, 11
 	r2, _, _, _ := newUnit(st2, cfg)
-	r2.cycle(context.Background())
+	runCycle(t, r2, context.Background())
 	for _, c := range st2.laneCalls() {
 		want := map[domain.Priority]int{domain.PriorityHigh: 3, domain.PriorityNormal: 7, domain.PriorityLow: 11}[c.lane.Priority]
 		if c.limit != want {
@@ -223,7 +224,7 @@ func TestCycle_NoTransactionWhileConnectionDown(t *testing.T) {
 	st := &fakeStore{}
 	r, pub, conn, _ := newUnit(st, unitConfig)
 	conn.open.Store(false)
-	r.cycle(context.Background())
+	runCycle(t, r, context.Background())
 	if st.counts != 0 || len(st.laneCalls()) != 0 || len(pub.msgs) != 0 {
 		t.Fatalf("connection down: %d count queries, %d lane transactions, %d messages; want none",
 			st.counts, len(st.laneCalls()), len(pub.msgs))
@@ -236,7 +237,7 @@ func TestCycle_NoTransactionWhileConnectionDown(t *testing.T) {
 			conn.open.Store(false)
 		}
 	}
-	r.cycle(context.Background())
+	runCycle(t, r, context.Background())
 	if got := len(st.laneCalls()); got != 2 {
 		t.Errorf("%d lane transactions after the connection dropped in the second, want 2", got)
 	}
@@ -246,7 +247,7 @@ func TestCycle_LaneErrorIsIsolated(t *testing.T) {
 	failing := store.Lane{Channel: domain.ChannelEmail, Priority: domain.PriorityNormal}
 	st := &fakeStore{laneErr: map[store.Lane]error{failing: errors.New("lane failed")}}
 	r, pub, _, rec := newUnit(st, unitConfig)
-	r.cycle(context.Background())
+	runCycle(t, r, context.Background())
 
 	if got := len(st.laneCalls()); got != 9 {
 		t.Fatalf("%d lanes visited, want all 9", got)
@@ -280,7 +281,7 @@ func TestCycle_LaneErrorIsIsolated(t *testing.T) {
 func TestCycle_CountErrorStartsNoLane(t *testing.T) {
 	st := &fakeStore{countErr: errors.New("count failed")}
 	r, _, _, _ := newUnit(st, unitConfig)
-	r.cycle(context.Background())
+	runCycle(t, r, context.Background())
 	if len(st.laneCalls()) != 0 {
 		t.Error("a lane started after the count query failed")
 	}
@@ -296,7 +297,7 @@ func TestCycle_ShutdownFinishesCurrentLane(t *testing.T) {
 		laneCtxErr = laneCtx.Err()
 	}}
 	r, pub, _, rec := newUnit(st, unitConfig)
-	r.cycle(ctx)
+	runCycle(t, r, ctx)
 
 	if got := len(st.laneCalls()); got != 1 {
 		t.Fatalf("%d lanes started, want 1", got)
@@ -310,7 +311,7 @@ func TestCycle_ShutdownFinishesCurrentLane(t *testing.T) {
 
 	st2 := &fakeStore{}
 	r2, _, _, _ := newUnit(st2, unitConfig)
-	r2.cycle(ctx) // already cancelled
+	runCycle(t, r2, ctx) // already cancelled
 	if st2.counts != 0 {
 		t.Error("a cycle started after shutdown")
 	}
@@ -364,5 +365,49 @@ func TestRun_GiveUpEndsWithError(t *testing.T) {
 	cancel()
 	if err := run(ctx, r, make(chan struct{}), func() error { return nil }); err != nil {
 		t.Errorf("run after shutdown: %v, want nil", err)
+	}
+}
+
+// runCycle runs one cycle and fails the test if it returns an error: the only
+// error a cycle returns is a closed publisher channel.
+func runCycle(t *testing.T, r *Relay, ctx context.Context) { //nolint:revive // t first, as in every test helper
+	t.Helper()
+	if err := r.cycle(ctx); err != nil {
+		t.Errorf("cycle: %v", err)
+	}
+}
+
+// A closed publisher channel stops the cycle at once and is returned: no
+// later batch could be checked for unroutable messages. The role then exits
+// with a non-zero code and is restarted (D5).
+func TestCycle_PublisherChannelClosedStopsTheRelay(t *testing.T) {
+	closedAt := store.Lane{Channel: domain.ChannelSMS, Priority: domain.PriorityNormal}
+	wrapped := fmt.Errorf("publish: %w", fmt.Errorf("publish batch: %w", queue.ErrPublisherChannelClosed))
+	st := &fakeStore{laneErr: map[store.Lane]error{closedAt: wrapped}}
+	r, _, _, rec := newUnit(st, unitConfig)
+
+	err := r.cycle(context.Background())
+	if !errors.Is(err, queue.ErrPublisherChannelClosed) {
+		t.Fatalf("cycle error = %v, want one wrapping ErrPublisherChannelClosed", err)
+	}
+	// sms/high was published, sms/normal failed, and no further lane started.
+	if got := lanesOf(st.laneCalls()); len(got) != 2 || got[1] != closedAt {
+		t.Errorf("lanes visited = %v, want sms/high then sms/normal only", got)
+	}
+	if got := len(rec.events()); got != 1 {
+		t.Errorf("%d events, want 1 (the lane before the failure)", got)
+	}
+
+	// The publishing loop returns the error, and run turns it into the
+	// role's error, as for a recovery that gave up.
+	st2 := &fakeStore{laneErr: map[store.Lane]error{closedAt: wrapped}}
+	r2, _, _, _ := newUnit(st2, unitConfig)
+	if err := r2.RunPublishing(context.Background()); !errors.Is(err, queue.ErrPublisherChannelClosed) {
+		t.Errorf("RunPublishing = %v, want ErrPublisherChannelClosed", err)
+	}
+	st3 := &fakeStore{laneErr: map[store.Lane]error{closedAt: wrapped}}
+	r3, _, _, _ := newUnit(st3, unitConfig)
+	if err := run(context.Background(), r3, make(chan struct{}), func() error { return nil }); !errors.Is(err, queue.ErrPublisherChannelClosed) {
+		t.Errorf("run = %v, want ErrPublisherChannelClosed", err)
 	}
 }

@@ -479,3 +479,95 @@ func TestConsumer_StreamEndIsError(t *testing.T) {
 		t.Fatal("Run did not return after a server-side cancellation")
 	}
 }
+
+// A channel-level error from the broker (here: a publish to an exchange that
+// does not exist) closes the publisher's channel. Whatever the client library
+// does next, an unroutable message must never be reported as published
+// afterwards: either the return listener still works on the channel the
+// library reopened, or the batch fails with ErrPublisherChannelClosed (the
+// relay exits on that error and is restarted).
+func TestPublisher_AfterBrokerChannelErrorReturnsAreStillSeen(t *testing.T) {
+	url, c := setup(t)
+	admin := raw(t, url)
+	if err := admin.QueueUnbind(DispatchQueue(domain.ChannelPush), "push", DispatchExchange, nil); err != nil {
+		t.Fatal(err)
+	}
+	pub := newPublisher(t, c, 10)
+
+	closed := pub.ch.NotifyClose(make(chan *amqp.Error, 4))
+	// The broker answers 404 NOT_FOUND and closes the channel.
+	if err := pub.ch.PublishWithContext(ctxT(t), "no-such-exchange", "sms", false, false, amqp.Publishing{Body: []byte("x")}); err != nil {
+		t.Fatalf("publish to the missing exchange: %v", err)
+	}
+	var channelErr *amqp.Error
+	testutil.Eventually(t, func() bool {
+		select {
+		case channelErr = <-closed:
+			return true
+		default:
+			return false
+		}
+	}, waitTimeout)
+	if channelErr == nil || channelErr.Code != amqp.NotFound {
+		t.Fatalf("channel error = %v, want 404 NOT_FOUND", channelErr)
+	}
+
+	okBatches, closedBatches := 0, 0
+	for round := range 30 {
+		routable := msg(domain.ChannelSMS, domain.PriorityNormal)
+		unroutable := msg(domain.ChannelPush, domain.PriorityNormal)
+		published, err := pub.PublishBatch(ctxT(t), []Message{unroutable, routable}, confirmTimeout)
+		switch {
+		case errors.Is(err, ErrPublisherChannelClosed):
+			closedBatches++
+			if len(published) != 0 {
+				t.Fatalf("round %d: %d ids reported with a closed channel", round, len(published))
+			}
+		case err != nil:
+			// Any other error fails the whole batch too: nothing is reported.
+			if len(published) != 0 {
+				t.Fatalf("round %d: %d ids reported with error %v", round, len(published), err)
+			}
+		default:
+			okBatches++
+			if slices.Contains(published, unroutable.ID) {
+				t.Fatalf("round %d: the unroutable message was reported as published after the channel error", round)
+			}
+			if !slices.Equal(published, []uuid.UUID{routable.ID}) {
+				t.Fatalf("round %d: published %v, want exactly the routable id", round, published)
+			}
+		}
+	}
+	t.Logf("after the channel error: %d batches succeeded with the return seen, %d failed with ErrPublisherChannelClosed", okBatches, closedBatches)
+	if okBatches+closedBatches == 0 {
+		t.Error("no batch either succeeded or reported the closed channel")
+	}
+}
+
+// When the publisher's channel is closed for good (here by closing it; the
+// library does the same to every listener when recovery gives up), the return
+// listener is closed too. Every batch then fails with
+// ErrPublisherChannelClosed and reports nothing as published.
+func TestPublisher_ClosedChannelFailsEveryBatch(t *testing.T) {
+	_, c := setup(t)
+	pub := newPublisher(t, c, 10)
+	m := msg(domain.ChannelSMS, domain.PriorityHigh)
+	if published, err := pub.PublishBatch(ctxT(t), []Message{m}, confirmTimeout); err != nil || len(published) != 1 {
+		t.Fatalf("before the close: %v, %v", published, err)
+	}
+	if err := pub.ch.Close(); err != nil {
+		t.Fatalf("close the publisher's channel: %v", err)
+	}
+	for i := range 3 {
+		published, err := pub.PublishBatch(ctxT(t), []Message{msg(domain.ChannelSMS, domain.PriorityHigh)}, confirmTimeout)
+		if !errors.Is(err, ErrPublisherChannelClosed) {
+			t.Fatalf("batch %d: err = %v, want ErrPublisherChannelClosed", i, err)
+		}
+		if len(published) != 0 {
+			t.Errorf("batch %d: %d ids reported with a closed channel", i, len(published))
+		}
+	}
+	if !c.IsOpen() {
+		t.Error("the connection is not open: only the channel was closed")
+	}
+}
