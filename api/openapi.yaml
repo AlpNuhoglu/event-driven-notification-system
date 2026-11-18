@@ -1,0 +1,420 @@
+openapi: 3.0.3
+info:
+  title: Event-driven notification system
+  version: 0.1.0
+  description: |
+    Creates notifications and reports their delivery state. Delivery is
+    asynchronous: a `202` acknowledges acceptance, not delivery.
+
+    This version of the contract has the single create and the read by id.
+    Batches, cancel, redrive, listing, idempotency keys, `dedupe_key`,
+    templates and scheduling are added in later versions.
+
+    **Errors.** Every non-2xx answer is an RFC 9457 problem
+    (`application/problem+json`, schema `Problem`), including the answers to
+    a path that does not exist (`404`) and to a method that a path does not
+    support (`405`, with an `Allow` header). These two can be returned for
+    any request and are therefore not repeated under each operation.
+
+    **Correlation.** A request may carry `X-Request-ID`: it is accepted when
+    it is at most 128 characters of `[A-Za-z0-9._-]`, otherwise it is
+    ignored and a new id is generated. Every response carries the id in
+    `X-Request-ID`; every problem carries it in `correlation_id`.
+
+    **Body size.** Every endpoint limits the request body to `MAX_BODY_BYTES`
+    (5 MB by default); a larger body is answered with `413`.
+tags:
+  - name: notifications
+  - name: health
+  - name: meta
+paths:
+  /v1/notifications:
+    post:
+      operationId: createNotification
+      tags: [notifications]
+      summary: Create a notification
+      description: |
+        Accepts one notification for delivery. The response is the stored
+        notification in state `pending`. The content is stored and sent but
+        not returned. A field that this version does not define is rejected
+        with `422` and code `unknown_field`, never ignored.
+      parameters:
+        - $ref: "#/components/parameters/XRequestID"
+        - $ref: "#/components/parameters/TraceParent"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateNotificationRequest"
+      responses:
+        "202":
+          description: Accepted for delivery.
+          headers:
+            Location:
+              description: The path of the created notification.
+              required: true
+              schema:
+                type: string
+            X-Request-ID:
+              $ref: "#/components/headers/XRequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Notification"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+  /v1/notifications/{id}:
+    get:
+      operationId: getNotification
+      tags: [notifications]
+      summary: Read a notification
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The notification id.
+          schema:
+            type: string
+            format: uuid
+        - $ref: "#/components/parameters/XRequestID"
+        - $ref: "#/components/parameters/TraceParent"
+      responses:
+        "200":
+          description: The notification.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/XRequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Notification"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+  /healthz:
+    get:
+      operationId: getHealthz
+      tags: [health]
+      summary: Liveness
+      description: Answers `200` while the process serves. It checks no dependency.
+      responses:
+        "200":
+          description: The process is serving.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/XRequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /readyz:
+    get:
+      operationId: getReadyz
+      tags: [health]
+      summary: Readiness
+      description: |
+        Answers `200` when Postgres answers a ping, otherwise `503`. Both
+        answers list each dependency check with its status and duration; the
+        `503` is a problem document that carries them in `checks`.
+      responses:
+        "200":
+          description: Every dependency answers.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/XRequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Readiness"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+  /openapi.yaml:
+    get:
+      operationId: getOpenAPISpec
+      tags: [meta]
+      summary: This specification
+      description: The OpenAPI document the server was generated from.
+      responses:
+        "200":
+          description: The specification in YAML.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/XRequestID"
+          content:
+            application/yaml: {}
+        "500":
+          $ref: "#/components/responses/InternalError"
+components:
+  parameters:
+    XRequestID:
+      name: X-Request-ID
+      in: header
+      required: false
+      description: |
+        Correlation id. Accepted when it is at most 128 characters of
+        `[A-Za-z0-9._-]`; otherwise it is ignored and a new id is generated.
+        An invalid value is not an error.
+      schema:
+        type: string
+    TraceParent:
+      name: traceparent
+      in: header
+      required: false
+      description: |
+        W3C Trace Context. Stored with the notification when it is well
+        formed; otherwise ignored. An invalid value is not an error.
+      schema:
+        type: string
+  headers:
+    XRequestID:
+      description: The correlation id of the request (the accepted `X-Request-ID` or a generated one).
+      required: true
+      schema:
+        type: string
+  responses:
+    BadRequest:
+      description: Malformed request (body that is not a JSON object, path parameter that is not a UUID).
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    NotFound:
+      description: No notification has this id.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    PayloadTooLarge:
+      description: The request body is larger than `MAX_BODY_BYTES`.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    UnsupportedMediaType:
+      description: The request body is not `application/json`.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    ValidationFailed:
+      description: One or more fields are invalid; every invalid field is listed in `errors`.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    InternalError:
+      description: An unexpected error. The detail never contains the cause.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    Unavailable:
+      description: Postgres is unavailable. The request can be retried.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+  schemas:
+    Channel:
+      type: string
+      enum: [sms, email, push]
+    Priority:
+      type: string
+      enum: [high, normal, low]
+    Status:
+      type: string
+      description: |
+        `sent` is final. `cancelled` and `failed` can still become `sent` when
+        a late provider result proves that the message was delivered.
+      enum: [pending, queued, processing, retrying, sent, failed, cancelled]
+    FailureReason:
+      type: string
+      enum: [provider_rejected, max_failures, max_failures_unknown_outcome, expired, internal_error]
+    CreateNotificationRequest:
+      type: object
+      additionalProperties: false
+      required: [channel, recipient, content]
+      properties:
+        channel:
+          $ref: "#/components/schemas/Channel"
+        recipient:
+          type: string
+          minLength: 1
+          maxLength: 512
+          description: Phone number, e-mail address or device token. Must not contain U+0000.
+        content:
+          type: string
+          minLength: 1
+          description: The message. Must not contain U+0000.
+        priority:
+          $ref: "#/components/schemas/Priority"
+    Notification:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - batch_id
+        - channel
+        - recipient
+        - priority
+        - status
+        - version
+        - scheduled_at
+        - expires_at
+        - attempt_count
+        - failure_reason
+        - provider_message_id
+        - created_at
+        - updated_at
+        - sent_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        batch_id:
+          type: string
+          format: uuid
+          nullable: true
+        channel:
+          $ref: "#/components/schemas/Channel"
+        recipient:
+          type: string
+        priority:
+          $ref: "#/components/schemas/Priority"
+        status:
+          $ref: "#/components/schemas/Status"
+        version:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Increases with every state change; clients order status events by it.
+        scheduled_at:
+          type: string
+          format: date-time
+          nullable: true
+        expires_at:
+          type: string
+          format: date-time
+        attempt_count:
+          type: integer
+          format: int32
+          minimum: 0
+        failure_reason:
+          allOf:
+            - $ref: "#/components/schemas/FailureReason"
+          nullable: true
+          description: Set only when the status is `failed`.
+        provider_message_id:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        sent_at:
+          type: string
+          format: date-time
+          nullable: true
+    Health:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok]
+    Readiness:
+      type: object
+      additionalProperties: false
+      required: [status, checks]
+      properties:
+        status:
+          type: string
+          enum: [ok]
+        checks:
+          type: array
+          items:
+            $ref: "#/components/schemas/Check"
+    Check:
+      type: object
+      additionalProperties: false
+      required: [name, status, duration_ms]
+      properties:
+        name:
+          type: string
+        status:
+          type: string
+          enum: [ok, fail]
+        duration_ms:
+          type: number
+          format: double
+          minimum: 0
+    Problem:
+      type: object
+      description: RFC 9457 Problem Details.
+      required: [type, title, status, detail, correlation_id]
+      properties:
+        type:
+          type: string
+          format: uri
+          description: A stable URL that documents the problem type.
+        title:
+          type: string
+        status:
+          type: integer
+          format: int32
+        detail:
+          type: string
+          description: Never contains a recipient, message content or an internal cause.
+        correlation_id:
+          type: string
+        errors:
+          type: array
+          description: |
+            The invalid fields (`422`) or the malformed part of the request
+            (`400`). At most 50 entries are listed.
+          items:
+            $ref: "#/components/schemas/FieldError"
+        checks:
+          type: array
+          description: |
+            Only on the `503` of `/readyz`: each dependency check with its
+            status and duration.
+          items:
+            $ref: "#/components/schemas/Check"
+    FieldError:
+      type: object
+      additionalProperties: false
+      required: [field, code, message]
+      properties:
+        field:
+          type: string
+          description: The request field or path parameter; empty when the request body as a whole is concerned.
+        code:
+          type: string
+          description: Stable and machine-readable; listed in docs/errors.md.
+        message:
+          type: string
+          description: For humans. Never contains the submitted value.
