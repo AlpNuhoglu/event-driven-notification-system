@@ -1,0 +1,43 @@
+# --- Local inputs: never committed (G5) ---
+.inputs/
+*.pdf
+requirements.md
+review-findings.md
+
+# --- Secrets and local configuration ---
+.env
+.env.*
+!.env.example
+
+# --- Go ---
+/bin/
+/dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+*.prof
+coverage.*
+go.work
+go.work.sum
+vendor/
+
+# --- Test, load and experiment output ---
+/tmp/
+*.log
+k6-results/
+
+# --- Editors ---
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.claude/settings.local.json
+
+# --- Operating systems ---
+.DS_Store
+Thumbs.db
