@@ -55,6 +55,8 @@ The two tests in bold are the ones that would have caught the dropped-message de
 | Transitions | Every one of the 12 transitions increments `version`, sets `updated_at`, returns an event, and **leaves immutable columns untouched**; the database rejects rows that violate the status invariants ([ADR-0004](0004-data-model-state-machine-and-fencing.md) §6) |
 | Claim | An expired row is failed at claim without an attempt row and without incrementing `attempt_count`; a `retrying` row that is not yet due is not claimed |
 | Publish | `TestRelay_UnroutablePublishStaysPending`: with no binding, the row stays `pending`. **Repeated 100 times**, because it rests on the client's ordering of returns and confirms ([ADR-0001](0001-rabbitmq-as-dispatch-broker.md)). `TestRelay_PrioritySetOnEveryMessage`. Lane HWMs hold. |
+| `requeue-stale` | By default only `queued` rows older than the threshold return to `pending`; `--all` takes every `queued` row |
+| Cancel | A cancel after an `unknown` attempt reports `may_have_been_sent`; a batch cancel reports the `cancelled`, `not_cancellable` and `may_have_been_sent` counts ([ADR-0006](0006-api-contract-and-three-layer-idempotency.md) §7) |
 | Reconciliation | On reconnection all `queued` rows return to `pending` and are republished; a trigger inside the 60-second window is deferred, not skipped; a broker that comes back empty has its topology again before the first publish |
 | Final write | With Postgres unavailable, the final write is retried and lands; transition 12 is tried when transition 4 affects zero rows |
 | Redrive | Keeps a future `expires_at`; requires a new one when it has passed; never resets `attempt_count` |
@@ -63,7 +65,7 @@ The two tests in bold are the ones that would have caught the dropped-message de
 | Outbox | With RabbitMQ stopped, the api keeps accepting; after restart, everything is published |
 | Rate limiter | GCRA keeps every one-second window at or below 100 across several concurrent clients; the script returns a relative wait ([ADR-0007](0007-retry-policy-and-circuit-breaker.md) §5) |
 | Pacer | The highest-priority buffered message is taken; the slot is kept when a claim affects zero rows; a circuit that opens after the claim yields `aborted` and `retrying` without budget |
-| Provider client | The request body has exactly three fields; a `202` body is parsed; another `2xx` is success with a warning; a redirect is not followed; the request is sent exactly once when the server closes the connection; connections are reused (`httptrace.GotConnInfo.Reused`) |
+| Provider client | The request body has exactly three fields (also asserted end to end on `mockprovider`'s report); a `202` body is parsed; another `2xx` is success and increments `provider_unexpected_2xx_total`; a redirect is not followed; the request is sent exactly once when the server closes the connection; connections are reused (`httptrace.GotConnInfo.Reused`) |
 | Templates | Builtin functions and multi-template sources are rejected; concurrent version creation produces consecutive versions ([ADR-0008](0008-templates-and-scheduling.md)) |
 | WebSocket | A client that subscribes after creation receives a snapshot; a full send queue closes the connection |
 | Observability | Trace propagation with an in-memory exporter (one trace for a first attempt, a linked trace for a retry); metrics summary values on a known dataset; health endpoints on the public port ([ADR-0009](0009-observability.md)) |
@@ -97,7 +99,8 @@ A separate binary (`cmd/mockprovider`) with an admin API for fault injection. It
 | `429` with and without `Retry-After`; redirects | Throttling and redirect paths |
 | Closing the connection after reading the request; timeouts; malformed `2xx` bodies | `unknown` outcomes and anomaly handling |
 | **Records the arrival time and the `Idempotency-Key` header of every request** | Rate-limit verification and **duplicate detection** |
-| Report endpoint | Counts per key and per channel; the sorted arrival timestamps |
+| Records the **field names** of every request body, never the values | Proof that the provider receives exactly `to`, `channel` and `content` (R23) |
+| Report endpoint | Counts per key and per channel; the sorted arrival timestamps; the set of body field names seen |
 
 ### 3. Load tests: evidence for the claims
 
@@ -123,7 +126,8 @@ A separate binary (`cmd/mockprovider`) with an admin API for fault injection. It
 | Command | Runs | Requires |
 |---|---|---|
 | **`make test`** | Unit, fuzz seed corpus, integration and contract tests, all with `-race` | Go and Docker |
-| `make test-e2e` | Starts the Compose stack with `mockprovider`; runs the e2e and chaos scenarios, `load-smoke`, the canary scan and the dashboard smoke test | Docker |
+| `make up-mock` | Starts the stack with the mock override, `docker-compose.mock.yml`, which adds `mockprovider` and points `PROVIDER_URL` at it ([ADR-0005](0005-service-topology-and-status-events.md)) | Docker |
+| `make test-e2e` | Starts the Compose stack with the mock override; runs the e2e and chaos scenarios, `load-smoke`, the canary scan and the dashboard smoke test | Docker |
 | `make load` | k6 scenarios against the Compose stack | Docker |
 | `make test-docker` | Same as `make test`, inside a Go container | Docker only |
 | `make verify-suite` | The mutation patches of section 8 | Go and Docker |

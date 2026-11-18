@@ -34,11 +34,13 @@ One Go module, one Docker image, one binary per role under `cmd/`. Compose runs 
 | **worker** | Consumption, pacing, rate limiting, circuit breaking, provider calls, delivery transitions | **1 container serving all channels** (`WORKER_CHANNELS=sms,email,push`) | Postgres, RabbitMQ; Redis for the shared rate limit (a fallback exists) |
 | **gateway** | WebSocket connections, snapshot on subscribe, fan-out of status events | 1 (can be replicated) | RabbitMQ, Postgres (read-only) |
 | **migrate** | Applies database migrations, then exits | One-shot | Postgres. Other services wait with `depends_on: condition: service_completed_successfully`. |
-| **mockprovider** | Configurable fake provider with fault injection | Started only for automated tests, load tests and the mock profile | — |
+| **mockprovider** | Configurable fake provider with fault injection | Not in the default stack; added by the mock override (below) for automated tests, load tests and larger examples | — |
 
 **Channel isolation inside one worker.** The worker runs one pacer loop, one concurrency semaphore, one HTTP client and one circuit breaker **per channel** (below). A failing SMS provider opens the SMS circuit and stops only the SMS pacer. The channel-isolation load test is the evidence for this ([ADR-0010](0010-testing-and-ci.md)). Per-channel worker deployments (`WORKER_CHANNELS=sms`, …) remain possible; they live in a Compose override file that one chaos scenario uses.
 
-**Provider target.** The default provider is **webhook.site**, as the assessment asks (R23). The default lives in `docker-compose.yml` as `${PROVIDER_URL:-https://webhook.site/<uuid>}`, so a clean clone works without a `.env` file. `mockprovider` is used by automated tests, load tests and the examples that send more than a few requests ([ADR-0007](0007-retry-policy-and-circuit-breaker.md) §6).
+**Provider target.** The default provider is **webhook.site**, as the assessment asks (R23). The default lives in `docker-compose.yml` as `${PROVIDER_URL:-https://webhook.site/<uuid>}`, so a clean clone works without a `.env` file.
+
+**Mock profile.** `docker-compose.mock.yml` is an override file that adds `mockprovider` and points `PROVIDER_URL` at it; `make up-mock` starts the stack with it. Automated tests, load tests and the examples that send more than a few requests use this profile ([ADR-0007](0007-retry-policy-and-circuit-breaker.md) §6).
 
 **Infrastructure:** Postgres, RabbitMQ, Redis, Prometheus, Grafana and Jaeger. Traces are sent over OTLP **directly to Jaeger**, with no separate OpenTelemetry Collector ([ADR-0009](0009-observability.md)).
 

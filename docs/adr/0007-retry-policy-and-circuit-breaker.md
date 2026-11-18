@@ -33,7 +33,7 @@ The scope is certain for some results (`401`, `429`, a refused connection) and a
 | Provider result | Outcome | Scope | Consumes budget | Counts toward breaker | Handling |
 |---|---|---|---|---|---|
 | `202` with the expected body | `success` | — | — | Success | `sent`; `messageId` is stored as `provider_message_id` (section 6) |
-| Any other `2xx`, or a `202` whose body cannot be parsed | `success` | — | — | Success | `sent`, and a warning counter increments. The provider accepted the message, so resending would create a duplicate. |
+| Any other `2xx`, or a `202` whose body cannot be parsed | `success` | — | — | Success | `sent`, with a warning: another `2xx` increments `provider_unexpected_2xx_total{channel,provider,code}`, an unparseable body increments `provider_malformed_response_total{provider}` ([ADR-0009](0009-observability.md) §1). The provider accepted the message, so resending would create a duplicate. |
 | `3xx` | `provider_fatal` | **Provider** | No | Opens it | Redirects are **not followed** (section 11). In this provider contract a redirect means a wrong endpoint URL. |
 | `400`, `422`, other `4xx` not listed below | `permanent` | Message | — | No | `failed`, `failure_reason = 'provider_rejected'` |
 | `401`, `403`, `404`, `410` | `provider_fatal` | **Provider** | No | Opens it | Wrong credentials or a wrong or expired endpoint. The message goes to `retrying` without incrementing `failures`; the circuit opens **immediately** for 1 minute; an alert-level log is written |
@@ -53,7 +53,7 @@ The scope is certain for some results (`401`, `429`, a refused connection) and a
 
 ### 3. Back-off profiles per priority
 
-The delay uses **full jitter**: `delay = jitter × min(cap, base × 2^failures)`, with a floor of 1 second, where `jitter` is a random number in `[0, 1)` supplied by the caller ([ADR-0004](0004-data-model-state-machine-and-fencing.md) §5). AWS's analysis of back-off strategies shows that full jitter minimises total work under contention.
+The delay uses **full jitter**: `delay = jitter × min(cap, base × 2^failures)`, with a floor of 1 second, where `jitter` is a random number in `[0, 1)` supplied by the caller ([ADR-0004](0004-data-model-state-machine-and-fencing.md) §5). The floor exists because full jitter can produce a delay close to zero, which would retry at once against a provider that has just failed; one second protects the provider. AWS's analysis of back-off strategies shows that full jitter minimises total work under contention.
 
 | Priority | `base` | `cap` | `max_failures` | Default TTL (`expires_at`) | Largest burst one channel can drain within the TTL |
 |---|---|---|---|---|---|
@@ -100,10 +100,10 @@ The request and response follow the assessment's formats exactly (R23, R24).
 | Request | `POST {PROVIDER_URL}` with the JSON body **exactly** `{"to", "channel", "content"}`: the recipient, the channel name and the rendered content. No other field is sent. |
 | Headers | `Idempotency-Key: <notification_id>` (the header name is configurable per provider) and `traceparent` |
 | Expected response | `202` with `{"messageId", "status", "timestamp"}`. The body is parsed; `messageId` is stored as `provider_message_id`, which is **not** assumed to be unique. |
-| Other `2xx` | Treated as success, with a warning counter (section 2) |
+| Other `2xx` | Treated as success; counted in `provider_unexpected_2xx_total{channel,provider,code}` (section 2) |
 | Default target | A **webhook.site** URL configured to answer `202` with the body above ([ADR-0005](0005-service-topology-and-status-events.md)). The README shows the URL's creation date, and the URL is renewed right before submission. |
 | `make demo` | Probes the URL first and sends at most 10 requests, to stay well inside the free URL's request cap |
-| `mockprovider` | Used by automated tests, load tests and the batch and load examples ([ADR-0010](0010-testing-and-ci.md) §2). It implements the same contract and uses the idempotency key to count duplicates. |
+| `mockprovider` | Started by the mock profile (`make up-mock`, [ADR-0005](0005-service-topology-and-status-events.md)). Used by automated tests, load tests and the batch and load examples ([ADR-0010](0010-testing-and-ci.md) §2). It implements the same contract and uses the idempotency key to count duplicates. |
 
 **Provider idempotency key.** The value is the same on every attempt, because the goal is that the notification is delivered once, not that each attempt is unique. Some providers deduplicate on such a key, which makes an `unknown` outcome safe to retry. **webhook.site ignores the header**, so against the default provider every attempt that ends `unknown` can produce a duplicate; the README says so.
 

@@ -25,7 +25,7 @@ Three properties of this system make observability harder than in a request/resp
 
 ### 1. Metrics (Prometheus)
 
-**Cardinality rule.** Label values come only from small, fixed sets: `channel`, `priority`, `provider`, `outcome`, `source`, `status_class` (`2xx`/`4xx`/`5xx`), `route`, `kind`. **`id`, `recipient`, `batch_id`, `template_name` and tenant identifiers are never labels.** `route` is the route template (`/v1/notifications/{id}`), never the raw path, which would create one time series per ID.
+**Cardinality rule.** Label values come only from small, fixed sets: `channel`, `priority`, `provider`, `outcome`, `source`, `status_class` (`2xx`/`4xx`/`5xx`), `method`, `code` (an HTTP status code), `route`, `kind`. **`id`, `recipient`, `batch_id`, `template_name` and tenant identifiers are never labels.** `route` is the route template (`/v1/notifications/{id}`), never the raw path, which would create one time series per ID.
 
 | Service | Metric | Type | Answers |
 |---|---|---|---|
@@ -39,7 +39,8 @@ Three properties of this system make observability harder than in a request/resp
 | worker | `provider_request_duration_seconds{channel,provider}` | histogram | Provider latency |
 | worker | `end_to_end_latency_seconds{channel,priority}` | histogram | **End-to-end latency**, from `COALESCE(scheduled_at, created_at)` to `sent_at` (see below) |
 | worker | `queue_wait_seconds{channel,priority}` | histogram | From `queued_at` to claim. Rows claimed directly have no `queued_at` and are **not observed** ([ADR-0004](0004-data-model-state-machine-and-fencing.md)). |
-| worker | `ratelimit_wait_seconds{channel}`, `circuit_state{channel,provider}`, `limiter_fallback_active`, `inflight{channel}`, `provider_malformed_response_total{provider}` | histogram, gauge, counter | Flow control and anomalies. `circuit_state` is the only source of circuit state. The last counter covers a `2xx` other than `202` and an unparseable `202` body. |
+| worker | `ratelimit_wait_seconds{channel}`, `circuit_state{channel,provider}`, `limiter_fallback_active`, `inflight{channel}` | histogram, gauge | Flow control. `circuit_state` is the only source of circuit state. |
+| worker | `provider_unexpected_2xx_total{channel,provider,code}`, `provider_malformed_response_total{provider}` | counter | Provider anomalies that still count as success: a `2xx` other than `202` (`code` is the status code, a small fixed set), and a `202` whose body cannot be parsed |
 | gateway | `ws_connections`, `ws_subscriptions` | gauge | Real-time layer |
 | RabbitMQ | Queue depth, unacked messages, poison queue depth | | **Not re-implemented:** scraped from RabbitMQ's `rabbitmq_prometheus` plugin, which is enabled explicitly. Prometheus scrapes the **per-object (detailed) endpoint**; the default endpoint is aggregated and has no per-queue series. |
 
@@ -175,7 +176,7 @@ The readiness response is JSON, with the status and duration of each check.
 
 ### 8. Admin port
 
-Each service serves `/metrics`, `/healthz`, `/readyz` and `/debug/pprof/*` on a separate admin port (`:8081`), apart from the public API.
+Each service serves `/metrics`, `/healthz`, `/readyz` and `/debug/pprof/*` on a separate admin port (`:8081`), apart from the public API (`:8080`) and the gateway's WebSocket port (`:8082`).
 
 - In Compose the admin port is **not published to the host**; Prometheus scrapes it over the internal network.
 - **`/metrics` and `pprof` stay on the admin port only.** `pprof` exposes profiling data and can be used to load the process.

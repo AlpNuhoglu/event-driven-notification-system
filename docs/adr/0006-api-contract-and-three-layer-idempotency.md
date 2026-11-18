@@ -31,7 +31,7 @@ Delivery is asynchronous, so the API acknowledges acceptance rather than deliver
 | `POST` | `/v1/notifications/{id}/cancel` | `200` / `409` | A state transition, so `POST` rather than `DELETE` |
 | `POST` | `/v1/notifications/{id}/redrive` | `200` / `409` | `failed → pending` (transition 11) |
 | `GET` | `/v1/batches/{id}` | `200` | Batch summary and per-status counts |
-| `POST` | `/v1/batches/{id}/cancel` | `200` | Returns `{cancelled, not_cancellable}` |
+| `POST` | `/v1/batches/{id}/cancel` | `200` | Returns the counts `{cancelled, not_cancellable, may_have_been_sent}` |
 | `*` | `/v1/templates/...` | | See [ADR-0008](0008-templates-and-scheduling.md) |
 | `GET` | `/v1/metrics/summary` | `200` | Real-time metrics as JSON ([ADR-0009](0009-observability.md)) |
 | `GET` | `/healthz`, `/readyz` | `200` / `503` | Health checks on the **public port**, part of the OpenAPI spec ([ADR-0009](0009-observability.md) §7) |
@@ -151,7 +151,7 @@ Validation runs **after** template rendering, because variables can push content
 | Cancel a notification | "Pending" in the requirement is read as *not yet held by a worker*: cancel is allowed from `pending`, `queued` and `retrying` (transition 9). If the notification is already `cancelled`, the call returns `200` (idempotent). From `processing`, `sent` or `failed` it returns `409` with the current status. |
 | `may_have_been_sent` | If the notification has an attempt whose outcome is `unknown`, the cancel response includes `"may_have_been_sent": true`. The cancel still succeeds, so a client can always stop further retries; the flag says that one delivery may already have reached the recipient. |
 | `cancelled → sent` | A cancelled notification can later become `sent` if a late result proves that it was delivered ([ADR-0004](0004-data-model-state-machine-and-fencing.md), transition 12). The same applies to `failed`. The OpenAPI description of both states says so. |
-| Cancel a batch | A single `UPDATE ... WHERE batch_id = $1 AND status IN (...)`. A batch holds at most 1,000 rows, so this takes milliseconds. Up to 1,000 events are published asynchronously after commit and the response returns immediately. Cancelling a whole campaign that spans many batches is [future work](../future-work.md). |
+| Cancel a batch | A single `UPDATE ... WHERE batch_id = $1 AND status IN (...)`. A batch holds at most 1,000 rows, so this takes milliseconds. The response gives three counts: `cancelled`, `not_cancellable`, and `may_have_been_sent`, the number of cancelled notifications that have an attempt with outcome `unknown`. Up to 1,000 events are published asynchronously after commit and the response returns immediately. Cancelling a whole campaign that spans many batches is [future work](../future-work.md). |
 | Redrive | Allowed only from `failed`; otherwise `409`. Resets the retry budget and `due_at`, never `attempt_count`. The stored `expires_at` is kept if it is still in the future. If it has passed, the request must include a new `expires_at` at least 30 seconds ahead; without one the call returns `409` ([ADR-0004](0004-data-model-state-machine-and-fencing.md), transition 11). |
 
 ### 8. Listing and pagination

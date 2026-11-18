@@ -80,7 +80,7 @@ Done by the author in the repository settings, before any code is written. The s
 | Area | Content |
 |---|---|
 | Go module | `go.mod` with Go 1.26 or later; `cmd/{api,relay,worker,gateway,migrate,mockprovider}/main.go` as stubs, each with a `healthcheck` subcommand; `internal/platform/config` reading environment variables with the names in `.env.example` |
-| Tooling | `Makefile` with the targets of [ADR-0010](../adr/0010-testing-and-ci.md) §4 (`test`, `test-docker`, `test-e2e`, `load`, `demo`, `verify-suite`, `fuzz`) plus `generate` and `lint`; pinned versions of `sqlc`, `oapi-codegen`, `golang-migrate`, `golangci-lint` v2; `.golangci.yml` in the v2 format |
+| Tooling | `Makefile` with the targets of [ADR-0010](../adr/0010-testing-and-ci.md) §4 (`test`, `test-docker`, `test-e2e`, `load`, `demo`, `up-mock`, `verify-suite`, `fuzz`) plus `generate` and `lint`; pinned versions of `sqlc`, `oapi-codegen`, `golang-migrate`, `golangci-lint` v2; `.golangci.yml` in the v2 format |
 | Image | One `Dockerfile` for all roles |
 | Compose | `docker-compose.yml` with the infrastructure services only, **every image on an exact tag** (D48): Postgres 18.x, RabbitMQ 4.4.x with a fixed hostname, a named volume and `rabbitmq_prometheus` enabled (D9), Redis, Prometheus, Grafana, Jaeger 2.x (D43). Each has a health check. |
 | CI | `.github/workflows/ci.yml` with `lint`, `unit` and `codegen-drift`; actions pinned to full commit SHAs; minimal `permissions` |
@@ -89,6 +89,10 @@ Two cautions for the Compose file:
 
 - The official Postgres 18 image stores its data under `/var/lib/postgresql` (the data directory is version-specific below it). A volume mounted at `/var/lib/postgresql/data`, which was correct up to version 17, targets the wrong path.
 - RabbitMQ stores data under its node name, which defaults to the container hostname. Without a fixed hostname, a recreated container starts with an empty broker.
+
+**Minimum Compose version (D45).** It is determined here, from the features the Compose file uses (for example `depends_on` conditions and `--wait`), checked with the standalone `docker-compose` binary, and recorded in `docs/progress.md`. The README states it from P1 onwards. If a later phase uses a newer feature, that phase updates the number.
+
+**Configuration names and ports.** `internal/platform/config` implements the variable names of `.env.example`. The public API listens on `:8080`, every admin port on `:8081` and the gateway on `:8082`.
 
 ### Task 3: first-hour experiments (ledger section I)
 
@@ -114,6 +118,7 @@ git rev-parse --show-toplevel            # prints this repository's root
 go build ./... && make lint && make test # all succeed
 docker-compose up -d --wait postgres rabbitmq redis   # all healthy
 docker-compose config | grep 'image:'    # no "latest", no floating tag
+grep 'Minimum Compose version' docs/progress.md      # shows a version number
 gh pr checks                             # CI green on the pull request
 grep -c '^| E[1-6] ' docs/progress.md    # 6: one result row per experiment
 ```
@@ -146,12 +151,13 @@ grep -c '^| E[1-6] ' docs/progress.md    # 6: one result row per experiment
 - **`decideRetry` has its final signature** (D17) and a minimal body: retry with a fixed delay while budget remains, otherwise fail. P3 replaces the body. Classification in P1 is three-way: `202` and other `2xx` → success; anything else that got a response → `retryable`; no response → `unknown`.
 - **Transitions return events** from the start. P1 hands them to a publisher interface with a no-op implementation; the real publisher comes in P5.
 - **The lease sweeper is minimal:** it marks the attempt `unknown` with `finished_at`, increments `failures` and applies `decideRetry`.
-- **`mockprovider`** implements the provider contract, records arrival times and `Idempotency-Key` headers, has a configurable status code, and exposes the report endpoint. Fault injection grows in P3.
-- **Compose** gains the application services with `restart: unless-stopped`, the `depends_on` chain, `stop_grace_period: 20s` for the worker, and the default `PROVIDER_URL` (D44). `mockprovider` is started by the test and mock configurations only.
+- **`mockprovider`** implements the provider contract, records the arrival time, the `Idempotency-Key` header and the **field names** of each request body (never the values), has a configurable status code, and exposes the report endpoint. Fault injection grows in P3.
+- **Compose** gains the application services with `restart: unless-stopped`, the `depends_on` chain, `stop_grace_period: 20s` for the worker, and the default `PROVIDER_URL` (D44).
+- **Mock profile:** `docker-compose.mock.yml` is an override file that adds `mockprovider` and points `PROVIDER_URL` at it. `make up-mock` starts the stack with it; `make test-e2e` and `make load` use it. The default stack never starts `mockprovider`.
 - **README:** the quick start (day 1 of D57), using `docker-compose up`.
 - **Manual check (U2):** send a few requests to the webhook.site URL and note which status codes it returns at its cap and after expiry, if they can be provoked; record them in `progress.md`.
 
-**Files and packages.** `migrations/`, `internal/store`, `internal/domain`, `internal/queue`, `internal/relay`, `internal/worker`, `internal/ratelimit`, `internal/provider`, `internal/api`, `api/openapi.yaml`, `cmd/{api,relay,worker,migrate,mockprovider}`, `docker-compose.yml`, `README.md`, `.github/workflows/ci.yml` (`integration`, `migrations`, `e2e` jobs).
+**Files and packages.** `migrations/`, `internal/store`, `internal/domain`, `internal/queue`, `internal/relay`, `internal/worker`, `internal/ratelimit`, `internal/provider`, `internal/api`, `api/openapi.yaml`, `cmd/{api,relay,worker,migrate,mockprovider}`, `docker-compose.yml`, `docker-compose.mock.yml`, `Makefile` (`up-mock`), `README.md`, `.github/workflows/ci.yml` (`integration`, `migrations`, `e2e` jobs).
 
 **Tests that must exist.**
 
@@ -170,7 +176,7 @@ grep -c '^| E[1-6] ' docs/progress.md    # 6: one result row per experiment
 | Transition invariants and database constraints (D19) | Transition tests for transitions 1–7 |
 | No one-second window above 100 (D24) | GCRA integration test; deterministic pacer test (fake clock, fixed jitter); unit test of the window computation |
 | Pacer rules (D23) | Highest priority taken; slot kept on a zero-row claim |
-| Provider contract (D28, D29) | Body has exactly three fields; `202` parsed; other `2xx` is success with a warning; sent exactly once; connections reused; redirect not followed |
+| Provider contract (D28, D29) | Body has exactly three fields, in the client test and end to end on `mockprovider`'s report; `202` parsed; other `2xx` is success and increments `provider_unexpected_2xx_total`; sent exactly once; connections reused; redirect not followed |
 | Migrations are reversible | `up → down → up` |
 
 **Exit criteria.**
@@ -183,6 +189,9 @@ curl -fsS -X POST localhost:8080/v1/notifications \
   -H 'Content-Type: application/json' \
   -d '{"channel":"sms","recipient":"+905551234567","content":"hello","priority":"high"}'
 curl -fsS localhost:8080/v1/notifications/<id>         # "status":"sent" within a few seconds
+# the request the provider received has exactly the three fields to, channel, content:
+#   locally: open the request on the webhook.site URL's page and compare its body
+#   in CI:   make test-e2e asserts it on mockprovider's report
 go test -tags integration -race -count=20 \
   -run 'TestClaim_WaitsForRelayCommit|TestE2E_IdleSingleNotificationIsSent' ./...
 go test -tags integration -race -count=100 -run TestRelay_UnroutablePublishStaysPending ./...
@@ -212,7 +221,7 @@ One manual mutation check closes the phase: revert the claim guard to `status = 
 
 | Area | Test |
 |---|---|
-| Cancel | `TestCancel_Idempotent`, `TestCancel_RacesWithClaim`, `TestCancel_DuringRelayPublish`, `TestCancel_WhileProcessingReturns409`; `may_have_been_sent` after an `unknown` attempt |
+| Cancel | `TestCancel_Idempotent`, `TestCancel_RacesWithClaim`, `TestCancel_DuringRelayPublish`, `TestCancel_WhileProcessingReturns409`; `may_have_been_sent` after an `unknown` attempt; batch cancel returns the `may_have_been_sent` count |
 | Idempotency | `TestIdempotencyKey_ConcurrentSameKey`; expired key taken over; different request → `422`; the hash covers method and path; validation failures are not stored |
 | Dedupe | Single-create conflict → `409` with `existing_id`; batch conflict through the partial index; duplicates inside one batch; the key is released only when cancelled with `attempt_count = 0` |
 | Batch | 1,000 items accepted; 1,001 → `422 too_many_items`; partial success; all rejected → `422` and no batch |
@@ -254,7 +263,7 @@ The README gains its API examples (day 2 of D57).
 | [0005](../adr/0005-service-topology-and-status-events.md) | Connections to RabbitMQ (exit when recovery gives up) |
 | [0007](../adr/0007-retry-policy-and-circuit-breaker.md) | §1–4, §7–10 |
 
-**Scope.** The full classification table with `unreachable` and `aborted`; `decideRetry` in full with the priority profiles and TTLs; `Retry-After` and consecutive-`429` handling; the in-process circuit breaker; the Redis-down fallback limiter; the expiry pass; reconciliation on (re)connection with the deferred trigger; the `requeue-stale` command; transition 12; the 60-second final-write retry; the lease sweeper in full; resubscribe on a server-side consumer cancellation; `mockprovider` fault injection (error rates, `429`, connection close, timeouts, redirects, malformed bodies, per channel).
+**Scope.** The full classification table with `unreachable` and `aborted`; `decideRetry` in full with the priority profiles and TTLs; `Retry-After` and consecutive-`429` handling; the in-process circuit breaker; the Redis-down fallback limiter; the expiry pass; reconciliation on (re)connection with the deferred trigger; the `requeue-stale` relay subcommand (`--older-than`, 5 minutes by default; `--all`); transition 12; the 60-second final-write retry; the lease sweeper in full; resubscribe on a server-side consumer cancellation; `mockprovider` fault injection (error rates, `429`, connection close, timeouts, redirects, malformed bodies, per channel).
 
 **Files and packages.** `internal/domain` (classification, `decideRetry`), `internal/breaker`, `internal/ratelimit` (fallback), `internal/relay` (expiry, reconciliation, lease sweeper), `internal/worker`, `internal/queue`, `internal/store`, `cmd/relay` (`requeue-stale`), `cmd/mockprovider`.
 
@@ -267,6 +276,7 @@ The README gains its API examples (day 2 of D57).
 | Breaker | State machine with a fake clock: window rule, **five consecutive failures**, doubling open duration, `provider_fatal`, `throttled`, one probe in half-open |
 | Abort path | A circuit that opens after the claim yields `aborted` and `retrying` with `failures` unchanged |
 | Reconciliation | All `queued` rows return to `pending` on reconnection and are republished; a trigger inside the window is deferred; an empty broker has its topology before the first publish |
+| `requeue-stale` | By default only `queued` rows older than the threshold return to `pending`; `--all` takes every `queued` row |
 | Late success | `TestLateSuccess_AfterLeaseSweep`, `_AfterReconcile`, `_AfterExpiry`, `_AfterCancel`, `_AfterRedrive` |
 | Final write | Retried while Postgres is unavailable; transition 12 tried when transition 4 affects zero rows |
 | Lease sweeper | `TestLeaseSweeper_VersusFinalWrite`, `TestLeaseSweeper_TwoSweepersSkipLocked`; `finished_at` set |
@@ -281,6 +291,7 @@ The README gains its API examples (day 2 of D57).
 make test                                   # green
 make test-e2e                               # fault scenarios: 5xx → retries → sent; 401 → circuit open, failures = 0
 docker-compose restart rabbitmq             # then: reconciliation_runs_total increased, every row ends sent
+docker-compose run --rm relay requeue-stale # exits 0; queued rows older than 5 minutes are pending again
 docker-compose stop redis                   # then: sending continues, limiter_fallback_active = 1
 gh pr checks
 ```
@@ -335,7 +346,7 @@ gh pr checks
 
 **Implements.** D9, D11, D13, D33, D37, D39, D41, D42, D43. [ADR-0005](../adr/0005-service-topology-and-status-events.md) (status events, gateway); [ADR-0006](../adr/0006-api-contract-and-three-layer-idempotency.md) §10; [ADR-0009](../adr/0009-observability.md) in full.
 
-**Scope.** The lazy, bounded event publisher in api, relay and worker; the gateway with subscription-then-snapshot, origin patterns, the bounded send queue and the bounded event queue; all metrics of ADR-0009 §1; the metrics summary with its two caches; the "Overview" dashboard and the alert rules; `slog` with the `Recipient` type, key-based and value-based redaction; correlation IDs; hybrid tracing; health endpoints in full, on the public port and in the OpenAPI spec; Prometheus scraping RabbitMQ per object; `make demo`.
+**Scope.** The lazy, bounded event publisher in api, relay and worker; the gateway with subscription-then-snapshot, origin patterns, the bounded send queue and the bounded event queue; all metrics of ADR-0009 §1; the metrics summary with its two caches; the "Overview" dashboard and the alert rules, with first thresholds for the oldest-queued-age and expiry-rate alerts (tuned in P6); `slog` with the `Recipient` type, key-based and value-based redaction; correlation IDs; hybrid tracing; health endpoints in full, on the public port and in the OpenAPI spec; Prometheus scraping RabbitMQ per object; `make demo`.
 
 **Files and packages.** `internal/queue` (event publisher), `internal/gateway`, `cmd/gateway`, `internal/platform` (logging, metrics, tracing), `internal/api` (summary, health), `deploy/` (Prometheus, Grafana, Jaeger), `docker-compose.yml`, `Makefile` (`demo`).
 
@@ -381,7 +392,8 @@ gh pr checks
 - **Chaos scenarios** scripted on the e2e stack: RabbitMQ wiped with its data, Postgres restart, low-traffic provider outage, worker `SIGKILL`, Redis stop, and one run with the per-channel worker override.
 - **Load scenarios** with k6: 30,000 SMS rate test, strict-priority ordering, saturation report, channel isolation, phase 1 (1 M ingest), phase 2 (100,000 drain), listing and summary latency on the phase-1 dataset. Results go to `docs/load-test.md`; the README gains its load results (day 3 of D57).
 - **Pacing margin:** the main loop reads the jitter measured by the rate scenario and confirms 98 msg/s or adjusts the configured rate (D24).
-- **`make verify-suite`:** the six mutation patches of ADR-0010 §8, each failing a named test.
+- **Tuning:** the values that start as initial defaults are checked against the load and chaos results and adjusted: the event publisher buffer, the gateway queue's `x-max-length` and `x-message-ttl`, the per-connection send queue, and the alert thresholds.
+- **`make verify-suite`:** the six mutation patches of ADR-0010 §8, each failing a named test. At least three of them are never dropped (section 12).
 - **CI hardening:** every third-party action pinned by SHA; minimal permissions; `test-docker`, `migrations` and `compose-up` jobs (the last runs `docker-compose up` with the standalone binary); the scheduled, non-blocking `security` job.
 - **Release workflow,** run once with a test tag.
 
@@ -465,24 +477,28 @@ A note on U8: a repeated test can make a violation unlikely, but only the librar
 
 Scope is cut only when correctness cannot be shown by tests within the time, or when a component adds risk without matching value (G2). When time runs short, items are dropped **from the top of this list downwards**, and each drop is recorded in `docs/future-work.md` in the same commit.
 
+**The principle:** our own additions, which the assessment does not ask for, are dropped before any feature the assessment names, including its bonus features.
+
 | Order | Dropped first | What remains |
 |---|---|---|
 | 1 | Phase-1 load scenario (1 M ingest) and the latency measurements on its dataset | Rate, isolation, priority and 100,000-drain scenarios |
-| 2 | Saturation report; the per-channel-override chaos run; the Postgres-restart chaos scenario | Broker wipe, worker `SIGKILL`, low-traffic outage, Redis stop |
-| 3 | Release workflow (CD) | CI in full |
-| 4 | Dashboard panels beyond the required figures; alert rules beyond relay down and poison depth | One dashboard, smoke-tested |
-| 5 | Template conveniences: preview, activate and deactivate, `optional_variables` | Create, version, render with the allow-list |
-| 6 | Redrive | Failed notifications stay failed; resubmission needs a new `dedupe_key` |
-| 7 | The hybrid trace rule | Linked traces for every delivery |
-| 8 | WebSocket gateway (bonus, R28) | Status through `GET` |
-| 9 | Templates (bonus, R27) | Direct `content` only |
-| 10 | Distributed tracing (bonus, R29) | Correlation IDs in logs |
+| 1a | If more time is needed before step 2: the saturation report and the extra chaos runs (per-channel override, Postgres restart) | Broker wipe, worker `SIGKILL`, low-traffic outage, Redis stop |
+| 2 | Release workflow (CD) | CI in full |
+| 3 | Dashboard panels and alert rules beyond the required figures | One dashboard with queue depth, success and failure rates and latency, smoke-tested |
+| 4 | Template conveniences: preview, activate and deactivate, version pinning | Create a template, add versions, render the latest version with the allow-list |
+| 5 | Redrive, then transition 12 (late success) | Fencing stays: a late write still affects zero rows. Failed notifications stay failed; a late success is recorded on the attempt only. |
+| 6 | The hybrid trace rule | Linked traces for every delivery |
+| 7 | The `dedupe_key` layer | `Idempotency-Key` on both create endpoints, and the send-layer defences |
+| 8 | Storing and value-redacting provider error bodies | Provider bodies are not stored at all; attempts keep the status code and the outcome |
+| 9 | The SMS encoding and segment report | A plain length limit on SMS content |
+| 10 | **Last resort, only if the core is not green:** distributed tracing (R29), then the WebSocket gateway (R28) | Correlation IDs in logs; status through `GET` |
 
 **Never dropped,** whatever the time:
 
 - Every non-bonus requirement: R1–R24 and R31–R36.
 - The claim guard of D1 and its two race tests; `mandatory` publishing and its test (D2).
 - The rate-limit evidence: `load-smoke` in CI and the 30,000-message scenario (D24, D51).
+- `make verify-suite` with at least three mutations, each failing a named test (D54).
 - webhook.site as the default provider and the exact provider request format (D28, D44).
 - `docker-compose up` from a clean clone without a `.env` file; `make test` as the single test command.
 - No recipient or content in logs, spans or metrics (D42).
@@ -505,3 +521,6 @@ Scope is cut only when correctness cannot be shown by tests within the time, or 
 | 10 | The Postgres 18 image's data path differs from earlier versions | High if unnoticed | Data is lost on container recreation | Called out in P0; checked by recreating the container |
 | 11 | Links to `docs/ai/design-review-log.md` are broken until P7 | Certain | A link check would fail | The link check is enabled in P7 |
 | 12 | A session starts without the context of earlier ones | Certain | Rework or contradicting decisions | `docs/progress.md` is read first and written last in every session |
+| 13 | `docker-compose up` hangs, or a service stays unhealthy, on a clean clone | Medium | The first thing a reader runs fails | The stack needs no `.env` file (D44); every image is on an exact tag (D48); health checks use the binaries' `healthcheck` subcommand and the `depends_on` chain rests on Postgres, RabbitMQ, Redis and `migrate` only (D47); the api's readiness needs Postgres only and event publishers never affect start-up (D11, D39); a CI job runs `docker-compose up` with the standalone binary on every push (D45, D53); the clean-clone rehearsal before submission (D61) |
+| 14 | A `queued` row is silently stuck, because reconciliation covers reconnections only | Low to medium | A notification is not delivered and nobody notices until it expires | The `lane_oldest_queued_age_seconds` gauge with an alert on the `high` lanes and the poison-queue depth alert (D5, D6, D41); the `requeue-stale` relay subcommand (D5); expiry as the final bound, so the row ends `failed / expired` and is visible to the client (D12); the limitation is stated in `future-work.md` (D56) |
+| 15 | Summary and count queries slow down at 1 M rows | Medium | The metrics endpoint and listing become slow exactly during a burst | `backlog_due` is cached separately for 10 s and the summary for 2 s (D39); listing has no `total_count`, uses two index-ordered queries and an `EXPLAIN` check tied to a test (D34); partial indexes keep lane counts small (D19); listing and summary latency are measured on the phase-1 dataset (D55). If the phase-1 scenario is dropped under the fallback order, this measurement is lost and the README says so. |
