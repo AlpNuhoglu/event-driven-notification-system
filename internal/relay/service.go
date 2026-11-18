@@ -53,20 +53,32 @@ func Service(ctx context.Context, cfg config.Config, logger *slog.Logger) error 
 	return run(ctx, r, conn.GaveUp(), conn.Err)
 }
 
-// run runs both loops until ctx is cancelled or gaveUp is closed, and waits
-// for them to finish.
+// run runs both loops until ctx is cancelled, gaveUp is closed or a loop
+// ends with an error (the publisher's channel is closed), and waits for them
+// to finish. It returns an error in the last two cases, so that the process
+// exits with a non-zero code and is restarted.
 func run(ctx context.Context, r *Relay, gaveUp <-chan struct{}, gaveUpErr func() error) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	loopErr := make(chan error, 2)
 	var wg sync.WaitGroup
-	wg.Go(func() { _ = r.RunPublishing(runCtx) })
-	wg.Go(func() { _ = r.RunLeaseSweeper(runCtx) })
+	wg.Go(func() {
+		if err := r.RunPublishing(runCtx); err != nil {
+			loopErr <- err
+		}
+	})
+	wg.Go(func() {
+		if err := r.RunLeaseSweeper(runCtx); err != nil {
+			loopErr <- err
+		}
+	})
 
 	var err error
 	select {
 	case <-ctx.Done():
 	case <-gaveUp:
 		err = errors.Join(errors.New("rabbitmq connection recovery gave up"), gaveUpErr())
+	case err = <-loopErr:
 	}
 	cancel()
 	wg.Wait()

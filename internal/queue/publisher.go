@@ -21,8 +21,12 @@ type Message struct {
 	TraceParent string
 }
 
-// errChannelClosed reports that the publisher's AMQP channel was closed.
-var errChannelClosed = errors.New("publisher channel closed")
+// ErrPublisherChannelClosed reports that the publisher's AMQP channel was
+// closed: its return listener is gone, so no later batch can be checked for
+// unroutable messages. Every batch fails with it from then on. The relay
+// treats it like a recovery that gave up and exits, so that the restart
+// policy brings up a process with a new publisher (D5).
+var ErrPublisherChannelClosed = errors.New("publisher channel closed")
 
 // Publisher is the relay's publisher: one AMQP channel in confirm mode with a
 // buffered return listener (decisions D2, D7, D10).
@@ -160,7 +164,7 @@ func (p *Publisher) waitConfirm(ctx context.Context, lost <-chan struct{}, dc *a
 			return nil
 		case r, ok := <-p.returns:
 			if !ok {
-				return errChannelClosed
+				return ErrPublisherChannelClosed
 			}
 			returned[r.MessageId] = true
 		case <-lost:
@@ -178,7 +182,7 @@ func (p *Publisher) drainReturns(returned map[string]bool) error {
 		select {
 		case r, ok := <-p.returns:
 			if !ok {
-				return errChannelClosed
+				return ErrPublisherChannelClosed
 			}
 			if returned != nil {
 				returned[r.MessageId] = true

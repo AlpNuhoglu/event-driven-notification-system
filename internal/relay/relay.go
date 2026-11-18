@@ -5,6 +5,8 @@ package relay
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -77,7 +79,9 @@ func New(st Store, pub Publisher, conn Connection, ev events.Publisher, logger *
 
 // RunPublishing runs the publishing cycle every TickInterval until ctx is
 // cancelled. A cycle in progress finishes its current lane transaction and
-// then stops.
+// then stops. It returns an error only when the relay cannot go on
+// publishing: the publisher's channel is closed (the role then exits and is
+// restarted, like after a recovery that gave up).
 func (r *Relay) RunPublishing(ctx context.Context) error {
 	t := time.NewTicker(r.cfg.TickInterval)
 	defer t.Stop()
@@ -86,7 +90,9 @@ func (r *Relay) RunPublishing(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		case <-t.C:
-			r.cycle(ctx)
+			if err := r.cycle(ctx); err != nil {
+				return err
+			}
 		}
 	}
 }
@@ -101,19 +107,22 @@ func (r *Relay) RunPublishing(ctx context.Context) error {
 // lane transaction runs on a context that shutdown does not cancel, so a
 // lane that has started is finished; no further lane starts after ctx is
 // cancelled.
-func (r *Relay) cycle(ctx context.Context) {
+//
+// The only error cycle returns is a closed publisher channel: no later batch
+// could be checked for unroutable messages, so the relay stops.
+func (r *Relay) cycle(ctx context.Context) error {
 	if ctx.Err() != nil || !r.conn.IsOpen() {
-		return
+		return nil
 	}
 	queued, err := r.store.QueuedCounts(ctx)
 	if err != nil {
 		r.logger.Warn("relay: count queued rows failed", "error", err)
-		return
+		return nil
 	}
 	for _, c := range domain.Channels() {
 		for _, p := range domain.Priorities() {
 			if ctx.Err() != nil || !r.conn.IsOpen() {
-				return
+				return nil
 			}
 			lane := store.Lane{Channel: c, Priority: p}
 			limit := min(r.cfg.BatchSize, r.cfg.hwm(p)-queued[lane])
@@ -121,6 +130,9 @@ func (r *Relay) cycle(ctx context.Context) {
 				continue
 			}
 			evs, err := r.store.PublishLane(context.WithoutCancel(ctx), lane, limit, r.publishFunc(lane))
+			if errors.Is(err, queue.ErrPublisherChannelClosed) {
+				return fmt.Errorf("relay: lane %s/%s: %w", c, p, err)
+			}
 			if err != nil {
 				r.logger.Warn("relay: lane failed", "channel", string(c), "priority", p.String(), "error", err)
 				continue
@@ -130,6 +142,7 @@ func (r *Relay) cycle(ctx context.Context) {
 			}
 		}
 	}
+	return nil
 }
 
 // publishFunc publishes the rows of one lane with the lane's channel and

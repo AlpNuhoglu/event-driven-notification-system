@@ -191,7 +191,7 @@ func TestRelay_UnroutablePublishStaysPending(t *testing.T) {
 	// A whole lane is unroutable; the lanes of the other channels are not.
 	push := create(t, st, domain.ChannelPush, domain.PriorityHigh, 5)
 	sms := create(t, st, domain.ChannelSMS, domain.PriorityHigh, 5)
-	r.cycle(ctxT(t))
+	runCycle(t, r, ctxT(t))
 	requireStatus(t, st, push, domain.StatusPending)
 	requireStatus(t, st, sms, domain.StatusQueued)
 	evs := eventIDs(rec.events())
@@ -242,7 +242,7 @@ func TestRelay_UnroutablePublishStaysPending(t *testing.T) {
 	if err := b.admin.QueueBind(queue.DispatchQueue(domain.ChannelPush), "push", queue.DispatchExchange, false, nil); err != nil {
 		t.Fatal(err)
 	}
-	r.cycle(ctxT(t))
+	runCycle(t, r, ctxT(t))
 	requireStatus(t, st, push, domain.StatusQueued)
 }
 
@@ -261,7 +261,7 @@ func TestRelay_PrioritySetOnEveryMessage(t *testing.T) {
 			}
 		}
 	}
-	r.cycle(ctxT(t))
+	runCycle(t, r, ctxT(t))
 
 	seen := 0
 	for _, c := range domain.Channels() {
@@ -316,8 +316,8 @@ func TestRelay_TwoRelaysNeverPublishSameRow(t *testing.T) {
 			t.Fatal("rows still pending after 20 rounds")
 		}
 		var wg sync.WaitGroup
-		wg.Go(func() { r1.cycle(context.Background()) })
-		wg.Go(func() { r2.cycle(context.Background()) })
+		wg.Go(func() { runCycle(t, r1, context.Background()) })
+		wg.Go(func() { runCycle(t, r2, context.Background()) })
 		wg.Wait()
 	}
 
@@ -357,7 +357,7 @@ func TestRelay_LaneHWMHoldsOnRealRows(t *testing.T) {
 		create(t, st, domain.ChannelSMS, p, 10)
 	}
 	for range 6 {
-		r.cycle(ctxT(t))
+		runCycle(t, r, ctxT(t))
 	}
 	counts, err := st.QueuedCounts(ctxT(t))
 	if err != nil {
@@ -385,14 +385,14 @@ func TestRelay_ConfirmTimeoutLeavesRowsPending(t *testing.T) {
 	ids := create(t, st, domain.ChannelSMS, domain.PriorityHigh, 5)
 
 	proxy.Pause() // confirms are held back
-	r.cycle(ctxT(t))
+	runCycle(t, r, ctxT(t))
 	requireStatus(t, st, ids, domain.StatusPending)
 	if n := len(rec.events()); n != 0 {
 		t.Errorf("%d events after a failed lane, want 0", n)
 	}
 
 	proxy.Resume()
-	r.cycle(ctxT(t))
+	runCycle(t, r, ctxT(t))
 	requireStatus(t, st, ids, domain.StatusQueued)
 }
 
@@ -411,7 +411,7 @@ func TestRelay_ConnectionLostDuringBatchLeavesRowsPending(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		r.cycle(context.Background())
+		runCycle(t, r, context.Background())
 	}()
 	testutil.Eventually(t, func() bool { return proxy.BytesToBroker() > before }, waitTimeout)
 	proxy.Break()
@@ -428,7 +428,7 @@ func TestRelay_ConnectionLostDuringBatchLeavesRowsPending(t *testing.T) {
 	proxy.Resume()
 	proxy.Restore(t)
 	testutil.Eventually(t, conn.IsOpen, waitTimeout)
-	r.cycle(ctxT(t))
+	runCycle(t, r, ctxT(t))
 	requireStatus(t, st, ids, domain.StatusQueued)
 }
 
@@ -439,7 +439,7 @@ func TestRelay_LeaseSweeperRecoversExpiredLease(t *testing.T) {
 	st, pool := newStore(t)
 	r, _, rec := newRelay(t, st, b.url, integrationConfig)
 	id := create(t, st, domain.ChannelSMS, domain.PriorityHigh, 1)[0]
-	r.cycle(ctxT(t))
+	runCycle(t, r, ctxT(t))
 	if _, _, err := st.Claim(ctxT(t), id, testLease, "mock"); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
