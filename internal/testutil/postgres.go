@@ -43,20 +43,38 @@ var (
 	createMu sync.Mutex
 )
 
-// Main runs the tests of a package and terminates the Postgres container
-// afterwards if one was started. Integration test packages call it from
-// TestMain; without it the container is still removed by the testcontainers
+// Main runs the tests of a package and afterwards terminates every container
+// a helper of this package started. Integration test packages call it from
+// TestMain; without it the containers are still removed by the testcontainers
 // reaper when the test binary exits.
 func Main(m *testing.M) {
 	code := m.Run()
-	if shared != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-		if err := testcontainers.TerminateContainer(shared.container, testcontainers.StopContext(ctx)); err != nil {
-			fmt.Fprintf(os.Stderr, "terminate postgres container: %v\n", err)
-		}
-		cancel()
+	terminateMu.Lock()
+	fns := terminators
+	terminateMu.Unlock()
+	for _, fn := range fns {
+		fn()
 	}
 	os.Exit(code)
+}
+
+var (
+	terminateMu sync.Mutex
+	terminators []func()
+)
+
+// onExit registers the termination of a container a helper started; Main
+// runs it after the tests. name appears in the message when it fails.
+func onExit(name string, c testcontainers.Container) {
+	terminateMu.Lock()
+	defer terminateMu.Unlock()
+	terminators = append(terminators, func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		if err := testcontainers.TerminateContainer(c, testcontainers.StopContext(ctx)); err != nil {
+			fmt.Fprintf(os.Stderr, "terminate %s container: %v\n", name, err)
+		}
+	})
 }
 
 func start() (*server, error) {
@@ -91,6 +109,7 @@ func start() (*server, error) {
 	if err := migrations.Up(tmplURL); err != nil {
 		return nil, errors.Join(fmt.Errorf("migrate template: %w", err), testcontainers.TerminateContainer(c))
 	}
+	onExit("postgres", c)
 	return s, nil
 }
 
