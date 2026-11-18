@@ -117,7 +117,7 @@ SELECT * FROM claimed;
 
 - **Expired at claim:** the same statement sets `failed / expired`, does **not** increment `attempt_count` and inserts **no** attempt row. Nothing is sent.
 - **Zero rows:** the row was already claimed, cancelled, expired or sent, or it is not due. The worker acks and drops the message.
-- A row claimed directly from `pending` or `retrying` has `queued_at = NULL`; metrics skip the queue-wait observation for it ([ADR-0009](0009-observability.md)).
+- A row claimed directly from `pending` or `retrying` has `queued_at = NULL`; metrics skip the queue-wait observation for it ([ADR-0009](0009-observability.md)). A transition to `retrying` (5, 7) clears `queued_at`, so the time of an earlier publish never survives into a later attempt.
 
 **Redrive (transition 11).** If the stored `expires_at` is still in the future, it is kept. If it has passed, the request must supply a new `expires_at` at least 30 seconds ahead; without one the call returns `409` ([ADR-0006](0006-api-contract-and-three-layer-idempotency.md) §7). A client-supplied expiry is never silently replaced. Attempt numbers keep increasing across redrives, so the attempt history stays unique.
 
@@ -131,10 +131,11 @@ A **slow worker is not a dead worker.** A worker can stall past its lease, have 
 ```sql
 UPDATE notifications
 SET status = 'sent', provider_message_id = $3, provider = $4, sent_at = now(),
-    updated_at = now(), version = version + 1
+    lease_expires_at = NULL, updated_at = now(), version = version + 1
 WHERE id = $1 AND status = 'processing' AND attempt_count = $2;
 ```
 
+- **The lease is cleared when the row leaves `processing`** (transitions 4, 5, 6 and 7), so `lease_expires_at` is set only on a `processing` row.
 - **A late worker's write affects zero rows.** Its attempt row is still updated with the true outcome ([section 6](#6-tables)), so no information is lost.
 - **Late success (transition 12):** only a claim increments `attempt_count`. So `attempt_count = $n` means *"no newer attempt has started since mine"*. If the late worker succeeded and the row is in any state other than `processing` or `sent`, the message was delivered and the row moves to `sent`. This covers a row that the lease sweeper returned to `retrying`, that the relay republished (`queued`) or reconciled (`pending`), that exhausted its budget or expired (`failed`), or that the client cancelled in the meantime. A copy still in RabbitMQ is then dropped by its claim guard. In the most common stall scenario this prevents a duplicate send.
 - **The final write is retried.** If Postgres is unavailable when the provider has answered, the worker retries its final write with back-off for up to **60 seconds**: transition 4 first, and transition 12 if that affects zero rows. After that the result is lost to the row, the lease sweeper marks the attempt `unknown`, and the notification is retried; this is one of the windows in which a duplicate send can occur.
@@ -194,6 +195,7 @@ There is no `subject` column. The assessment defines a notification as recipient
 | `status = 'failed'` ⇔ `failure_reason IS NOT NULL` | `CHECK` |
 | `status = 'sent'` ⇔ `sent_at IS NOT NULL` | `CHECK` |
 | At most one `in_flight` attempt per notification | Partial unique index on `notification_attempts (notification_id) WHERE outcome = 'in_flight'` |
+| An attempt has no `finished_at` ⇔ it is `in_flight` | `CHECK` on `notification_attempts` |
 
 There is deliberately no free-text error column on `notifications`. Provider error bodies, redacted, live only in `notification_attempts.error` ([ADR-0009](0009-observability.md)).
 
