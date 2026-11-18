@@ -1,0 +1,15 @@
+.git
+.github
+.inputs
+.env
+.env.*
+.claude
+docs
+deploy
+bin
+*.md
+docker-compose*.yml
+Dockerfile
+.dockerignore
+coverage.*
+*.out
