@@ -70,7 +70,7 @@ Prometheus metrics and `pprof` are served on each service's separate admin port 
 | `channel` | Required: `sms`, `email` or `push` |
 | `recipient` | Required; validated per channel (section 5) |
 | `priority` | `high`, `normal` (default) or `low` |
-| `content` / `template` | **Exactly one is required.** `template` is `{"name": "...", "version": 3, "variables": {...}}`, where `version` is optional and defaults to the latest one. Templates are rendered at creation time ([ADR-0008](0008-templates-and-scheduling.md)). |
+| `content` / `template` | **Exactly one is required.** `template` is `{"name": "...", "version": 3, "variables": {...}}`, where `version` is optional and defaults to the latest one, and `variables` is optional. Templates are rendered at creation time ([ADR-0008](0008-templates-and-scheduling.md) §5). `"template": null` means that the member is absent, as in the example above; every other member keeps its rule that `null` is not a value. Neither of the two is `content` / `required`; both is `template` / `conflicts_with_content`. The object is as strict as the body: an unknown member is `template.<member>` / `unknown_field`. |
 | `scheduled_at` | Optional, RFC 3339 with an offset. A value up to 30 seconds in the past means "now" (clock-skew tolerance) and is **stored as `NULL`**; further in the past is rejected. At most 30 days ahead ([ADR-0008](0008-templates-and-scheduling.md)). |
 | `expires_at` | Optional. Must satisfy `expires_at >= COALESCE(scheduled_at, now()) + 30s`. If omitted, it defaults to `due time + TTL` from the priority profile ([ADR-0007](0007-retry-policy-and-circuit-breaker.md) §3). |
 | `dedupe_key` | Optional, 1–255 characters. Record-level idempotency (section 11) |
@@ -103,7 +103,7 @@ The request has the four fields the assessment names (recipient, channel, conten
 }
 ```
 
-All timestamps are RFC 3339 in UTC. `version` lets clients order status events (section 10).
+All timestamps are RFC 3339 in UTC. `version` lets clients order status events (section 10). `template` is `{"name", "version"}` for a notification created from a template (the version that produced the content), `null` otherwise; the variables are not returned, as the content is not.
 
 ### 5. Content validation
 
@@ -193,7 +193,7 @@ The request body is `{"notifications": [ ... ]}`: an object with that one field,
 |---|---|
 | `400` | Malformed JSON or invalid query parameters |
 | `404` | Unknown notification, batch or template |
-| `409` | A transition that is not allowed (cancel, redrive; problem type `conflict`, with `current_status`); a `dedupe_key` conflict on single create (`code: duplicate`, with `existing_id`); a template name that already exists |
+| `409` | A transition that is not allowed (cancel, redrive; problem type `conflict`, with `current_status`); a `dedupe_key` conflict on single create (`code: duplicate`, with `existing_id`); a template name that already exists (problem type `template-exists`) |
 | `413` | Request body over 5 MB |
 | `422` | Validation failure; more than 1,000 batch items (`code: too_many_items`); an `Idempotency-Key` reused with a different request |
 | `503` | Postgres unavailable |
@@ -266,6 +266,8 @@ RETURNING key;
 - **Retention:** 24 hours (`IDEMPOTENCY_KEY_TTL`). Expired keys are taken over on write, so correctness never depends on the cleanup. **The relay deletes expired keys** next to the expiry pass: batches of 1,000, ordered by `expires_at`, selected with `FOR UPDATE SKIP LOCKED`, every `IDEMPOTENCY_CLEANUP_INTERVAL` (1 minute by default), and again at once while a batch comes back full (D78). The stored response body contains the recipient, so the retention must be real: an expired key is removed, not merely no longer honoured. The table also stops growing. The delete never waits for a request: a key that a request holds (a take-over in an open transaction, or a replay being read) is skipped, a key taken over meanwhile is live again and kept, and a take-over that meets a running delete waits for it and then inserts the key as new.
 - **Scope:** global, because there are no tenants. A future multi-tenant version would scope keys by `(tenant_id, key)`.
 
+**A request that renders a template looks its key up first.** The claim runs inside the create transaction, after the request was validated; for a request that uses a template, validation includes rendering, and that can give a different result on the retry (the template gained a version or was deactivated). Such a request therefore reads its key before it renders, with the liveness rule of the claim and without a lock: the same hash replays the stored response, another hash is the `422` of a reused key, and no live key lets the request go on to the claim, which still decides between concurrent requests ([ADR-0008](0008-templates-and-scheduling.md) §5). Requests without a template are not changed.
+
 #### Record layer: `dedupe_key`
 
 - Enforced by `UNIQUE (dedupe_key) WHERE dedupe_key IS NOT NULL AND NOT (status = 'cancelled' AND attempt_count = 0)` ([ADR-0004](0004-data-model-state-machine-and-fencing.md) §7). Every `ON CONFLICT` and every conflict look-up repeats this predicate.
@@ -326,3 +328,4 @@ Changes made after the design review, recorded in the [design review log](../ai/
 - Cancel and the `dedupe_key` index were redefined around ambiguous attempts (`may_have_been_sent`; the key is released only when no attempt was made), and "no transition out of `cancelled`" was corrected. (D15, D14)
 - Health endpoints moved onto the public port; list filters became single-valued; redrive keeps a client's `expires_at`. (D33, D34, D16)
 - Previously undefined responses and limits were fixed: `dedupe_key` conflict, more than 1,000 items, `Idempotency-Key` scope and hash, `X-Request-ID` format, SMS counting units, phone validation level, embedded Swagger UI. (D35, D36, D38)
+- In P4 the `template` member was built: `null` means absent, the two exclusion errors and the strict member object were specified, the response gained `template`, and a request that renders a template looks its `Idempotency-Key` up before rendering. (D40)
