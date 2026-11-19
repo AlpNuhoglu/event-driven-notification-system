@@ -44,15 +44,17 @@ func Service(ctx context.Context, cfg config.Config, logger *slog.Logger) error 
 	}
 
 	handler := NewHandler(Options{
-		Repository:        store.New(pool, store.ProfilesFrom(cfg.Retry)),
-		DB:                pool,
-		Logger:            logger,
-		Retry:             cfg.Retry,
-		MaxBodyBytes:      cfg.API.MaxBodyBytes,
-		IdempotencyKeyTTL: cfg.API.IdempotencyKeyTTL,
-		ExpiresAtMinLead:  cfg.API.ExpiresAtMinLead,
-		PhoneValidation:   domain.PhoneValidation(cfg.API.PhoneValidation),
-		Events:            events.Nop{},
+		Repository:           store.New(pool, store.ProfilesFrom(cfg.Retry)),
+		DB:                   pool,
+		Logger:               logger,
+		Retry:                cfg.Retry,
+		MaxBodyBytes:         cfg.API.MaxBodyBytes,
+		IdempotencyKeyTTL:    cfg.API.IdempotencyKeyTTL,
+		ExpiresAtMinLead:     cfg.API.ExpiresAtMinLead,
+		ScheduledAtTolerance: cfg.API.SchedulePastTolerance,
+		ScheduledAtMaxAhead:  cfg.API.ScheduleMaxHorizon,
+		PhoneValidation:      domain.PhoneValidation(cfg.API.PhoneValidation),
+		Events:               events.Nop{},
 	})
 	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", cfg.Ports.APIAddr)
 	if err != nil {

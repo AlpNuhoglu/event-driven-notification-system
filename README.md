@@ -1,6 +1,6 @@
 # Event-Driven Notification System
 
-> **Work in progress.** The core path is implemented: a notification created through the API is stored, published, rate-limited and sent to the provider, notifications can be created in batches with two layers of duplicate prevention (`Idempotency-Key`, `dedupe_key`), they can be listed, cancelled and redriven, they can be created from versioned templates, and every request is validated for its channel, with the SMS segment count reported. Scheduling, the WebSocket gateway and the dashboards follow in the phases of the [implementation plan](docs/plan/implementation-plan.md); [progress](docs/progress.md) shows where the work stands. This README grows with it.
+> **Work in progress.** The core path is implemented: a notification created through the API is stored, published, rate-limited and sent to the provider, notifications can be created in batches with two layers of duplicate prevention (`Idempotency-Key`, `dedupe_key`), they can be listed, cancelled and redriven, they can be created from versioned templates and scheduled for later delivery, and every request is validated for its channel, with the SMS segment count reported. The WebSocket gateway and the dashboards follow in the phases of the [implementation plan](docs/plan/implementation-plan.md); [progress](docs/progress.md) shows where the work stands. This README grows with it.
 
 A notification service written in Go that accepts SMS, Email and Push notifications through a REST API and delivers them asynchronously through an external provider. It is built around a Postgres outbox, a RabbitMQ dispatch broker with strict priority, a per-channel rate limit of at most 100 messages per second, retries classified by failure scope, and real-time status tracking.
 
@@ -182,6 +182,43 @@ curl -sS -X POST localhost:8080/v1/templates/otp/deactivate
 curl -sS -X POST localhost:8080/v1/templates/otp/activate
 ```
 
+**Schedule a notification** with `scheduled_at` (single create and batch items): it stays `pending` and is delivered at that time, not before (the relay checks every 100 ms). The time is RFC 3339 with an explicit offset (`Z` or `+03:00`), at most 30 days ahead; the answer gives it back in UTC. Replace the example time with one in the next 30 days.
+
+```
+curl -sS -X POST localhost:8080/v1/notifications \
+  -H 'Content-Type: application/json' \
+  -d '{"channel":"email","recipient":"user@example.com","content":"Your appointment is tomorrow","scheduled_at":"2026-11-20T09:00:00+03:00"}'
+```
+
+```json
+{"id": "...", "status": "pending", "scheduled_at": "2026-11-20T06:00:00Z", "expires_at": "2026-11-20T12:00:00Z", "...": "..."}
+```
+
+A `scheduled_at` up to 30 seconds in the past means "now", to absorb clock differences between the client and the server: the notification is sent at once and the answer shows `"scheduled_at": null`. Further in the past is a `422` (`in_the_past`), more than 30 days ahead too (`too_far_ahead`). `"scheduled_at": null` is the same as leaving it out.
+
+**Expiry.** A notification that is not sent by its `expires_at` fails as `expired`. By default `expires_at` is the due time (`scheduled_at`, or the time of creation) plus the TTL of the priority: 10 minutes for `high`, 6 hours for `normal`, 24 hours for `low`. A request may give its own `expires_at`, at least 30 seconds after the due time, so that a notification scheduled for later cannot expire before it was ever attempted; an earlier one is a `422` (`too_soon`).
+
+```
+curl -sS -X POST localhost:8080/v1/notifications \
+  -H 'Content-Type: application/json' \
+  -d '{"channel":"sms","recipient":"+905551234567","content":"Doors open at 09:00","scheduled_at":"2026-11-20T09:00:00+03:00","expires_at":"2026-11-20T06:00:10Z"}'
+```
+
+```json
+{
+  "type": "https://github.com/AlpNuhoglu/event-driven-notification-system/blob/main/docs/errors.md#validation",
+  "title": "Validation failed",
+  "status": 422,
+  "detail": "1 field(s) are invalid.",
+  "correlation_id": "...",
+  "errors": [
+    {"field": "expires_at", "code": "too_soon", "message": "expires_at must be at least 30s after the due time (scheduled_at, or now)"}
+  ]
+}
+```
+
+**Cancel a scheduled notification** like any other (below): it is `pending` until its time, so it can be cancelled until a worker takes it. A scheduled notification cannot be moved to another time; cancel it and create a new one.
+
 **List notifications**, newest first, with single-valued filters (`status`, `channel`, `priority`, `batch_id`, `created_from`, `created_to`) and a cursor. `limit` is 1 to 200 (50 by default); pass `next_cursor` back as `cursor` until it is `null`. There is no total count. A parameter the API does not define, or an invalid value, is a `400`: a misspelled filter never returns an unfiltered list.
 
 ```
@@ -243,7 +280,7 @@ To try cancel and redrive on the mock profile, make the mock provider fail first
 Added in the phases named in the implementation plan:
 
 - How to create and configure your own webhook.site URL
-- API examples for scheduling, and `make demo`
+- `make demo`
 - Requirements map with evidence
 - Interpretations of the assessment and known limitations
 - Load-test results

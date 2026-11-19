@@ -363,8 +363,16 @@ type CreateNotificationRequest struct {
 
 	// DedupeKey Optional. A second notification with the same key is refused (`409`)
 	// while the first holds it. Must not contain U+0000.
-	DedupeKey *string   `json:"dedupe_key,omitempty"`
-	Priority  *Priority `json:"priority,omitempty"`
+	DedupeKey *string `json:"dedupe_key,omitempty"`
+
+	// ExpiresAt Optional: the notification fails as `expired` if it is not sent by
+	// this time. RFC 3339 with an explicit offset; `null` is not a
+	// value. It must be at least 30 seconds (`EXPIRES_AT_MIN_LEAD`)
+	// after the due time: the `scheduled_at` when it is in the future,
+	// otherwise now (`too_soon`). Without it, the notification expires
+	// at the due time plus its priority's TTL.
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	Priority  *Priority  `json:"priority,omitempty"`
 
 	// Recipient Depends on the channel: `sms` an E.164 number such as
 	// `+905551234567` (not normalised: `05551234567` is refused), `email`
@@ -372,6 +380,18 @@ type CreateNotificationRequest struct {
 	// 1 to 4,096 characters without control characters. Must not
 	// contain U+0000.
 	Recipient string `json:"recipient"`
+
+	// ScheduledAt Optional: deliver the notification at this time, not before. RFC
+	// 3339 with an explicit offset (`Z` or `+03:00`); stored and
+	// answered in UTC to the microsecond. `null` counts as absent. A
+	// value up to 30 seconds in the past (`SCHEDULE_PAST_TOLERANCE`)
+	// means "now": the notification is due at once and its
+	// `scheduled_at` is stored and answered as `null`. An older value is
+	// refused (`in_the_past`), and so is one more than 30 days ahead
+	// (`SCHEDULE_MAX_HORIZON`, `too_far_ahead`). The API's clock
+	// judges the value; every item of a batch is judged at the same
+	// instant.
+	ScheduledAt *time.Time `json:"scheduled_at,omitempty"`
 
 	// Template Renders a stored template instead of giving `content`. The rendered
 	// text must meet the limits of `content` for the channel, and the
@@ -455,8 +475,11 @@ type Notification struct {
 	Priority          Priority           `json:"priority"`
 	ProviderMessageId *string            `json:"provider_message_id"`
 	Recipient         string             `json:"recipient"`
-	ScheduledAt       *time.Time         `json:"scheduled_at"`
-	SentAt            *time.Time         `json:"sent_at"`
+
+	// ScheduledAt The time the notification is scheduled for; `null` when it was due
+	// at creation (no `scheduled_at`, or one within the tolerance).
+	ScheduledAt *time.Time `json:"scheduled_at"`
+	SentAt      *time.Time `json:"sent_at"`
 
 	// Sms Set for the channel `sms`, `null` for every other channel.
 	Sms *SMSInfo `json:"sms"`

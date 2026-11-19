@@ -304,7 +304,7 @@ func TestCreate_Validation(t *testing.T) {
 		{"recipient invalid for its channel", `{"channel":"sms","recipient":"05551234567","content":"x"}`, 422, []string{"recipient:invalid_e164"}},
 		{"content invalid for its channel", `{"channel":"sms","recipient":"+905551234567","content":"` + strings.Repeat("a", 1531) + `"}`, 422, []string{"content:too_many_segments"}},
 		{"NUL in content", `{"channel":"sms","recipient":"+905551234567","content":"a\u0000"}`, 422, []string{"content:invalid_character"}},
-		{"unknown field", `{"channel":"sms","recipient":"+905551234567","content":"x","scheduled_at":"2030-01-01T00:00:00Z"}`, 422, []string{"scheduled_at:unknown_field"}},
+		{"unknown field", `{"channel":"sms","recipient":"+905551234567","content":"x","subject":"Hello"}`, 422, []string{"subject:unknown_field"}},
 		{"dedupe_key wrong type", `{"channel":"sms","recipient":"+905551234567","content":"x","dedupe_key":5}`, 422, []string{"dedupe_key:invalid_type"}},
 		{"dedupe_key null", `{"channel":"sms","recipient":"+905551234567","content":"x","dedupe_key":null}`, 422, []string{"dedupe_key:invalid_type"}},
 		{"dedupe_key empty", `{"channel":"sms","recipient":"+905551234567","content":"x","dedupe_key":""}`, 422, []string{"dedupe_key:empty"}},

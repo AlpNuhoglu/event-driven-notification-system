@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"time"
 
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/api/apigen"
 )
@@ -124,7 +123,7 @@ func validateRedrive(body []byte) (apigen.RedriveRequest, *problem) {
 		s, isString := stringValue(raw)
 		if !isString {
 			add(fieldExpiresAt, codeInvalidType, fieldExpiresAt+" must be a string")
-		} else if t, err := time.Parse(time.RFC3339, s); err != nil {
+		} else if t, ok := parseDateTime(s); !ok {
 			add(fieldExpiresAt, codeInvalidValue, fieldExpiresAt+" must be an RFC 3339 date-time with an offset")
 		} else {
 			req.ExpiresAt = &t

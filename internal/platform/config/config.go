@@ -52,9 +52,13 @@ type Ports struct {
 
 // API configures the REST API.
 type API struct {
-	MaxBodyBytes          int64
-	IdempotencyKeyTTL     time.Duration
-	PhoneValidation       string
+	MaxBodyBytes      int64
+	IdempotencyKeyTTL time.Duration
+	PhoneValidation   string
+	// SchedulePastTolerance is how far in the past a scheduled_at may be and
+	// still mean "now" (stored as NULL); ScheduleMaxHorizon is how far
+	// ahead it may be. ExpiresAtMinLead is the smallest distance of an
+	// explicit expires_at from the due time (create) or from now (redrive).
 	SchedulePastTolerance time.Duration
 	ScheduleMaxHorizon    time.Duration
 	ExpiresAtMinLead      time.Duration
