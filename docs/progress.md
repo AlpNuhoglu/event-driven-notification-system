@@ -31,7 +31,7 @@ Status is one of: `not started`, `in progress`, `in review` (pull requests open)
 | P0 | Repository skeleton and first-hour experiments | done | [#2](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/2) (`p0/skeleton`, merged), [#3](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/3) (`p0/experiments`, merged) | 2026-11-18 |
 | P1 | Core path | done | [#4](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/4) (`p1/schema-and-store`, merged), [#5](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/5) (`p1/relay-worker-provider`, merged), [#6](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/6) (`p1/compose-e2e`, merged) | 2026-11-19 |
 | P2 | API completeness | done | [#7](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/7) (`p2/batch-and-idempotency`, merged), [#8](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/8) (`p2/cancel-redrive-listing`, merged), [#9](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/9) (`p2/validation`, merged) | 2026-11-19 |
-| P3 | Delivery robustness | in review | `p3/classification-and-retry` (pull request 1 of 3) | |
+| P3 | Delivery robustness | in review | [#10](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/10) (`p3/classification-and-retry`) | |
 | P4 | Templates and scheduling | not started | | |
 | P5 | Real-time and observability | not started | | |
 | P6 | Quality | not started | | |
@@ -110,7 +110,7 @@ Newest entry first. One entry per session, in this form:
   - **Worker:** `TestOutcomes` (the new outcomes), `TestRetryAfterHint`, `TestAttemptResultValues`.
   - **Wired roles with the real `mockprovider` handler** (`internal/integration/fault_test.go`): `500` twice then `sent` (`failures = 2`, the same idempotency key three times); `429` with `Retry-After: 1` (the second attempt starts at least 1 s after the first ended, `failures = 0`); `429` without it (the throttle default); `404` four times with `max_failures = 2`, then `sent` with `failures = 0`; `400` (`failed`, `provider_rejected`, one attempt); a closed connection (`unknown`, then `max_failures_unknown_outcome`); a URL nobody listens on (`unreachable`, more attempts than `max_failures`, `failed / expired`); a `302` (the target receives nothing); a malformed `2xx` body (`sent`).
   - **Compose:** `TestComposeE2E_5xxRetriedUntilSent`.
-- **Pull requests opened:** `p3/classification-and-retry` (link in the phase table).
+- **Pull requests opened:** [#10](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/10) from `p3/classification-and-retry`.
 - **Exit criteria** (the ones that apply to this pull request; all on the mock profile or on test containers):
   - `make test`: green, 20 packages.
   - `make test-e2e`: green. **Fault scenario `5xx` → retries → `sent`:** the mock answered `500` twice and `202` once to one `high` SMS; the attempts endpoint shows `retryable`, `retryable`, `success` with `500`, `500`, `202`; 2.6 s. `load-smoke`: 6,000 SMS in 61.6 s, 97.5/s, largest one-second window **99**.
