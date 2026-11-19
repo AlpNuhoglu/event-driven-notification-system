@@ -1,6 +1,6 @@
 // Command worker is the delivery worker role: it consumes the dispatch queues
 // of WORKER_CHANNELS, paces each channel with the shared rate limiter and
-// calls the provider (internal/worker), next to the admin health endpoints.
+// calls the provider (internal/worker), next to the admin endpoints (health and metrics).
 // "worker healthcheck" probes a running instance.
 package main
 

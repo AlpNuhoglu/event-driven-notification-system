@@ -80,6 +80,7 @@ The delay uses **full jitter**: `delay = jitter × min(cap, base × 2^failures)`
 - The retry delay is `max(backoff, retry_after, time until the circuit's next half-open probe)`, never below the floor. The worker passes the larger of the last two to `decideRetry` as its one hint.
 - `Retry-After` is **capped at 10 minutes**, so an absurd value cannot stall a channel. The cap applies to the hint, after the default below.
 - **`429` without a usable `Retry-After`** gets a default of 5 seconds, **doubling on consecutive `429`s up to 2 minutes**. This matters because throttling does not increase `failures`, so the back-off alone would stay at `base`, and the provider would be hit again every second.
+- **"Consecutive" is counted by the circuit, not per response.** A `429` opens the circuit for its duration; the next request the provider sees is the half-open probe. If that probe is throttled again without a hint, the open period doubles (5 s, 10 s, 20 s, … 2 minutes); a successful probe resets it. Requests that were already in flight when the first `429` arrived belong to the same step: 25 of them coming back `429` together are one throttling event, not 25. A `429` that carries a usable hint opens the circuit for that hint and leaves the doubling where it was. `decideRetry` applies the plain 5 s default; the doubled value reaches the row as the hint (the time until the next half-open probe).
 
 ### 5. Rate limiting: GCRA in Redis
 
@@ -97,6 +98,7 @@ The delay uses **full jitter**: `delay = jitter × min(cap, base × 2^failures)`
 | Send deadline (D77) | If the send cannot start within `lease − HTTP timeout − 5 s` of issuing the claim call (15 s with the defaults; derived, not configured), the attempt is closed as `aborted` and the row returns to `retrying` without consuming budget (section 2) |
 | Never nack on limit | A message is never pulled and then put back because of the rate limit: that would cause a spin loop or needless write amplification. A late claim **holds its message** (claimed, acked, the row `processing`) while it waits for a new slot. |
 | Redis unavailable | Fall back to an **in-process limiter** at `98 / WORKER_REPLICAS`. Sending does not stop. The limit is then **approximate**: replicas no longer share a clock or a schedule, and while some replicas use Redis and others the fallback, the channel can briefly exceed its rate. `limiter_fallback_active` is set and alerts ([ADR-0009](0009-observability.md)). |
+| How the fallback works | The in-process limiter is the same algorithm (GCRA, zero burst, relative wait, reservation horizon) on the process's monotonic clock, one schedule per channel. Every Redis call is bounded by `RATE_LIMIT_REDIS_TIMEOUT` (250 ms), so an unreachable or hanging Redis cannot stall the pacer. A call that fails switches to the fallback and is itself answered locally. While the fallback is active, Redis is asked again at most once per `RATE_LIMIT_FALLBACK_PROBE_INTERVAL` (1 s), by one caller; the first answer ends the fallback. Nothing is carried over between the two schedules: at each switch, slots already reserved on one side can lie closer than one interval to slots of the other, which is part of the approximation. A worker also **starts** while Redis is unreachable. |
 
 **Why a missed slot is given up.** The pacer claims during the wait, and a claim can outlast it: a worker that receives a message before the relay commits waits on the relay's row lock ([ADR-0002](0002-postgres-as-outbox-scheduler-and-retry-delay.md)) while the pacer goes on reserving the following slots. If each late claim sent at once, several sends would leave together, next to slots that are used on time. Three are enough: a batch arrives on an idle channel, the relay commits 30 ms later, the claims for the slots at 0, 10 and 20 ms send at 30 ms, and the window `[30 ms, 1030 ms)` holds 101 arrivals. With the rule, every send leaves at a slot that was reserved for it, so the spacing of the script is also the spacing at the provider, up to the tolerance.
 
@@ -130,6 +132,20 @@ The breaker is a **pure state machine with an injected clock**, held in the work
 | **Open** | The open duration starts at 5 s and doubles on each failed probe, up to 2 minutes. `provider_fatal` opens the circuit directly for 1 minute; `throttled` for the `Retry-After` value (section 4). |
 | **Half-open** | When the open duration ends, **one** real message is sent as the probe. Success closes the circuit and resets the window; failure opens it again with a doubled duration. |
 
+**Details fixed by the implementation** (`internal/breaker`):
+
+| Aspect | Rule |
+|---|---|
+| When the rules are evaluated | On a failure record only: a success never opens the circuit. |
+| `throttled` and the window | The state table above lists `throttled` among the counted failures. It opens the circuit by itself (section 2), and the window is reset when the circuit closes, so counting it in the window as well could never change a decision; the implementation does not. |
+| Window | Counted in 30 buckets of `window / 30` (1 s by default), so memory is fixed. An outcome is never counted once it is older than the window and can stop counting up to one bucket earlier. |
+| Consecutive failures | The last five counted outcomes; the run does not expire with the window. `permanent`, `aborted` and `internal_error` neither extend nor break it. |
+| Doubling of the open period | Only a probe that ends as a plain failure doubles it. A probe answered `provider_fatal` opens for 1 minute and a throttled probe for its throttle duration (section 4); neither advances nor resets the doubling. Closing the circuit resets it. |
+| A probe with an uncounted outcome | `permanent`, `internal_error`: the probe is undecided. The circuit stays half-open and the next send is the probe. |
+| Late results | A result belongs to the period in which its send was admitted. One that arrives after the state has changed (a request in flight when the circuit opened) changes nothing. |
+| While a probe is in flight | Nothing else is admitted; the pacer asks again after `RATE_LIMIT_RETRY_INTERVAL`. A notification that was claimed before the probe was admitted and reaches its slot meanwhile is `aborted` and due again after that interval. |
+| Logging | Every state change is logged. A circuit opened by `provider_fatal` is logged at error level (the alert-level log of section 2): its cause is a wrong credential or endpoint, which only a person can fix. |
+
 - The pacer checks the breaker before it reserves a rate-limit slot (section 8).
 - **State is per worker replica.** With several replicas, each one discovers an outage on its own, at a cost of a few extra failed requests per replica.
 - **Why the provider is part of the key:** attempt records and breaker state are provider-aware from the start, so provider failover can be added later without changing either ([future work](../future-work.md)).
@@ -157,8 +173,8 @@ The pacer loop per channel is defined in [ADR-0005](0005-service-topology-and-st
 | Failed dependency | api | relay | worker | Outcome |
 |---|---|---|---|---|
 | **RabbitMQ** | Keeps accepting; its event publisher drops events | Starts no transactions; reconnects; reconciles on reconnection | Stops consuming; reconnects | Backlog accumulates in Postgres; nothing is lost |
-| **Postgres** | `/readyz` fails; requests return `503` | Cycles fail and are retried | Cannot claim; final writes are retried for up to 60 s | Messages wait in RabbitMQ; sends that finished during a long outage may be repeated |
-| **Redis** | Unaffected | Unaffected | In-process limiter; the rate limit is approximate | Sending continues |
+| **Postgres** | `/readyz` fails; requests return `503` | Cycles fail and are retried | Cannot claim: each claim is retried in place with back-off, holding its message, so nothing circles through the broker and no rate-limit slot is used ([ADR-0005](0005-service-topology-and-status-events.md)); final writes are retried for up to 60 s | Messages wait in RabbitMQ; sends that finished during a long outage may be repeated |
+| **Redis** | Unaffected | Unaffected | In-process limiter; the rate limit is approximate. The worker also starts without Redis. | Sending continues |
 | **Provider** | Unaffected | Unaffected | Circuit opens; budgets are preserved | The backpressure chain absorbs the outage ([ADR-0003](0003-bounded-relay-buffer-and-sweepers.md)) |
 | **A worker dies** | Unaffected | The lease sweeper recovers its rows | Restarted by the container runtime | Transition 7 ([ADR-0004](0004-data-model-state-machine-and-fencing.md)) |
 | **The relay dies** | Unaffected | Restarted by the container runtime | Drains what is queued, then idles | Publishing, expiry and recovery pause; nothing is lost |
@@ -226,6 +242,7 @@ Changes made after the design review, recorded in the [design review log](../ai/
 - Redirects are no longer followed and transport replays are disabled, because either could turn one attempt into a different or repeated request. (D27, D29)
 - The provider contract (request body, `202` response, other `2xx`, headers, webhook.site as default) was written down; it had been defined nowhere. (D28, D44)
 - The pacer's order of operations and the `aborted` outcome were defined, provider failover moved to future work, and the default TTLs were tied to the burst each priority can absorb. (D23, D32, D31)
+- In P3 the breaker, the Redis fallback and the doubling of the `429` default were implemented. Stated here as a result: what "consecutive `429`s" means under concurrency (one step per opening of the circuit), which probe results double the open period, that a late result changes nothing, and how the fallback switches and returns. (D25, D26, D30)
 - In P3 the table gained its last response row (every status it did not name is `retryable` and consumes budget), by the author's decision on an open issue of the implementation.
 - In P3 the classification table and `decideRetry` were implemented in full. Stated here as a result: a response decides before `WroteRequest`; the exponent of the back-off is the failure count before the current outcome; the reason of an exhausted budget names the last outcome; budget exhaustion is reported in preference to the expiry shortcut; `Retry-After` is used on `429` and `503` only and an unusable value counts as absent. (D17, D27, D30)
 - In P1 the rate limit gained the missed-slot rule and the send deadline, after the implementation showed that a claim can outlast its slot while it waits on the relay's row lock; `max_failures` was stated as the total number of budget-consuming failures. (D77)
