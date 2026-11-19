@@ -331,6 +331,87 @@ func TestGateway_FullSendQueueClosesTheConnectionAndDoesNotBlockTheHub(t *testin
 	}
 }
 
+// batchRows returns the rows of a batch of n notifications.
+func batchRows(batch uuid.UUID, n int) []domain.StatusChanged {
+	rows := make([]domain.StatusChanged, n)
+	for i := range rows {
+		rows[i] = event(uuid.New(), &batch, domain.StatusPending, 1)
+	}
+	return rows
+}
+
+// A client that does not read while its batch snapshot is written holds
+// only its own connection: its writer is blocked in a write, and another
+// client that subscribes to the same batch meanwhile receives the whole
+// snapshot and a live event. The write timeout is longer than the test
+// here, so the first connection is still blocked, and still open, when the
+// second has been served.
+func TestGateway_ClientThatDoesNotReadItsSnapshotDelaysNobody(t *testing.T) {
+	const rows = 1000
+	batch := uuid.New()
+	opts := testOptions(newFakeSnapshots(batchRows(batch, rows)...))
+	opts.WriteTimeout = longInterval
+	s := startServer(t, opts, smallWriteBuffer)
+	stalled := dial(t, s.url, smallReadBuffer())
+	stalled.subscribe(nil, &batch)
+	testutil.Eventually(t, func() bool { return s.batchSubscribers(batch) == 1 }, waitTimeout)
+
+	reader := dial(t, s.url, nil)
+	reader.subscribe(nil, &batch)
+	for i := range rows {
+		if m := reader.nextStatus(); m.BatchID == nil || *m.BatchID != batch {
+			t.Fatalf("snapshot message %d of the reading client: %+v", i, m)
+		}
+	}
+	live := uuid.New()
+	s.g.Dispatch(event(live, &batch, domain.StatusQueued, 2))
+	if m := reader.nextStatus(); m.ID != live {
+		t.Fatalf("the reading client received %+v, want the live event of %s", m, live)
+	}
+	if n, subs := s.g.Connections(), s.batchSubscribers(batch); n != 2 || subs != 2 {
+		t.Errorf("%d connections, %d subscribed to the batch; want 2 and 2: the stalled one stays until its write times out", n, subs)
+	}
+}
+
+// The snapshot of a subscribe request has one deadline as a whole,
+// WS_WRITE_TIMEOUT: a client that does not read while its batch snapshot is
+// written is disconnected when it passes, and its subscription is removed.
+// The deadline of each write alone does not do this: with the socket
+// buffers full, a write to a client that does not read still completes now
+// and then (here about one message per 100 ms), each within its own
+// deadline, and a thousand of them would take minutes.
+func TestGateway_ClientThatDoesNotReadItsSnapshotIsDisconnected(t *testing.T) {
+	const (
+		rows         = 1000
+		writeTimeout = 150 * time.Millisecond
+	)
+	batch := uuid.New()
+	opts := testOptions(newFakeSnapshots(batchRows(batch, rows)...))
+	opts.WriteTimeout = writeTimeout
+	s := startServer(t, opts, smallWriteBuffer)
+	stalled := dial(t, s.url, smallReadBuffer())
+	start := time.Now()
+	stalled.subscribe(nil, &batch)
+
+	testutil.Eventually(t, func() bool { return s.g.Connections() == 0 }, waitTimeout)
+	if took := time.Since(start); took < writeTimeout {
+		t.Errorf("the connection ended after %s, before the write timeout of %s", took, writeTimeout)
+	}
+	if subs := s.batchSubscribers(batch); subs != 0 {
+		t.Errorf("%d connections still subscribed to the batch", subs)
+	}
+	if slow, timedOut := s.g.SlowClientsClosed(), s.g.SnapshotTimeouts(); slow != 0 || timedOut != 1 {
+		t.Errorf("%d connections closed for a full send queue and %d for a snapshot not taken; want 0 and 1", slow, timedOut)
+	}
+	// The client finds the connection gone, without a close frame, before
+	// it has read the whole snapshot.
+	status, read := stalled.closeStatus()
+	if status == websocket.StatusTryAgainLater || status == websocket.StatusGoingAway || read >= rows {
+		t.Errorf("the client read %d of %d messages and a close status %d; want fewer messages and no close frame", read, rows, status)
+	}
+	t.Logf("the client had %d of %d snapshot messages in its buffers when the deadline passed", read, rows)
+}
+
 // Without patterns only the same origin is allowed; a pattern allows the
 // hosts it matches; a request without an Origin header (a client that is
 // not a browser) is always accepted. A refused origin is answered 403
