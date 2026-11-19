@@ -14,15 +14,19 @@ import (
 )
 
 // dispatch delivers m at slot. It owns one concurrency slot and releases it
-// when it ends.
+// when it ends. shutdown ends when the worker's shutdown begins; ctx ends
+// when the drain timeout does.
 //
-// Invariants enforced here (D23, D77):
+// Invariants enforced here (D23, D77, open issue 7):
 //   - every send starts within [slot, slot + tolerance] of a slot reserved
 //     for it (awaitSlot);
 //   - a slot is never returned to the limiter and never used after
 //     slot + tolerance (nextForSlot, awaitSlot);
-//   - the ack comes after the claim commits and before the send (deliver).
-func (w *Worker) dispatch(ctx context.Context, m Message, slot time.Time) {
+//   - the ack comes after the claim commits and before the send (deliver);
+//   - from the moment it takes a delivery from the buffer, this goroutine
+//     alone owns it, and answers it exactly once: one ack, or one nack
+//     (deliver), never both.
+func (w *Worker) dispatch(shutdown, ctx context.Context, m Message, slot time.Time) {
 	defer func() { <-w.sem }()
 	defer func() {
 		if p := recover(); p != nil {
@@ -31,25 +35,26 @@ func (w *Worker) dispatch(ctx context.Context, m Message, slot time.Time) {
 	}()
 	// A claim that leaves the slot unused hands it to the next message.
 	for m != nil {
-		m = w.deliver(ctx, m, slot)
+		m = w.deliver(shutdown, ctx, m, slot)
 	}
 }
 
 // deliver claims m and, if the claim opened an attempt, sends it at slot. It
 // returns the next message to try at the same slot when the claim left the
-// slot unused, or nil.
-func (w *Worker) deliver(ctx context.Context, m Message, slot time.Time) Message {
-	// a. The send deadline is measured from issuing the claim call.
-	claimStart := w.clock.Now()
-	c, ev, err := w.store.Claim(ctx, m.NotificationID(), w.cfg.Lease, w.provider.Name())
+// slot unused, or nil. It answers m exactly once: the nack below or the ack
+// below, never both.
+func (w *Worker) deliver(shutdown, ctx context.Context, m Message, slot time.Time) Message {
+	// a. claimStart is when the claim call that succeeded was issued; the
+	// send deadline is measured from it.
+	c, ev, claimStart, err := w.claim(shutdown, ctx, m.NotificationID())
 	if err != nil && !errors.Is(err, store.ErrNotApplied) {
-		w.log.Error("worker: claim failed; message requeued",
-			slog.String("notification_id", m.NotificationID().String()), slog.Any("error", err))
+		// The claim never succeeded and shutdown has begun. The only nack
+		// of a taken delivery.
 		w.nack(m)
 		return nil
 	}
 	// The claim has committed, or matched zero rows: the database owns the
-	// work now. This is the only ack of a delivery: after the claim, before
+	// work now. The only ack of a taken delivery: after the claim, before
 	// the send. (P3 adds: not for a delivery from an older epoch, D76.)
 	w.ack(m)
 	if err != nil {
@@ -62,6 +67,45 @@ func (w *Worker) deliver(ctx context.Context, m Message, slot time.Time) Message
 	}
 	w.attempt(ctx, c.Notification, claimStart, slot)
 	return nil
+}
+
+// claim makes the claim of id (transition 3). A call that fails with a
+// database error, store.ErrNotApplied aside, is issued again after a back-off
+// on the worker's clock, starting at ClaimRetryBase and doubling up to
+// ClaimRetryMax. Meanwhile the calling dispatch keeps its delivery and its
+// concurrency slot, and no rate-limit slot is reserved: the slot reserved for
+// the first call is given up by the missed-slot rule if the claim succeeds
+// after it (open issue 7, D77).
+//
+// It returns the result of the last call and the time that call was issued.
+// The error is nil or store.ErrNotApplied, unless shutdown has begun: a call
+// that fails once shutdown has begun (also one that was in flight when it
+// began) is not retried, and neither is a back-off that shutdown interrupts.
+// The caller then nacks.
+func (w *Worker) claim(shutdown, ctx context.Context, id uuid.UUID) (store.Claim, domain.StatusChanged, time.Time, error) {
+	backoff := w.cfg.ClaimRetryBase
+	for tries := 1; ; tries++ {
+		issued := w.clock.Now()
+		c, ev, err := w.store.Claim(ctx, id, w.cfg.Lease, w.provider.Name())
+		if err == nil || errors.Is(err, store.ErrNotApplied) {
+			if tries > 1 {
+				w.log.Info("worker: claim succeeded after retries",
+					slog.String("notification_id", id.String()), slog.Int("tries", tries))
+			}
+			return c, ev, issued, err
+		}
+		if tries == 1 {
+			w.log.Warn("worker: claim failed; retrying with back-off",
+				slog.String("notification_id", id.String()), slog.Any("error", err))
+		}
+		// WaitUntil returns at once if shutdown has already begun.
+		if w.clock.WaitUntil(shutdown, w.clock.Now().Add(backoff)) != nil {
+			w.log.Warn("worker: claim still failing at shutdown; message requeued",
+				slog.String("notification_id", id.String()), slog.Int("tries", tries), slog.Any("error", err))
+			return c, ev, issued, err
+		}
+		backoff = min(2*backoff, w.cfg.ClaimRetryMax)
+	}
 }
 
 // nextForSlot keeps a slot that a claim left unused for the next buffered

@@ -751,12 +751,8 @@ func TestRecipientPrivacy(t *testing.T) {
 		m1 := h.push(prioHigh)
 		m2 := h.push(prioNormal)
 		h.push(prioLow)
-		h.st.claimErr = func(id uuid.UUID) error {
-			if id == m1.id {
-				return errDatabase
-			}
-			return nil
-		}
+		// m1's first claim fails; it is retried after the back-off (100 ms).
+		h.st.claimErr = perCall(nil, map[uuid.UUID][]error{m1.id: {errDatabase}})
 		h.st.finalErr = errDatabase
 		h.prov.respond = func(req Request) Response {
 			if req.NotificationID == m2.id {
@@ -765,9 +761,11 @@ func TestRecipientPrivacy(t *testing.T) {
 			return Response{StatusCode: 503, Err: errors.New("bad gateway")}
 		}
 		h.start()
-		h.waitBlocked(1)
+		h.waitBlocked(1) // the pacer waits for the limiter's retry interval
 		h.clk.Advance(50 * ms)
-		h.eventually(func() bool { return h.st.finals() == 2 })
+		h.waitBlocked(1) // m1's dispatch waits for its claim back-off
+		h.clk.Advance(100 * ms)
+		h.eventually(func() bool { return h.st.finals() == 3 })
 		h.stop()
 
 		req := h.prov.sent()[0].req
@@ -776,7 +774,8 @@ func TestRecipientPrivacy(t *testing.T) {
 		slog.New(slog.NewTextHandler(&formatted, nil)).Info("request", "req", req)
 
 		logs := h.logs.String()
-		if !strings.Contains(logs, "claim failed") || !strings.Contains(logs, "panic during send") ||
+		if !strings.Contains(logs, "claim failed") || !strings.Contains(logs, "claim succeeded after retries") ||
+			!strings.Contains(logs, "panic during send") ||
 			!strings.Contains(logs, "final write failed") || !strings.Contains(logs, "reservation failed") {
 			t.Fatalf("the scenario did not log what it should:\n%s", logs)
 		}

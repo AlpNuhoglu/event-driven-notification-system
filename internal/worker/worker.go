@@ -52,6 +52,11 @@ type Config struct {
 	// (final write, abort) is bounded by it. Those writes run on a context
 	// that shutdown does not cancel.
 	WriteMargin time.Duration
+	// ClaimRetryBase is the first wait before a claim that failed with a
+	// database error is issued again (CLAIM_RETRY_BASE, 100 ms); each further
+	// wait doubles, up to ClaimRetryMax (CLAIM_RETRY_MAX, 5 s).
+	ClaimRetryBase time.Duration
+	ClaimRetryMax  time.Duration
 }
 
 // Deps are the worker's collaborators. All are required.
@@ -100,6 +105,9 @@ func New(cfg Config, d Deps) (*Worker, error) {
 		return nil, fmt.Errorf("worker: concurrency must be positive, got %d", cfg.Concurrency)
 	case cfg.HTTPTimeout <= 0, cfg.RetryInterval <= 0, cfg.WriteMargin <= 0:
 		return nil, errors.New("worker: HTTP timeout, retry interval and write margin must be positive")
+	case cfg.ClaimRetryBase <= 0, cfg.ClaimRetryMax < cfg.ClaimRetryBase:
+		return nil, fmt.Errorf("worker: claim retry base %s must be positive and not above the maximum %s",
+			cfg.ClaimRetryBase, cfg.ClaimRetryMax)
 	case cfg.SlotTolerance < 0, cfg.Drain < 0:
 		return nil, errors.New("worker: slot tolerance and drain timeout must not be negative")
 	case sendDeadline <= 0:
@@ -139,15 +147,21 @@ func (w *Worker) MissedSlots() uint64 { return w.missed.Load() }
 // Run paces the channel until ctx is cancelled, then shuts down: it stops the
 // pacer loop, requeues every buffered message and lets the running dispatches
 // finish within the drain timeout. A dispatch whose drain time runs out
-// before its send starts aborts its attempt. Run returns when every dispatch
-// has ended.
+// before its send starts aborts its attempt; a dispatch whose claim is
+// failing requeues its message at once. Run returns when every dispatch has
+// ended.
 func (w *Worker) Run(ctx context.Context) {
 	// Dispatches outlive ctx by up to the drain timeout.
 	dispatchCtx, stopDispatches := context.WithCancel(context.WithoutCancel(ctx))
 	defer stopDispatches()
+	// shutdown ends with ctx. A dispatch waiting to retry its claim watches
+	// it; it is a context of its own so that waits on it are not the pacer
+	// loop's waits on ctx (the tests' fake clock tells them apart that way).
+	shutdown, endShutdown := context.WithCancel(ctx)
+	defer endShutdown()
 
 	var running sync.WaitGroup
-	w.pace(ctx, dispatchCtx, &running)
+	w.pace(ctx, shutdown, dispatchCtx, &running)
 
 	for _, m := range w.buf.close() {
 		w.nack(m)
@@ -167,7 +181,7 @@ func (w *Worker) Run(ctx context.Context) {
 }
 
 // pace is the pacer loop. It returns when ctx is cancelled.
-func (w *Worker) pace(ctx, dispatchCtx context.Context, running *sync.WaitGroup) {
+func (w *Worker) pace(ctx, shutdown, dispatchCtx context.Context, running *sync.WaitGroup) {
 	for {
 		// 1. Acquire a concurrency slot. It passes to the dispatch started
 		// in step 6, which releases it when it ends.
@@ -182,7 +196,7 @@ func (w *Worker) pace(ctx, dispatchCtx context.Context, running *sync.WaitGroup)
 			return
 		}
 		// 6. Dispatch the message with its slot, and go back to 1.
-		running.Go(func() { w.dispatch(dispatchCtx, m, slot) })
+		running.Go(func() { w.dispatch(shutdown, dispatchCtx, m, slot) })
 	}
 }
 

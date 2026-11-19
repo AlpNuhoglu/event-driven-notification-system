@@ -91,6 +91,11 @@ type Worker struct {
 	FinalWriteRetryTime time.Duration
 	ShutdownDrain       time.Duration
 	ConsumerTimeout     time.Duration
+	// ClaimRetryBase and ClaimRetryMax bound the back-off of a claim that
+	// fails with a database error: it is retried in place, starting at the
+	// base and doubling up to the maximum.
+	ClaimRetryBase time.Duration
+	ClaimRetryMax  time.Duration
 }
 
 // RateLimit configures per-channel pacing.
@@ -366,6 +371,8 @@ func (l *loader) load() Config {
 		FinalWriteRetryTime: l.dur("FINAL_WRITE_RETRY_WINDOW", 60*time.Second),
 		ShutdownDrain:       l.dur("SHUTDOWN_DRAIN_TIMEOUT", 15*time.Second),
 		ConsumerTimeout:     l.dur("CONSUMER_TIMEOUT", 24*time.Hour),
+		ClaimRetryBase:      l.dur("CLAIM_RETRY_BASE", 100*time.Millisecond),
+		ClaimRetryMax:       l.dur("CLAIM_RETRY_MAX", 5*time.Second),
 	}
 	c.RateLimit = RateLimit{
 		PerSecond:     l.intv("RATE_LIMIT_PER_SECOND", 98),
