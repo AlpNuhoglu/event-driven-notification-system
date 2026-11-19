@@ -111,12 +111,16 @@ type Resources struct {
 
 // Role is the wired worker role: for each channel of WORKER_CHANNELS one
 // Worker with its own provider client and its own consumer, all sharing one
-// store and one rate limiter (the Redis limiter with its in-process fallback,
-// D25). A Role runs once.
+// store, one rate limiter (the Redis limiter with its in-process fallback,
+// D25) and one publisher of status events. A Role runs once.
 type Role struct {
 	conn   *queue.Connection
 	logger *slog.Logger
 	units  []unit
+	// events publishes the workers' status events on a connection of its
+	// own to RABBITMQ_URL, opened lazily (ADR-0005, D11). The role owns it
+	// and closes it at the end of Run.
+	events *queue.EventPublisher
 }
 
 // unit is the worker and the consumer of one channel.
@@ -155,15 +159,19 @@ func NewRole(cfg config.Config, res Resources, logger *slog.Logger) (*Role, erro
 	if err != nil {
 		return nil, err
 	}
+	ev, err := queue.NewEventPublisher(queue.EventPublisherConfigFrom(cfg), logger)
+	if err != nil {
+		return nil, err
+	}
 	st := store.New(res.Pool, store.ProfilesFrom(cfg.Retry))
 	margin := DefaultWriteMargin
 	if res.WriteMargin > 0 {
 		margin = res.WriteMargin
 	}
 
-	r := &Role{conn: res.Conn, logger: logger}
+	r := &Role{conn: res.Conn, logger: logger, events: ev}
 	for _, name := range cfg.Worker.Channels {
-		u, err := newUnit(cfg, res, logger, st, limiter, margin, name)
+		u, err := newUnit(cfg, res, logger, st, limiter, ev, margin, name)
 		if err != nil {
 			r.closeConsumers()
 			return nil, err
@@ -174,7 +182,7 @@ func NewRole(cfg config.Config, res Resources, logger *slog.Logger) (*Role, erro
 }
 
 func newUnit(cfg config.Config, res Resources, logger *slog.Logger, st *store.Store, limiter Limiter,
-	margin time.Duration, name string,
+	ev events.Publisher, margin time.Duration, name string,
 ) (unit, error) {
 	ch, err := domain.ParseChannel(name)
 	if err != nil {
@@ -214,7 +222,7 @@ func newUnit(cfg config.Config, res Resources, logger *slog.Logger, st *store.St
 		Limiter:  limiter,
 		Breaker:  br,
 		Provider: providerClient{client},
-		Events:   events.Nop{},
+		Events:   ev,
 		Clock:    clock,
 		Jitter:   jitter,
 		Logger:   logger,
@@ -248,7 +256,10 @@ func (r *Role) Worker(c domain.Channel) *Worker {
 //     on their way to a consumer are requeued;
 //  2. each worker requeues its buffered messages and lets its running
 //     dispatches finish within the drain timeout;
-//  3. the consumers' channels are closed.
+//  3. the consumers' channels are closed;
+//  4. the event publisher gets up to EVENT_FLUSH_TIMEOUT to send
+//     the events still buffered (the last sends' sent events) and is closed;
+//     a broker that does not answer cannot hold the stop longer.
 //
 // It returns nil after a cancellation of ctx, and an error in the other two
 // cases (after the same orderly stop).
@@ -295,7 +306,13 @@ func (r *Role) Run(ctx context.Context) error {
 	workers.Wait()
 
 	r.closeConsumers()
+	r.events.Close()
 	return err
+}
+
+// EventStats returns the counters of the role's event publisher.
+func (r *Role) EventStats() queue.EventStats {
+	return r.events.Stats()
 }
 
 func (r *Role) closeConsumers() {

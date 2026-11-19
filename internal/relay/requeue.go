@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"time"
 
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/domain"
@@ -28,10 +29,12 @@ func Main(ctx context.Context, args []string, lookup func(string) (string, bool)
 // (ADR-0003 §3, D64), run as "docker-compose run --rm relay requeue-stale":
 // transition 8 on demand, for the queued rows that reconciliation does not
 // cover (a message dead-lettered, or lost while the connection stayed up).
-// It connects to Postgres only, so it runs next to a live relay, returns the
+// It needs only Postgres, so it runs next to a live relay, returns the
 // queued rows older than the threshold (every queued row with --all) to
 // pending, and prints how many. The normal cycle of the running relay
-// publishes them again.
+// publishes them again. The status events of the rows go to the events
+// exchange best-effort, on a connection of their own; an unreachable broker
+// changes neither the output nor the exit code.
 //
 // Exit codes: 0 done; 1 a configuration or database error; 2 a usage error
 // (an unknown flag or argument, a negative or unparsable duration, both
@@ -80,7 +83,7 @@ func parseRequeueStale(args []string) (requeueStale, error) {
 }
 
 // run applies the command on the database of cfg. The events of the rows go
-// to the role's event publisher, as for every transition.
+// to an event publisher, as for every transition.
 func (a requeueStale) run(ctx context.Context, cfg config.Config, stdout, stderr io.Writer) int {
 	pool, err := openPool(ctx, cfg)
 	if err != nil {
@@ -99,10 +102,29 @@ func (a requeueStale) run(ctx context.Context, cfg config.Config, stdout, stderr
 		_, _ = fmt.Fprintf(stderr, "requeue-stale: %v\n", err)
 		return 1
 	}
-	ev := eventPublisher()
+	publishEvents(cfg, evs)
+	_, _ = fmt.Fprintf(stdout, "requeue-stale: %d notifications returned to pending\n", len(evs))
+	return 0
+}
+
+// publishEvents hands the events of the command's transitions to an event
+// publisher, as the relay role does, and closes it: the events get
+// EVENT_FLUSH_TIMEOUT to reach the broker, and are dropped when it is
+// unreachable. The rows have changed already, so nothing here changes
+// the outcome or the exit code. The publisher's log lines are discarded:
+// the command's output is its one line on stdout, and an operator who runs
+// it needs nothing about the best-effort events in it. More events than
+// EVENT_BUFFER_SIZE are partly dropped, as for every publisher.
+func publishEvents(cfg config.Config, evs []domain.StatusChanged) {
+	if len(evs) == 0 {
+		return
+	}
+	ev, err := eventPublisher(cfg, slog.New(slog.DiscardHandler))
+	if err != nil { // only a configuration that LoadFrom rejects
+		return
+	}
+	defer ev.Close()
 	for _, e := range evs {
 		ev.Publish(e)
 	}
-	_, _ = fmt.Fprintf(stdout, "requeue-stale: %d notifications returned to pending\n", len(evs))
-	return 0
 }

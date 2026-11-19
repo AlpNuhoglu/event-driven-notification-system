@@ -12,8 +12,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/domain"
-	"github.com/AlpNuhoglu/event-driven-notification-system/internal/events"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/platform/config"
+	"github.com/AlpNuhoglu/event-driven-notification-system/internal/queue"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/store"
 )
 
@@ -32,8 +32,22 @@ const (
 // Service is the api role (a bootstrap.Service). It connects to Postgres
 // (a failure at start is returned, so the process exits with a non-zero
 // code), serves the API on API_ADDR and shuts the server down gracefully
-// when ctx is cancelled. It does not connect to RabbitMQ or Redis.
+// when ctx is cancelled. It does not connect to Redis. Its only use of
+// RabbitMQ is the status-event publisher, which is optional: it connects
+// lazily, so the api starts, serves and stays ready while the broker is
+// unreachable (ADR-0005, D11, D39).
 func Service(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
+	ev, err := queue.NewEventPublisher(queue.EventPublisherConfigFrom(cfg), logger)
+	if err != nil {
+		return err
+	}
+	return run(ctx, cfg, logger, ev)
+}
+
+// run is Service with its event publisher. It closes ev after the server has
+// stopped, which gives the events of the last requests their chance.
+func run(ctx context.Context, cfg config.Config, logger *slog.Logger, ev *queue.EventPublisher) error {
+	defer ev.Close()
 	pool, err := openPool(ctx, cfg)
 	if err != nil {
 		return fmt.Errorf("postgres: %w", err)
@@ -54,7 +68,7 @@ func Service(ctx context.Context, cfg config.Config, logger *slog.Logger) error 
 		ScheduledAtTolerance: cfg.API.SchedulePastTolerance,
 		ScheduledAtMaxAhead:  cfg.API.ScheduleMaxHorizon,
 		PhoneValidation:      domain.PhoneValidation(cfg.API.PhoneValidation),
-		Events:               events.Nop{},
+		Events:               ev,
 	})
 	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", cfg.Ports.APIAddr)
 	if err != nil {
