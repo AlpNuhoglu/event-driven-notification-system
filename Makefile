@@ -4,6 +4,8 @@ GOLANGCI_LINT_VERSION = v2.15.0
 SQLC_VERSION          = v1.31.1
 OAPI_CODEGEN_VERSION  = v2.8.2
 MIGRATE_VERSION       = v4.20.1
+# The Prometheus image of docker-compose.yml; promtool comes from it.
+PROMETHEUS_IMAGE      = prom/prometheus:v3.16.0
 
 GOLANGCI_LINT = go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
 SQLC          = go run github.com/sqlc-dev/sqlc/cmd/sqlc@$(SQLC_VERSION)
@@ -23,17 +25,18 @@ COMPOSE_MOCK = docker-compose -f docker-compose.yml -f docker-compose.mock.yml
 E2E_PROJECT       ?= edns-e2e
 E2E_TIMEOUT       ?= 10m
 API_PORT          ?= 8080
+PROMETHEUS_PORT   ?= 9090
 GATEWAY_PORT      ?= 8082
 MOCKPROVIDER_PORT ?= 8090
 E2E_OVERRIDE       = test/e2e/docker-compose.e2e.yml
-E2E_COMPOSE        = API_PORT=$(API_PORT) GATEWAY_PORT=$(GATEWAY_PORT) MOCKPROVIDER_PORT=$(MOCKPROVIDER_PORT) $(COMPOSE_MOCK) -f $(E2E_OVERRIDE) -p $(E2E_PROJECT)
+E2E_COMPOSE        = API_PORT=$(API_PORT) GATEWAY_PORT=$(GATEWAY_PORT) PROMETHEUS_PORT=$(PROMETHEUS_PORT) MOCKPROVIDER_PORT=$(MOCKPROVIDER_PORT) $(COMPOSE_MOCK) -f $(E2E_OVERRIDE) -p $(E2E_PROJECT)
 
 TEST_CMD = go test -race -tags=integration -count=1 ./...
 
 .DEFAULT_GOAL := help
 
 .PHONY: help build generate lint fmt test test-docker tools image \
-	test-e2e load demo up-mock down verify-suite fuzz
+	test-e2e load demo up-mock down verify-suite fuzz check-rules
 
 help: ## Show this help
 	@echo "Targets:"
@@ -84,7 +87,7 @@ test-e2e: ## Compose stack with the mock override, e2e tests and load-smoke (nee
 	status=0; \
 	$(E2E_COMPOSE) up -d --build --wait || status=$$?; \
 	if [ $$status -eq 0 ]; then \
-		E2E_API_URL=http://localhost:$(API_PORT) E2E_GATEWAY_URL=ws://localhost:$(GATEWAY_PORT)/v1/ws E2E_MOCK_URL=http://localhost:$(MOCKPROVIDER_PORT) E2E_PROJECT=$(E2E_PROJECT) \
+		E2E_API_URL=http://localhost:$(API_PORT) E2E_GATEWAY_URL=ws://localhost:$(GATEWAY_PORT)/v1/ws E2E_MOCK_URL=http://localhost:$(MOCKPROVIDER_PORT) E2E_PROMETHEUS_URL=http://localhost:$(PROMETHEUS_PORT) E2E_PROJECT=$(E2E_PROJECT) \
 			go test -tags e2e -count=1 -v -timeout $(E2E_TIMEOUT) ./test/e2e/... || status=$$?; \
 	fi; \
 	if [ $$status -ne 0 ]; then \
@@ -96,6 +99,10 @@ test-e2e: ## Compose stack with the mock override, e2e tests and load-smoke (nee
 		echo "test-e2e: failed (exit $$status); service logs are in e2e-logs/" >&2; \
 	fi; \
 	exit $$status
+
+check-rules: ## Validate and unit-test the Prometheus alert rules (needs Docker)
+	docker run --rm --entrypoint promtool -v "$(CURDIR)/deploy/prometheus":/etc/prometheus:ro -w /etc/prometheus $(PROMETHEUS_IMAGE) check rules alerts.yml
+	docker run --rm --entrypoint promtool -v "$(CURDIR)/deploy/prometheus":/etc/prometheus:ro -w /etc/prometheus $(PROMETHEUS_IMAGE) test rules alerts_test.yml
 
 load: ## Not implemented yet
 	@echo "load: not implemented yet; see docs/plan/implementation-plan.md" >&2; exit 1
