@@ -278,6 +278,10 @@ func coverageCases() []coverageCase {
 		c("activateTemplate", 500, post(fail, "/v1/templates/cov/activate", "", nil)),
 		c("activateTemplate", 503, post(dead, "/v1/templates/cov/activate", "", nil)),
 
+		c("getMetricsSummary", 200, get(live, "/v1/metrics/summary")),
+		c("getMetricsSummary", 500, get(fail, "/v1/metrics/summary")),
+		c("getMetricsSummary", 503, get(dead, "/v1/metrics/summary")),
+
 		c("getHealthz", 200, get(live, "/healthz")),
 
 		c("getReadyz", 200, get(live, "/readyz")),
@@ -453,6 +457,7 @@ func TestRequestID_EveryOperation(t *testing.T) {
 		{"previewTemplate", http.MethodPost, "/v1/templates/rid-tpl/preview", ""},
 		{"deactivateTemplate", http.MethodPost, "/v1/templates/rid-tpl/deactivate", ""},
 		{"activateTemplate", http.MethodPost, "/v1/templates/rid-tpl/activate", ""},
+		{"getMetricsSummary", http.MethodGet, "/v1/metrics/summary", ""},
 		{"getHealthz", http.MethodGet, "/healthz", ""},
 		{"getReadyz", http.MethodGet, "/readyz", ""},
 		{"getOpenAPISpec", http.MethodGet, "/openapi.yaml", ""},

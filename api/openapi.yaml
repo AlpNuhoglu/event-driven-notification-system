@@ -33,6 +33,7 @@ info:
 tags:
   - name: notifications
   - name: templates
+  - name: metrics
   - name: health
   - name: meta
 paths:
@@ -455,6 +456,34 @@ paths:
           $ref: "#/components/responses/NotFound"
         "413":
           $ref: "#/components/responses/PayloadTooLarge"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+  /v1/metrics/summary:
+    get:
+      operationId: getMetricsSummary
+      tags: [metrics]
+      summary: Delivery metrics of the last few minutes
+      description: |
+        The state of the nine lanes and, per channel, the delivery attempts
+        that finished within the window (`SUMMARY_WINDOW`), computed from
+        Postgres. The answer is cached for `SUMMARY_CACHE_TTL`, and the
+        `backlog_due` of the lanes for `SUMMARY_BACKLOG_CACHE_TTL`;
+        `generated_at` tells when it was computed.
+      parameters:
+        - $ref: "#/components/parameters/XRequestID"
+        - $ref: "#/components/parameters/TraceParent"
+      responses:
+        "200":
+          description: The summary.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/XRequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MetricsSummary"
         "500":
           $ref: "#/components/responses/InternalError"
         "503":
@@ -1615,6 +1644,104 @@ components:
           type: string
           nullable: true
           description: Pass it as `cursor` to read the next page; `null` on the last page.
+    MetricsSummary:
+      type: object
+      additionalProperties: false
+      required: [generated_at, window, lanes, channels]
+      properties:
+        generated_at:
+          type: string
+          format: date-time
+          description: When the figures were computed (UTC); a cached answer shows an older time.
+        window:
+          type: string
+          example: 5m
+          description: The window of the attempt figures, as a duration (`SUMMARY_WINDOW`).
+        lanes:
+          type: array
+          description: All nine lanes, `sms`, `email`, `push` by `high`, `normal`, `low`.
+          items:
+            $ref: "#/components/schemas/LaneSummary"
+        channels:
+          type: array
+          description: All three channels, in the order `sms`, `email`, `push`.
+          items:
+            $ref: "#/components/schemas/ChannelSummary"
+    LaneSummary:
+      type: object
+      additionalProperties: false
+      required: [channel, priority, queued, hwm, backlog_due]
+      properties:
+        channel:
+          $ref: "#/components/schemas/Channel"
+        priority:
+          $ref: "#/components/schemas/Priority"
+        queued:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Notifications of the lane in state `queued`.
+        hwm:
+          type: integer
+          format: int32
+          minimum: 0
+          description: The lane's high-water mark (`LANE_HWM_HIGH`, `LANE_HWM_NORMAL`, `LANE_HWM_LOW`).
+        backlog_due:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Notifications of the lane in `pending` or `retrying` whose due time has passed.
+    ChannelSummary:
+      type: object
+      additionalProperties: false
+      required: [channel, attempts, success_rate, provider_latency_ms, end_to_end_latency_ms]
+      properties:
+        channel:
+          $ref: "#/components/schemas/Channel"
+        attempts:
+          $ref: "#/components/schemas/AttemptCounts"
+        success_rate:
+          type: number
+          format: double
+          nullable: true
+          minimum: 0
+          maximum: 1
+          description: |
+            `success` divided by all attempts finished in the window except
+            `aborted` (which sent nothing); `null` when there are none.
+        provider_latency_ms:
+          $ref: "#/components/schemas/Percentiles"
+        end_to_end_latency_ms:
+          $ref: "#/components/schemas/Percentiles"
+    AttemptCounts:
+      type: object
+      additionalProperties: false
+      description: Attempts finished in the window, by outcome; every outcome is listed, also when zero. `in_flight` is not an outcome of a finished attempt.
+      required: [success, retryable, permanent, provider_fatal, throttled, unknown, unreachable, aborted, internal_error]
+      properties:
+        success: {type: integer, format: int64, minimum: 0}
+        retryable: {type: integer, format: int64, minimum: 0}
+        permanent: {type: integer, format: int64, minimum: 0}
+        provider_fatal: {type: integer, format: int64, minimum: 0}
+        throttled: {type: integer, format: int64, minimum: 0}
+        unknown: {type: integer, format: int64, minimum: 0}
+        unreachable: {type: integer, format: int64, minimum: 0}
+        aborted: {type: integer, format: int64, minimum: 0}
+        internal_error: {type: integer, format: int64, minimum: 0}
+    Percentiles:
+      type: object
+      additionalProperties: false
+      description: Milliseconds; both values are `null` when there is nothing to measure in the window.
+      required: [p50, p95]
+      properties:
+        p50:
+          type: number
+          format: double
+          nullable: true
+        p95:
+          type: number
+          format: double
+          nullable: true
     Health:
       type: object
       additionalProperties: false

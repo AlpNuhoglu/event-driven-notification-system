@@ -69,6 +69,14 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger, ev *queue.
 		ScheduledAtMaxAhead:  cfg.API.ScheduleMaxHorizon,
 		PhoneValidation:      domain.PhoneValidation(cfg.API.PhoneValidation),
 		Events:               ev,
+		SummaryWindow:        cfg.API.SummaryWindow,
+		SummaryCacheTTL:      cfg.API.SummaryCacheTTL,
+		SummaryBacklogTTL:    cfg.API.SummaryBacklogTTL,
+		LaneHWM: map[domain.Priority]int{
+			domain.PriorityHigh:   cfg.Relay.LaneHWMHigh,
+			domain.PriorityNormal: cfg.Relay.LaneHWMNormal,
+			domain.PriorityLow:    cfg.Relay.LaneHWMLow,
+		},
 	})
 	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", cfg.Ports.APIAddr)
 	if err != nil {
