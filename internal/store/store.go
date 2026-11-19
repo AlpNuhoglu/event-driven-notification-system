@@ -39,8 +39,10 @@ type decideFunc func(outcome domain.Outcome, failures, maxFailures int, expiresA
 
 // Store executes the notification queries and transitions.
 type Store struct {
-	pool     *pgxpool.Pool
-	q        *db.Queries
+	pool *pgxpool.Pool
+	q    *db.Queries
+	// list runs the listing queries with custom plans (see customPlanDB).
+	list     *db.Queries
 	profiles Profiles
 	decide   decideFunc
 }
@@ -48,7 +50,7 @@ type Store struct {
 // New returns a Store on pool. profiles supplies the back-off profile of each
 // priority for the retry decision of transitions 5, 6 and 7.
 func New(pool *pgxpool.Pool, profiles Profiles) *Store {
-	return &Store{pool: pool, q: db.New(pool), profiles: profiles, decide: domain.DecideRetry}
+	return &Store{pool: pool, q: db.New(pool), list: db.New(customPlanDB{pool}), profiles: profiles, decide: domain.DecideRetry}
 }
 
 // Notification is one row of the notifications table.
@@ -197,11 +199,19 @@ func (s *Store) GetNotification(ctx context.Context, id uuid.UUID) (Notification
 	return fromRow(row), nil
 }
 
-// ListAttempts returns the attempts of a notification ordered by attempt number.
+// ListAttempts returns the attempts of a notification ordered by attempt
+// number: an empty slice when it has none, ErrNotFound when no notification
+// has the id. The existence is checked, with one more statement, only when
+// there are no attempts (an attempt cannot exist without its notification).
 func (s *Store) ListAttempts(ctx context.Context, id uuid.UUID) ([]Attempt, error) {
 	rows, err := s.q.ListAttempts(ctx, id)
 	if err != nil {
 		return nil, fmt.Errorf("list attempts: %w", err)
+	}
+	if len(rows) == 0 {
+		if _, err := s.GetNotification(ctx, id); err != nil {
+			return nil, err
+		}
 	}
 	out := make([]Attempt, 0, len(rows))
 	for _, r := range rows {
