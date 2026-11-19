@@ -200,6 +200,67 @@ func coverageCases() []coverageCase {
 		c("cancelBatch", 500, post(fail, pathf("/v1/batches/%s/cancel", someID), "", nil)),
 		c("cancelBatch", 503, post(dead, pathf("/v1/batches/%s/cancel", someID), "", nil)),
 
+		c("createTemplate", 201, post(live, "/v1/templates", tplBody("cov-create", "sms", "hello"), nil)),
+		c("createTemplate", 400, post(live, "/v1/templates", `{`, nil)),
+		c("createTemplate", 409, func(_ *testing.T, e *coverageEnv) response {
+			e.send(e.real.apiClient, http.MethodPost, "/v1/templates", tplBody("cov-dup", "sms", "hello"), nil)
+			return e.send(e.real.apiClient, http.MethodPost, "/v1/templates", tplBody("cov-dup", "sms", "hello"), nil)
+		}),
+		c("createTemplate", 413, post(live, "/v1/templates", overLimit, nil)),
+		c("createTemplate", 415, post(live, "/v1/templates", tplBody("cov-415", "sms", "hello"), textPlain)),
+		c("createTemplate", 422, post(live, "/v1/templates", `{}`, nil)),
+		c("createTemplate", 500, post(fail, "/v1/templates", tplBody("cov-500", "sms", "hello"), nil)),
+		c("createTemplate", 503, post(dead, "/v1/templates", tplBody("cov-503", "sms", "hello"), nil)),
+
+		c("createTemplateVersion", 201, func(_ *testing.T, e *coverageEnv) response {
+			e.send(e.real.apiClient, http.MethodPost, "/v1/templates", tplBody("cov-ver", "sms", "hello"), nil)
+			return e.send(e.real.apiClient, http.MethodPost, "/v1/templates/cov-ver/versions", versionBody("bye"), nil)
+		}),
+		c("createTemplateVersion", 400, post(live, "/v1/templates/cov/versions", `{`, nil)),
+		c("createTemplateVersion", 404, post(live, "/v1/templates/cov-unknown/versions", versionBody("x"), nil)),
+		c("createTemplateVersion", 413, post(live, "/v1/templates/cov/versions", overLimit, nil)),
+		c("createTemplateVersion", 415, post(live, "/v1/templates/cov/versions", versionBody("x"), textPlain)),
+		c("createTemplateVersion", 422, post(live, "/v1/templates/cov/versions", `{}`, nil)),
+		c("createTemplateVersion", 500, post(fail, "/v1/templates/cov/versions", versionBody("x"), nil)),
+		c("createTemplateVersion", 503, post(dead, "/v1/templates/cov/versions", versionBody("x"), nil)),
+
+		c("getTemplate", 200, func(_ *testing.T, e *coverageEnv) response {
+			e.send(e.real.apiClient, http.MethodPost, "/v1/templates", tplBody("cov-get", "sms", "hello"), nil)
+			return e.send(e.real.apiClient, http.MethodGet, "/v1/templates/cov-get", "", nil)
+		}),
+		c("getTemplate", 404, get(live, "/v1/templates/cov-unknown")),
+		c("getTemplate", 500, get(fail, "/v1/templates/cov")),
+		c("getTemplate", 503, get(dead, "/v1/templates/cov")),
+
+		c("getTemplateVersion", 200, func(_ *testing.T, e *coverageEnv) response {
+			e.send(e.real.apiClient, http.MethodPost, "/v1/templates", tplBody("cov-getv", "sms", "hello"), nil)
+			return e.send(e.real.apiClient, http.MethodGet, "/v1/templates/cov-getv/versions/1", "", nil)
+		}),
+		c("getTemplateVersion", 400, get(live, "/v1/templates/cov/versions/abc")),
+		c("getTemplateVersion", 404, get(live, "/v1/templates/cov-unknown/versions/1")),
+		c("getTemplateVersion", 500, get(fail, "/v1/templates/cov/versions/1")),
+		c("getTemplateVersion", 503, get(dead, "/v1/templates/cov/versions/1")),
+
+		c("deactivateTemplate", 200, func(_ *testing.T, e *coverageEnv) response {
+			e.send(e.real.apiClient, http.MethodPost, "/v1/templates", tplBody("cov-off", "sms", "hello"), nil)
+			return e.send(e.real.apiClient, http.MethodPost, "/v1/templates/cov-off/deactivate", "", nil)
+		}),
+		c("deactivateTemplate", 400, post(live, "/v1/templates/cov/deactivate", `{}`, nil)),
+		c("deactivateTemplate", 404, post(live, "/v1/templates/cov-unknown/deactivate", "", nil)),
+		c("deactivateTemplate", 413, post(live, "/v1/templates/cov/deactivate", overLimit, nil)),
+		c("deactivateTemplate", 500, post(fail, "/v1/templates/cov/deactivate", "", nil)),
+		c("deactivateTemplate", 503, post(dead, "/v1/templates/cov/deactivate", "", nil)),
+
+		c("activateTemplate", 200, func(_ *testing.T, e *coverageEnv) response {
+			e.send(e.real.apiClient, http.MethodPost, "/v1/templates", tplBody("cov-on", "sms", "hello"), nil)
+			return e.send(e.real.apiClient, http.MethodPost, "/v1/templates/cov-on/activate", "", nil)
+		}),
+		c("activateTemplate", 400, post(live, "/v1/templates/cov/activate", `{}`, nil)),
+		c("activateTemplate", 404, post(live, "/v1/templates/cov-unknown/activate", "", nil)),
+		c("activateTemplate", 413, post(live, "/v1/templates/cov/activate", overLimit, nil)),
+		c("activateTemplate", 500, post(fail, "/v1/templates/cov/activate", "", nil)),
+		c("activateTemplate", 503, post(dead, "/v1/templates/cov/activate", "", nil)),
+
 		c("getHealthz", 200, get(live, "/healthz")),
 
 		c("getReadyz", 200, get(live, "/readyz")),
@@ -296,6 +357,10 @@ var bodyEndpoints = []struct{ op, path string }{
 	{"redriveNotification", "/v1/notifications/" + someID + "/redrive"},
 	{"cancelNotification", "/v1/notifications/" + someID + "/cancel"},
 	{"cancelBatch", "/v1/batches/" + someID + "/cancel"},
+	{"createTemplate", "/v1/templates"},
+	{"createTemplateVersion", "/v1/templates/cov/versions"},
+	{"deactivateTemplate", "/v1/templates/cov/deactivate"},
+	{"activateTemplate", "/v1/templates/cov/activate"},
 }
 
 // MAX_BODY_BYTES answers 413 on every endpoint that reads a body: a body of
@@ -362,6 +427,12 @@ func TestRequestID_EveryOperation(t *testing.T) {
 		{"redriveNotification", http.MethodPost, "/v1/notifications/" + failed.String() + "/redrive", ""},
 		{"getBatch", http.MethodGet, "/v1/batches/" + batchID, ""},
 		{"cancelBatch", http.MethodPost, "/v1/batches/" + batchID + "/cancel", ""},
+		{"createTemplate", http.MethodPost, "/v1/templates", tplBody("rid-tpl", "sms", "hello")},
+		{"createTemplateVersion", http.MethodPost, "/v1/templates/rid-tpl/versions", versionBody("bye")},
+		{"getTemplate", http.MethodGet, "/v1/templates/rid-tpl", ""},
+		{"getTemplateVersion", http.MethodGet, "/v1/templates/rid-tpl/versions/1", ""},
+		{"deactivateTemplate", http.MethodPost, "/v1/templates/rid-tpl/deactivate", ""},
+		{"activateTemplate", http.MethodPost, "/v1/templates/rid-tpl/activate", ""},
 		{"getHealthz", http.MethodGet, "/healthz", ""},
 		{"getReadyz", http.MethodGet, "/readyz", ""},
 		{"getOpenAPISpec", http.MethodGet, "/openapi.yaml", ""},

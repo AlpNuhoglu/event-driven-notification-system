@@ -36,6 +36,7 @@ type Repository interface {
 	GetBatch(ctx context.Context, id uuid.UUID) (store.Batch, error)
 	canceller
 	lister
+	templater
 }
 
 // Pinger checks that the database answers (readiness).
@@ -276,7 +277,8 @@ func responseError(w http.ResponseWriter, r *http.Request, err error) {
 }
 
 // parameterError is the generated wrapper's handler for a parameter it
-// cannot bind: the id path parameter, a query parameter of the listing (it
+// cannot bind: the id path parameter, the version of a template (not an
+// integer), a query parameter of the listing (it
 // gives the problems the guard gives, see parseListQuery), or the
 // Idempotency-Key header when it is sent more than once (the wrapper refuses
 // that before createGuard runs).
@@ -291,6 +293,10 @@ func parameterError(w http.ResponseWriter, r *http.Request, err error) {
 		return
 	}
 	if errors.As(err, &invalid) {
+		if invalid.ParamName == fieldVersion {
+			writeProblem(w, r, invalidVersionProblem())
+			return
+		}
 		if p := listParameterProblem(r, invalid); p != nil {
 			writeProblem(w, r, p)
 			return
