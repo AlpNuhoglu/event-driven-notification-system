@@ -143,6 +143,7 @@ type Breaker struct {
 // Events configures status events and the WebSocket gateway.
 type Events struct {
 	BufferSize         int
+	FlushTimeout       time.Duration
 	QueueMaxLength     int
 	QueueMessageTTL    time.Duration
 	WSOriginPatterns   []string
@@ -407,6 +408,7 @@ func (l *loader) load() Config {
 	}
 	c.Events = Events{
 		BufferSize:         l.intv("EVENT_BUFFER_SIZE", 1024),
+		FlushTimeout:       l.dur("EVENT_FLUSH_TIMEOUT", 2*time.Second),
 		QueueMaxLength:     l.intv("EVENT_QUEUE_MAX_LENGTH", 10000),
 		QueueMessageTTL:    l.dur("EVENT_QUEUE_MESSAGE_TTL", 30*time.Second),
 		WSOriginPatterns:   l.list("WS_ORIGIN_PATTERNS", nil),
