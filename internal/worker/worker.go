@@ -57,6 +57,11 @@ type Config struct {
 	// wait doubles, up to ClaimRetryMax (CLAIM_RETRY_MAX, 5 s).
 	ClaimRetryBase time.Duration
 	ClaimRetryMax  time.Duration
+	// FinalWriteRetry is how long a write after the claim (the final write,
+	// an abort) is retried while the database cannot be reached
+	// (FINAL_WRITE_RETRY_WINDOW, 60 s; D18), with the back-off of the
+	// claim's retry. Zero means one try.
+	FinalWriteRetry time.Duration
 }
 
 // Deps are the worker's collaborators. All are required.
@@ -108,8 +113,8 @@ func New(cfg Config, d Deps) (*Worker, error) {
 	case cfg.ClaimRetryBase <= 0, cfg.ClaimRetryMax < cfg.ClaimRetryBase:
 		return nil, fmt.Errorf("worker: claim retry base %s must be positive and not above the maximum %s",
 			cfg.ClaimRetryBase, cfg.ClaimRetryMax)
-	case cfg.SlotTolerance < 0, cfg.Drain < 0:
-		return nil, errors.New("worker: slot tolerance and drain timeout must not be negative")
+	case cfg.SlotTolerance < 0, cfg.Drain < 0, cfg.FinalWriteRetry < 0:
+		return nil, errors.New("worker: slot tolerance, drain timeout and final-write retry window must not be negative")
 	case sendDeadline <= 0:
 		return nil, fmt.Errorf("worker: send deadline (lease %s - HTTP timeout %s - %s) must be positive",
 			cfg.Lease, cfg.HTTPTimeout, cfg.WriteMargin)

@@ -329,6 +329,12 @@ type fakeStore struct {
 	claimErr   func(id uuid.UUID) error
 	expired    func(id uuid.UUID) bool
 	finalErr   error
+	// finalErrs are returned first, one per write after the claim, before
+	// anything is recorded: writes that did not reach the database.
+	finalErrs []error
+	// late is what CompleteSent answers.
+	late       store.Sent
+	finalTries []time.Time // every write after the claim, also a failed one
 
 	mu        sync.Mutex
 	claims    []claimRecord
@@ -379,6 +385,12 @@ func (s *fakeStore) record(list *[]finalRecord, r finalRecord) (domain.StatusCha
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	r.at = s.clk.Now()
+	s.finalTries = append(s.finalTries, r.at)
+	if len(s.finalErrs) > 0 {
+		err := s.finalErrs[0]
+		s.finalErrs = s.finalErrs[1:]
+		return domain.StatusChanged{}, err
+	}
 	*list = append(*list, r)
 	s.active--
 	if s.finalErr != nil {
@@ -392,7 +404,16 @@ func (s *fakeStore) CompleteSent(_ context.Context, id uuid.UUID, attemptNo int,
 	if err != nil {
 		return store.Sent{}, ev, err
 	}
+	if s.late.Late {
+		return s.late, ev, nil
+	}
 	return store.Sent{From: domain.StatusProcessing}, ev, nil
+}
+
+func (s *fakeStore) writeTimes() []time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.finalTries)
 }
 
 func (s *fakeStore) CompleteFailure(_ context.Context, id uuid.UUID, attemptNo int, r store.AttemptResult, jitter float64) (domain.StatusChanged, error) {
