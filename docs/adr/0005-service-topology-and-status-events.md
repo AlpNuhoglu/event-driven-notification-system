@@ -30,7 +30,7 @@ One Go module, one Docker image, one binary per role under `cmd/`. Compose runs 
 | Service | Responsibilities | Instances in Compose | Required dependencies |
 |---|---|---|---|
 | **api** | REST endpoints, validation, template rendering, `INSERT`, cancel, redrive, listing, metrics summary, health endpoints on the public port | 1 (stateless; can be replicated) | **Postgres only.** Its status-event publisher is optional and never affects readiness. |
-| **relay** | Outbox publishing on a 100 ms ticker, expiry pass, reconciliation, lease sweeper, idempotency-key cleanup, backlog gauges | **1**, with `restart: unless-stopped` | Postgres, RabbitMQ. **No Redis.** |
+| **relay** | Outbox publishing on a 100 ms ticker, expiry pass, reconciliation, lease sweeper, idempotency-key cleanup (every `IDEMPOTENCY_CLEANUP_INTERVAL`, 1 minute by default; D78), backlog gauges | **1**, with `restart: unless-stopped` | Postgres, RabbitMQ. **No Redis.** |
 | **worker** | Consumption, pacing, rate limiting, circuit breaking, provider calls, delivery transitions | **1 container serving all channels** (`WORKER_CHANNELS=sms,email,push`) | Postgres, RabbitMQ; Redis for the shared rate limit (a fallback exists) |
 | **gateway** | WebSocket connections, snapshot on subscribe, fan-out of status events | 1 (can be replicated) | RabbitMQ, Postgres (read-only) |
 | **migrate** | Applies database migrations, then exits | One-shot | Postgres. Other services wait with `depends_on: condition: service_completed_successfully`. |
@@ -60,7 +60,7 @@ One Go module, one Docker image, one binary per role under `cmd/`. Compose runs 
 
 ### Relay
 
-A single process with four loops: the publishing cycle on a 100 ms ticker ([ADR-0002](0002-postgres-as-outbox-scheduler-and-retry-delay.md)), the expiry pass, the lease sweeper, and reconciliation on every (re)connection to RabbitMQ ([ADR-0003](0003-bounded-relay-buffer-and-sweepers.md)). It also deletes expired idempotency keys and measures the backlog gauges.
+A single process with four loops: the publishing cycle on a 100 ms ticker ([ADR-0002](0002-postgres-as-outbox-scheduler-and-retry-delay.md)), the expiry pass, the lease sweeper, and reconciliation on every (re)connection to RabbitMQ ([ADR-0003](0003-bounded-relay-buffer-and-sweepers.md)). It also deletes expired idempotency keys, in bounded batches every `IDEMPOTENCY_CLEANUP_INTERVAL` (D78, [ADR-0006](0006-api-contract-and-three-layer-idempotency.md) §11), and measures the backlog gauges.
 
 The relay binary carries one operator subcommand, **`requeue-stale`**, run as `docker-compose run --rm relay requeue-stale`. It returns `queued` rows older than 5 minutes to `pending` (`--older-than=5m` by default; `--all` takes every `queued` row), for the cases reconciliation does not cover ([ADR-0003](0003-bounded-relay-buffer-and-sweepers.md) §3).
 
