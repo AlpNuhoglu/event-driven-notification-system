@@ -4,9 +4,9 @@ The first file every session reads and the last one it updates. The phases and t
 
 ## Current phase
 
-**P3: delivery robustness** — done: its three pull requests are merged and every exit criterion was run. One follow-up is in review: `p3/isopen-race`, the fix for the red `integration` job on `main` after the last merge (session log).
+**P4: templates and scheduling** — in progress. P3 is done: its three pull requests and the follow-up `p3/isopen-race` are merged.
 
-**Next step:** the author merges the `p3/isopen-race` pull request and answers open issue 11. Then P4 (templates and scheduling) from the updated `main`.
+**Next step:** the `p4/templates` pull request; after its merge, `p4/scheduling` from the updated `main`.
 
 **How P3 is split** (the plan names the three branches, not their contents):
 
@@ -31,8 +31,8 @@ Status is one of: `not started`, `in progress`, `in review` (pull requests open)
 | P0 | Repository skeleton and first-hour experiments | done | [#2](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/2) (`p0/skeleton`, merged), [#3](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/3) (`p0/experiments`, merged) | 2026-11-18 |
 | P1 | Core path | done | [#4](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/4) (`p1/schema-and-store`, merged), [#5](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/5) (`p1/relay-worker-provider`, merged), [#6](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/6) (`p1/compose-e2e`, merged) | 2026-11-19 |
 | P2 | API completeness | done | [#7](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/7) (`p2/batch-and-idempotency`, merged), [#8](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/8) (`p2/cancel-redrive-listing`, merged), [#9](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/9) (`p2/validation`, merged) | 2026-11-19 |
-| P3 | Delivery robustness | done | [#10](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/10) (`p3/classification-and-retry`, merged), [#11](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/11) (`p3/breaker-and-fallback`, merged), [#12](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/12) (`p3/recovery`, merged); follow-up [#13](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/13) (`p3/isopen-race`) | 2026-11-19 |
-| P4 | Templates and scheduling | not started | | |
+| P3 | Delivery robustness | done | [#10](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/10) (`p3/classification-and-retry`, merged), [#11](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/11) (`p3/breaker-and-fallback`, merged), [#12](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/12) (`p3/recovery`, merged); follow-up [#13](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/13) (`p3/isopen-race`, merged) | 2026-11-19 |
+| P4 | Templates and scheduling | in progress | | |
 | P5 | Real-time and observability | not started | | |
 | P6 | Quality | not started | | |
 | P7 | Delivery | not started | | |
@@ -73,7 +73,8 @@ Questions that the ledger and the ADRs do not answer, and problems that are not 
 
 | # | Raised on | Issue | Blocks |
 |---|---|---|---|
-| 11 | 2026-11-19 | **After an idle period, the first minute of a large burst runs at about a third of the rate: the planner is misled by statistics from an empty outbox.** Found when the burst measurement of D79 was repeated on the Compose stack ([ADR-0003](adr/0003-bounded-relay-buffer-and-sweepers.md) §6). D79 does what it was decided for: no statement runs on a plan cached while a table was small. But when `notifications` was last analysed while nothing was pending (the normal idle state) and 1,000,000 rows then arrive, the **custom** plan of the claim, and of the relay's update to `queued`, looks its row up through the partial expiry index, which the statistics call empty and which now holds every pending row: about 290 ms per claim, about 35 messages per second per channel instead of 98 (before D79: about 32), until autovacuum's `ANALYZE`, with default settings at most about a minute after the burst. With tables that were never analysed the same stack delivered 98 per second from the first second. Nothing is lost or repeated; the logs show nothing. This is the class the author left for P6 (the relay's count with steady-state statistics, the sweeper's per-row update); **the claim now belongs to it, which is why it is raised again instead of filed silently.** Options: **(a)** an explicit `ANALYZE notifications` by the relay when the backlog jumps (for example when the count of pending rows grows by more than a factor since the last analyse); it is the only option that reacts within a second, because autovacuum's own reaction is bounded by its 60 s cycle whatever the per-table thresholds are; **(b)** per-table autovacuum analyse settings (a migration): cheaper to build, still up to a minute; **(c)** keep the planner away from the partial expiry index for a look-up by primary key, by changing the claim's and the update's SQL: fast, but it changes the statement ADR-0004 gives verbatim and treats one symptom; **(d)** leave it for P6 as planned, documented as a limitation (today's state). **Recommendation:** (d) for now, with (a) measured in the burst scenario of P6: the effect is a bounded slowdown, not a loss, and (a) deserves the load test that P6 builds anyway. | Nothing; the behaviour is documented in `future-work.md` |
+
+No issue is open. Issue 11 (the claim misled by statistics from an empty outbox) was answered by the author with option (d): it is part of the tuning of P6, with its measurements named in the plan (session log, P4).
 
 ## Session log
 

@@ -166,7 +166,7 @@ Every statement shows `generic_plans = 0` afterwards. The cost at steady state i
 | With D79, statistics from an empty outbox | about 35 per second (each claim about 290 ms) | 6,344 |
 | With D79, tables never analysed | 98 per second from the first second | 18,253 |
 
-So D79 removes the stale cached plans, and on a stack whose tables were analysed while idle the first minute of a large burst is still about a third of the configured rate, until autovacuum's `ANALYZE` (with default settings at most about a minute after the burst). Nothing is lost or repeated, and the logs show nothing: the only symptom is the slow provider. The remedy is at the level of statistics and is open issue 11 in [`progress.md`](../progress.md).
+So D79 removes the stale cached plans, and on a stack whose tables were analysed while idle the first minute of a large burst is still about a third of the configured rate, until autovacuum's `ANALYZE` (with default settings at most about a minute after the burst). Nothing is lost or repeated, and the logs show nothing: the only symptom is the slow provider. The remedy is at the level of statistics. It was open issue 11 of P3; by the author's decision it is part of the tuning of P6, where the claim's cost is measured against the size of the backlog and the remedies are compared in the burst scenario ([implementation plan](../plan/implementation-plan.md), P6).
 
 ## Alternatives considered
 
