@@ -61,6 +61,29 @@ func (q *Queries) GetIdempotencyKey(ctx context.Context, key string) (GetIdempot
 	return i, err
 }
 
+const getLiveIdempotencyKey = `-- name: GetLiveIdempotencyKey :one
+SELECT request_hash, response_status, response_body
+FROM idempotency_keys
+WHERE key = $1 AND expires_at > now()
+`
+
+type GetLiveIdempotencyKeyRow struct {
+	RequestHash    string
+	ResponseStatus *int32
+	ResponseBody   []byte
+}
+
+// Read-only look-up outside the create transaction, with the liveness rule
+// of ClaimIdempotencyKey: a key is live while expires_at > now() (the claim
+// takes over a key whose expires_at <= now()). It takes no lock and does not
+// see a claim that has not committed.
+func (q *Queries) GetLiveIdempotencyKey(ctx context.Context, key string) (GetLiveIdempotencyKeyRow, error) {
+	row := q.db.QueryRow(ctx, getLiveIdempotencyKey, key)
+	var i GetLiveIdempotencyKeyRow
+	err := row.Scan(&i.RequestHash, &i.ResponseStatus, &i.ResponseBody)
+	return i, err
+}
+
 const storeIdempotencyResponse = `-- name: StoreIdempotencyResponse :execrows
 UPDATE idempotency_keys
 SET response_status = $1, response_body = $2

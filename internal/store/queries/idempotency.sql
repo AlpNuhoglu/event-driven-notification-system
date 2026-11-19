@@ -20,6 +20,15 @@ SELECT request_hash, response_status, response_body
 FROM idempotency_keys
 WHERE key = @key;
 
+-- name: GetLiveIdempotencyKey :one
+-- Read-only look-up outside the create transaction, with the liveness rule
+-- of ClaimIdempotencyKey: a key is live while expires_at > now() (the claim
+-- takes over a key whose expires_at <= now()). It takes no lock and does not
+-- see a claim that has not committed.
+SELECT request_hash, response_status, response_body
+FROM idempotency_keys
+WHERE key = @key AND expires_at > now();
+
 -- name: StoreIdempotencyResponse :execrows
 -- Stores the response on the key claimed in the same transaction.
 UPDATE idempotency_keys

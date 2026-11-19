@@ -353,3 +353,52 @@ func setStatus(t *testing.T, pool *pgxpool.Pool, id uuid.UUID, set string) {
 	t.Helper()
 	exec(t, pool, `UPDATE notifications SET `+set+` WHERE id = $1`, id)
 }
+
+// LookupIdempotencyKey reads with the liveness rule of the claim and
+// changes nothing: no key, a live key with the same hash (the stored
+// response), a live key with another hash (ErrIdempotencyKeyReused), an
+// expired key (none), and a key claimed by a transaction that has not
+// committed (not seen).
+func TestLookupIdempotencyKey(t *testing.T) {
+	s, pool := newTestStore(t, zeroDelay)
+	if r, err := s.LookupIdempotencyKey(ctxT(t), idemKey("absent", "hash-a")); r != nil || err != nil {
+		t.Fatalf("absent key: %v %v", r, err)
+	}
+	first := createSingle(t, s, idemKey("live", "hash-a"), baseNew())
+	before := readKey(t, pool, "live")
+	r, err := s.LookupIdempotencyKey(ctxT(t), idemKey("live", "hash-a"))
+	if err != nil || r == nil || r.Status != 202 || !jsonEqual(t, r.Body, first.Response.Body) {
+		t.Fatalf("same hash: %+v %v", r, err)
+	}
+	if _, err := s.LookupIdempotencyKey(ctxT(t), idemKey("live", "hash-b")); !errors.Is(err, ErrIdempotencyKeyReused) {
+		t.Fatalf("other hash: %v", err)
+	}
+	if after := readKey(t, pool, "live"); !reflect.DeepEqual(before, after) {
+		t.Errorf("key row changed: %+v -> %+v", before, after)
+	}
+
+	// Expired: the claim would take it over, so the look-up does not see it.
+	exec(t, pool, `UPDATE idempotency_keys SET expires_at = now() - interval '1 millisecond' WHERE key = $1`, "live")
+	if r, err := s.LookupIdempotencyKey(ctxT(t), idemKey("live", "hash-b")); r != nil || err != nil {
+		t.Fatalf("expired key: %v %v", r, err)
+	}
+
+	// A claim in an open transaction is not seen, and the look-up does not
+	// wait for it.
+	tx, err := pool.Begin(ctxT(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	if _, err := tx.Exec(ctxT(t), `INSERT INTO idempotency_keys (key, request_hash, created_at, expires_at)
+		VALUES ('open', 'hash-a', now(), now() + interval '1 hour')`); err != nil {
+		t.Fatal(err)
+	}
+	if r, err := s.LookupIdempotencyKey(ctxT(t), idemKey("open", "hash-a")); r != nil || err != nil {
+		t.Fatalf("uncommitted claim: %v %v", r, err)
+	}
+
+	if _, err := s.LookupIdempotencyKey(ctxT(t), &IdempotencyKey{Key: "k"}); err == nil {
+		t.Error("key without a hash: no error")
+	}
+}
