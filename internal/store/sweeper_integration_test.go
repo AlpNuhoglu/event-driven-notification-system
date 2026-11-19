@@ -81,8 +81,9 @@ func TestSweepExpiredLeases_UnexpiredLeasesUntouched(t *testing.T) {
 
 // Two sweeps running at the same time never take the same row: the second
 // sweep runs while the first holds its row locks (from inside its jitter
-// callback, which is called within the first sweep's transaction).
-func TestSweepExpiredLeases_ConcurrentSweepsDisjoint(t *testing.T) {
+// callback, which is called within the first sweep's transaction), and
+// skips them. Every swept attempt is unknown with finished_at set.
+func TestLeaseSweeper_TwoSweepersSkipLocked(t *testing.T) {
 	s, pool := newTestStore(t, delayed)
 	all := map[uuid.UUID]bool{}
 	for range 6 {
@@ -116,8 +117,14 @@ func TestSweepExpiredLeases_ConcurrentSweepsDisjoint(t *testing.T) {
 			t.Errorf("row %s swept twice or unknown", e.ID)
 		}
 		seen[e.ID] = true
-		if got := get(t, s, e.ID); got.Failures != 1 || got.Status != domain.StatusRetrying {
+		got := get(t, s, e.ID)
+		if got.Failures != 1 || got.Status != domain.StatusRetrying {
 			t.Errorf("row %s: %s failures %d", e.ID, got.Status, got.Failures)
+		}
+		a := attempts(t, s, e.ID)
+		if len(a) != 1 || a[0].Outcome != domain.OutcomeUnknown || a[0].FinishedAt == nil ||
+			!a[0].FinishedAt.Equal(got.UpdatedAt) {
+			t.Errorf("row %s: attempt %+v, want unknown with finished_at = the sweep's now()", e.ID, a)
 		}
 	}
 }

@@ -335,7 +335,7 @@ func TestExpireDue_OtherStatusesUntouched(t *testing.T) {
 	claim(t, s, processing.ID)
 	sent := create(t, s)
 	claim(t, s, sent.ID)
-	if _, err := s.CompleteSent(ctxT(t), sent.ID, 1, testProvider, AttemptResult{Outcome: domain.OutcomeSuccess}); err != nil {
+	if _, _, err := s.CompleteSent(ctxT(t), sent.ID, 1, testProvider, AttemptResult{Outcome: domain.OutcomeSuccess}); err != nil {
 		t.Fatal(err)
 	}
 	failed := create(t, s, withMaxFailures(1))

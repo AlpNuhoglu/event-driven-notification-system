@@ -362,3 +362,111 @@ func (q *Queries) MarkSent(ctx context.Context, arg MarkSentParams) (Notificatio
 	)
 	return i, err
 }
+
+const markSentLate = `-- name: MarkSentLate :one
+WITH cur AS (
+  SELECT l.id, l.status
+  FROM notifications AS l
+  WHERE l.id = $4
+  FOR UPDATE
+)
+UPDATE notifications AS n
+SET status = 'sent', provider_message_id = $1, provider = $2, sent_at = now(),
+    failure_reason = NULL, lease_expires_at = NULL, queued_at = NULL,
+    updated_at = now(), version = n.version + 1
+FROM cur
+WHERE n.id = cur.id
+  AND n.attempt_count = $3
+  AND n.status IN ('pending', 'queued', 'retrying', 'failed', 'cancelled')
+RETURNING n.id, n.batch_id, n.dedupe_key, n.channel, n.priority, n.recipient, n.content, n.sms_encoding, n.sms_segments, n.template_name, n.template_version, n.template_vars, n.status, n.failure_reason, n.due_at, n.scheduled_at, n.expires_at, n.attempt_count, n.failures, n.max_failures, n.queued_at, n.lease_expires_at, n.provider, n.provider_message_id, n.correlation_id, n.trace_parent, n.version, n.created_at, n.updated_at, n.sent_at, cur.status AS from_status
+`
+
+type MarkSentLateParams struct {
+	ProviderMessageID *string
+	Provider          *string
+	AttemptNo         int32
+	ID                uuid.UUID
+}
+
+type MarkSentLateRow struct {
+	Notification Notification
+	FromStatus   string
+}
+
+// Transition 12, late success (ADR-0004 sections 3 and 4, D14, D18). Run
+// only after MarkSent matched zero rows, in the same transaction.
+//
+// The guard is entirely in the UPDATE's WHERE clause:
+//
+//	attempt_count = @attempt_no: no newer attempt has started (only a claim
+//	  increments it), so this result belongs to the row's latest attempt;
+//	status IN (...): every state except processing (a newer attempt holds
+//	  the row, since MarkSent did not match) and sent (nothing to do).
+//
+// A row version that fails this guard is never followed by one that passes
+// it: attempt_count never decreases, sent is final, and processing with
+// this attempt_count is over once MarkSent has missed. So a statement
+// snapshot that predates a concurrent commit cannot hide a row that should
+// be updated.
+//
+// The CTE locks the row by id and does nothing else: the status the row
+// leaves (from_status) is read from the locked, latest row version, which
+// is the version the UPDATE then changes. When another transaction holds
+// the row, the lock waits for it. One row, by id, as in every single-row
+// transition: no lock-order concern.
+//
+// SET, beyond what transition 4 sets:
+//
+//	failure_reason = NULL: the row may come from failed, and the CHECK
+//	  requires failed <=> failure_reason;
+//	queued_at = NULL: on a queued, cancelled or failed row it may record a
+//	  publish made after the attempt that succeeded, a wrong time; NULL
+//	  means "not known", as for a direct claim.
+//
+// lease_expires_at = NULL as in transition 4; it is already NULL in the
+// five source states. attempt_count (the fencing token), failures (the
+// budget consumed; only redrive resets it), due_at and expires_at are left
+// as they are.
+func (q *Queries) MarkSentLate(ctx context.Context, arg MarkSentLateParams) (MarkSentLateRow, error) {
+	row := q.db.QueryRow(ctx, markSentLate,
+		arg.ProviderMessageID,
+		arg.Provider,
+		arg.AttemptNo,
+		arg.ID,
+	)
+	var i MarkSentLateRow
+	err := row.Scan(
+		&i.Notification.ID,
+		&i.Notification.BatchID,
+		&i.Notification.DedupeKey,
+		&i.Notification.Channel,
+		&i.Notification.Priority,
+		&i.Notification.Recipient,
+		&i.Notification.Content,
+		&i.Notification.SmsEncoding,
+		&i.Notification.SmsSegments,
+		&i.Notification.TemplateName,
+		&i.Notification.TemplateVersion,
+		&i.Notification.TemplateVars,
+		&i.Notification.Status,
+		&i.Notification.FailureReason,
+		&i.Notification.DueAt,
+		&i.Notification.ScheduledAt,
+		&i.Notification.ExpiresAt,
+		&i.Notification.AttemptCount,
+		&i.Notification.Failures,
+		&i.Notification.MaxFailures,
+		&i.Notification.QueuedAt,
+		&i.Notification.LeaseExpiresAt,
+		&i.Notification.Provider,
+		&i.Notification.ProviderMessageID,
+		&i.Notification.CorrelationID,
+		&i.Notification.TraceParent,
+		&i.Notification.Version,
+		&i.Notification.CreatedAt,
+		&i.Notification.UpdatedAt,
+		&i.Notification.SentAt,
+		&i.FromStatus,
+	)
+	return i, err
+}

@@ -365,8 +365,12 @@ func (s *fakeStore) record(list *[]finalRecord, r finalRecord) (domain.StatusCha
 	return domain.StatusChanged{ID: r.id, Channel: domain.ChannelSMS, Status: domain.StatusRetrying}, nil
 }
 
-func (s *fakeStore) CompleteSent(_ context.Context, id uuid.UUID, attemptNo int, provider string, r store.AttemptResult) (domain.StatusChanged, error) {
-	return s.record(&s.sent, finalRecord{id: id, attemptNo: attemptNo, provider: provider, result: r})
+func (s *fakeStore) CompleteSent(_ context.Context, id uuid.UUID, attemptNo int, provider string, r store.AttemptResult) (store.Sent, domain.StatusChanged, error) {
+	ev, err := s.record(&s.sent, finalRecord{id: id, attemptNo: attemptNo, provider: provider, result: r})
+	if err != nil {
+		return store.Sent{}, ev, err
+	}
+	return store.Sent{From: domain.StatusProcessing}, ev, nil
 }
 
 func (s *fakeStore) CompleteFailure(_ context.Context, id uuid.UUID, attemptNo int, r store.AttemptResult, jitter float64) (domain.StatusChanged, error) {

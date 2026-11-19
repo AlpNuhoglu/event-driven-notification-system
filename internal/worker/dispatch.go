@@ -277,7 +277,7 @@ func (w *Worker) complete(ctx context.Context, n store.Notification, r store.Att
 		err error
 	)
 	if r.Outcome == domain.OutcomeSuccess {
-		ev, err = w.store.CompleteSent(wctx, n.ID, n.AttemptCount, w.provider.Name(), r)
+		_, ev, err = w.store.CompleteSent(wctx, n.ID, n.AttemptCount, w.provider.Name(), r)
 	} else {
 		ev, err = w.store.CompleteFailure(wctx, n.ID, n.AttemptCount, r, w.jitter())
 	}

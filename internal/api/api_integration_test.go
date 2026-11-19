@@ -244,7 +244,7 @@ func TestGet_SentNotification(t *testing.T) {
 		t.Fatalf("claim: %v", err)
 	}
 	pmid := "pm-123"
-	ev, err := a.store.CompleteSent(ctxT(t), id, claim.Notification.AttemptCount, "mock",
+	_, ev, err := a.store.CompleteSent(ctxT(t), id, claim.Notification.AttemptCount, "mock",
 		store.AttemptResult{Outcome: domain.OutcomeSuccess, ProviderMessageID: &pmid})
 	if err != nil {
 		t.Fatalf("complete: %v", err)
