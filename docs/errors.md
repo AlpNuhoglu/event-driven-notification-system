@@ -145,7 +145,7 @@ A `409` without `errors` means that the notification changed state while the req
 
 ## `idempotency-key-reused`
 
-**422 Unprocessable Content.** This `Idempotency-Key` was already used with a different request (another method, path or body). Send a new key for a new request; a retry of the same request returns the stored answer, also when it uses a template that was changed or deactivated since: the key is looked up before the template is rendered. The entry of `errors` has the field `Idempotency-Key` and the code `idempotency_key_reused`.
+**422 Unprocessable Content.** This `Idempotency-Key` was already used with a different request (another method, path or body). Send a new key for a new request; a retry of the same request returns the stored answer, also when it uses a template that was changed or deactivated since: the key is looked up before the template is rendered. The entry of `errors` has the field `Idempotency-Key` and the code `idempotency_key_reused`. The same holds for the rules judged against the clock: a retry of an accepted request is answered from its key also when its `scheduled_at` or `expires_at` would be refused by now (`in_the_past`, `too_soon`).
 
 ## `internal`
 
