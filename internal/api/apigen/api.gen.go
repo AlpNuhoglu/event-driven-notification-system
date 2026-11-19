@@ -180,16 +180,16 @@ func (e ReadinessStatus) Valid() bool {
 
 // Defines values for SMSInfoEncoding.
 const (
-	GSM7 SMSInfoEncoding = "GSM-7"
-	UCS2 SMSInfoEncoding = "UCS-2"
+	SMSInfoEncodingGSM7 SMSInfoEncoding = "GSM-7"
+	SMSInfoEncodingUCS2 SMSInfoEncoding = "UCS-2"
 )
 
 // Valid indicates whether the value is a known member of the SMSInfoEncoding enum.
 func (e SMSInfoEncoding) Valid() bool {
 	switch e {
-	case GSM7:
+	case SMSInfoEncodingGSM7:
 		return true
-	case UCS2:
+	case SMSInfoEncodingUCS2:
 		return true
 	default:
 		return false
@@ -223,6 +223,24 @@ func (e Status) Valid() bool {
 	case Retrying:
 		return true
 	case Sent:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for TemplatePreviewEncoding.
+const (
+	TemplatePreviewEncodingGSM7 TemplatePreviewEncoding = "GSM-7"
+	TemplatePreviewEncodingUCS2 TemplatePreviewEncoding = "UCS-2"
+)
+
+// Valid indicates whether the value is a known member of the TemplatePreviewEncoding enum.
+func (e TemplatePreviewEncoding) Valid() bool {
+	switch e {
+	case TemplatePreviewEncodingGSM7:
+		return true
+	case TemplatePreviewEncodingUCS2:
 		return true
 	default:
 		return false
@@ -331,15 +349,17 @@ type CreateBatchRequest struct {
 	Notifications []CreateNotificationRequest `json:"notifications"`
 }
 
-// CreateNotificationRequest defines model for CreateNotificationRequest.
+// CreateNotificationRequest Exactly one of `content` and `template` is required (`template: null`
+// counts as absent).
 type CreateNotificationRequest struct {
 	Channel Channel `json:"channel"`
 
-	// Content The message. Must not contain U+0000. At most 10 SMS segments for
+	// Content The message; required unless `template` is given, and not allowed
+	// with it. Must not contain U+0000. At most 10 SMS segments for
 	// `sms` (the encoding and segment count are returned as `sms`),
 	// 100 KiB (102,400 bytes of UTF-8) for `email`, 4 KiB (4,096 bytes)
 	// for `push`.
-	Content string `json:"content"`
+	Content *string `json:"content,omitempty"`
 
 	// DedupeKey Optional. A second notification with the same key is refused (`409`)
 	// while the first holds it. Must not contain U+0000.
@@ -352,6 +372,11 @@ type CreateNotificationRequest struct {
 	// 1 to 4,096 characters without control characters. Must not
 	// contain U+0000.
 	Recipient string `json:"recipient"`
+
+	// Template Renders a stored template instead of giving `content`. The rendered
+	// text must meet the limits of `content` for the channel, and the
+	// template's channel must be the notification's.
+	Template *TemplateUse `json:"template,omitempty"`
 }
 
 // CreateTemplateRequest defines model for CreateTemplateRequest.
@@ -438,8 +463,13 @@ type Notification struct {
 
 	// Status `sent` is final. `cancelled` and `failed` can still become `sent` when
 	// a late provider result proves that the message was delivered.
-	Status    Status    `json:"status"`
-	UpdatedAt time.Time `json:"updated_at"`
+	Status Status `json:"status"`
+
+	// Template The template version that produced the content, `null` for a
+	// notification created with `content`. The variables are not
+	// returned.
+	Template  *TemplateProvenance `json:"template"`
+	UpdatedAt time.Time           `json:"updated_at"`
 
 	// Version Increases with every state change; clients order status events by it.
 	Version int64 `json:"version"`
@@ -557,6 +587,73 @@ type Template struct {
 // TemplateOptionalVariables The optional variables, under the same rules. A missing optional
 // variable is rendered as the empty string. Absent means none.
 type TemplateOptionalVariables = []string
+
+// TemplatePreview defines model for TemplatePreview.
+type TemplatePreview struct {
+	// Content The rendered text, as a notification would store it.
+	Content string `json:"content"`
+
+	// Encoding The SMS encoding of the content; `null` unless the template's channel is `sms`.
+	Encoding *TemplatePreviewEncoding `json:"encoding"`
+
+	// Segments The SMS segments of the content; `null` unless the template's channel is `sms`.
+	Segments *int32 `json:"segments"`
+}
+
+// TemplatePreviewEncoding The SMS encoding of the content; `null` unless the template's channel is `sms`.
+type TemplatePreviewEncoding string
+
+// TemplatePreviewRequest defines model for TemplatePreviewRequest.
+type TemplatePreviewRequest struct {
+	// Variables The values of the template's variables, by name. Absent means none.
+	// A value is a JSON string, number or boolean and is converted to a
+	// string: a number keeps its digits as sent (`482913` stays `482913`),
+	// and `true`, `false` and `0` are non-empty strings, so they count as
+	// true in an `if`. At most 1,024 characters per value after conversion,
+	// without U+0000. Every required variable must be given and every given
+	// variable must be declared. How a template uses its variables is
+	// described under `POST /v1/templates`.
+	Variables *TemplateValues `json:"variables,omitempty"`
+
+	// Version Pins a version. When absent, the latest version is used.
+	Version *int32 `json:"version,omitempty"`
+}
+
+// TemplateProvenance defines model for TemplateProvenance.
+type TemplateProvenance struct {
+	Name    string `json:"name"`
+	Version int32  `json:"version"`
+}
+
+// TemplateUse defines model for TemplateUse.
+type TemplateUse struct {
+	// Name The template to render.
+	Name string `json:"name"`
+
+	// Variables The values of the template's variables, by name. Absent means none.
+	// A value is a JSON string, number or boolean and is converted to a
+	// string: a number keeps its digits as sent (`482913` stays `482913`),
+	// and `true`, `false` and `0` are non-empty strings, so they count as
+	// true in an `if`. At most 1,024 characters per value after conversion,
+	// without U+0000. Every required variable must be given and every given
+	// variable must be declared. How a template uses its variables is
+	// described under `POST /v1/templates`.
+	Variables *TemplateValues `json:"variables,omitempty"`
+
+	// Version Pins a version. When absent, the latest version is used. An
+	// inactive template is refused even with a pinned version.
+	Version *int32 `json:"version,omitempty"`
+}
+
+// TemplateValues The values of the template's variables, by name. Absent means none.
+// A value is a JSON string, number or boolean and is converted to a
+// string: a number keeps its digits as sent (`482913` stays `482913`),
+// and `true`, `false` and `0` are non-empty strings, so they count as
+// true in an `if`. At most 1,024 characters per value after conversion,
+// without U+0000. Every required variable must be given and every given
+// variable must be declared. How a template uses its variables is
+// described under `POST /v1/templates`.
+type TemplateValues map[string]interface{}
 
 // TemplateVariables The required variables. Each matches `^[A-Za-z_][A-Za-z0-9_]{0,63}$`;
 // at most 50 variables in both lists together; a name appears once.
@@ -797,6 +894,18 @@ type DeactivateTemplateParams struct {
 	Traceparent *TraceParent `json:"traceparent,omitempty"`
 }
 
+// PreviewTemplateParams defines parameters for PreviewTemplate.
+type PreviewTemplateParams struct {
+	// XRequestID Correlation id. Accepted when it is at most 128 characters of
+	// `[A-Za-z0-9._-]`; otherwise it is ignored and a new id is generated.
+	// An invalid value is not an error.
+	XRequestID *XRequestID `json:"X-Request-ID,omitempty"`
+
+	// Traceparent W3C Trace Context. Stored with the notification when it is well
+	// formed; otherwise ignored. An invalid value is not an error.
+	Traceparent *TraceParent `json:"traceparent,omitempty"`
+}
+
 // CreateTemplateVersionParams defines parameters for CreateTemplateVersion.
 type CreateTemplateVersionParams struct {
 	// XRequestID Correlation id. Accepted when it is at most 128 characters of
@@ -832,6 +941,9 @@ type RedriveNotificationJSONRequestBody = RedriveRequest
 
 // CreateTemplateJSONRequestBody defines body for CreateTemplate for application/json ContentType.
 type CreateTemplateJSONRequestBody = CreateTemplateRequest
+
+// PreviewTemplateJSONRequestBody defines body for PreviewTemplate for application/json ContentType.
+type PreviewTemplateJSONRequestBody = TemplatePreviewRequest
 
 // CreateTemplateVersionJSONRequestBody defines body for CreateTemplateVersion for application/json ContentType.
 type CreateTemplateVersionJSONRequestBody = CreateTemplateVersionRequest
@@ -886,6 +998,9 @@ type ServerInterface interface {
 	// DeactivateTemplate Deactivate a template
 	// (POST /v1/templates/{name}/deactivate)
 	DeactivateTemplate(w http.ResponseWriter, r *http.Request, name TemplateName, params DeactivateTemplateParams)
+	// PreviewTemplate Render a template without storing anything
+	// (POST /v1/templates/{name}/preview)
+	PreviewTemplate(w http.ResponseWriter, r *http.Request, name TemplateName, params PreviewTemplateParams)
 	// CreateTemplateVersion Add a version to a template
 	// (POST /v1/templates/{name}/versions)
 	CreateTemplateVersion(w http.ResponseWriter, r *http.Request, name TemplateName, params CreateTemplateVersionParams)
@@ -1948,6 +2063,75 @@ func (siw *ServerInterfaceWrapper) DeactivateTemplate(w http.ResponseWriter, r *
 	handler.ServeHTTP(w, r)
 }
 
+// PreviewTemplate operation middleware
+func (siw *ServerInterfaceWrapper) PreviewTemplate(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "name" -------------
+	var name TemplateName
+
+	err = runtime.BindStyledParameterWithOptions("simple", "name", r.PathValue("name"), &name, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "name", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params PreviewTemplateParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Request-ID" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Request-ID")]; found {
+		var XRequestID XRequestID
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Request-ID", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Request-ID", valueList[0], &XRequestID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Request-ID", Err: err})
+			return
+		}
+
+		params.XRequestID = &XRequestID
+
+	}
+
+	// ------------- Optional header parameter "traceparent" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("traceparent")]; found {
+		var Traceparent TraceParent
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "traceparent", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "traceparent", valueList[0], &Traceparent, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "traceparent", Err: err})
+			return
+		}
+
+		params.Traceparent = &Traceparent
+
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PreviewTemplate(w, r, name, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // CreateTemplateVersion operation middleware
 func (siw *ServerInterfaceWrapper) CreateTemplateVersion(w http.ResponseWriter, r *http.Request) {
 
@@ -2231,6 +2415,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/templates/{name}", wrapper.GetTemplate)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/templates/{name}/versions", wrapper.CreateTemplateVersion)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/templates/{name}/versions/{version}", wrapper.GetTemplateVersion)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/templates/{name}/preview", wrapper.PreviewTemplate)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/templates/{name}/deactivate", wrapper.DeactivateTemplate)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/templates/{name}/activate", wrapper.ActivateTemplate)
 
@@ -3901,6 +4086,150 @@ func (response DeactivateTemplate503ApplicationProblemPlusJSONResponse) VisitDea
 	return err
 }
 
+type PreviewTemplateRequestObject struct {
+	Name   TemplateName `json:"name"`
+	Params PreviewTemplateParams
+	Body   *PreviewTemplateJSONRequestBody
+}
+
+type PreviewTemplateResponseObject interface {
+	VisitPreviewTemplateResponse(w http.ResponseWriter) error
+}
+
+type PreviewTemplate200ResponseHeaders struct {
+	XRequestID string
+}
+
+type PreviewTemplate200JSONResponse struct {
+	Body    TemplatePreview
+	Headers PreviewTemplate200ResponseHeaders
+}
+
+func (response PreviewTemplate200JSONResponse) VisitPreviewTemplateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-ID", fmt.Sprint(response.Headers.XRequestID))
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PreviewTemplate400ApplicationProblemPlusJSONResponse struct {
+	BadRequestApplicationProblemPlusJSONResponse
+}
+
+func (response PreviewTemplate400ApplicationProblemPlusJSONResponse) VisitPreviewTemplateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PreviewTemplate404ApplicationProblemPlusJSONResponse struct {
+	NotFoundApplicationProblemPlusJSONResponse
+}
+
+func (response PreviewTemplate404ApplicationProblemPlusJSONResponse) VisitPreviewTemplateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PreviewTemplate413ApplicationProblemPlusJSONResponse struct {
+	PayloadTooLargeApplicationProblemPlusJSONResponse
+}
+
+func (response PreviewTemplate413ApplicationProblemPlusJSONResponse) VisitPreviewTemplateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(413)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PreviewTemplate415ApplicationProblemPlusJSONResponse struct {
+	UnsupportedMediaTypeApplicationProblemPlusJSONResponse
+}
+
+func (response PreviewTemplate415ApplicationProblemPlusJSONResponse) VisitPreviewTemplateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(415)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PreviewTemplate422ApplicationProblemPlusJSONResponse struct {
+	ValidationFailedApplicationProblemPlusJSONResponse
+}
+
+func (response PreviewTemplate422ApplicationProblemPlusJSONResponse) VisitPreviewTemplateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(422)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PreviewTemplate500ApplicationProblemPlusJSONResponse struct {
+	InternalErrorApplicationProblemPlusJSONResponse
+}
+
+func (response PreviewTemplate500ApplicationProblemPlusJSONResponse) VisitPreviewTemplateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PreviewTemplate503ApplicationProblemPlusJSONResponse struct {
+	UnavailableApplicationProblemPlusJSONResponse
+}
+
+func (response PreviewTemplate503ApplicationProblemPlusJSONResponse) VisitPreviewTemplateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(503)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type CreateTemplateVersionRequestObject struct {
 	Name   TemplateName `json:"name"`
 	Params CreateTemplateVersionParams
@@ -4193,6 +4522,9 @@ type StrictServerInterface interface {
 	// DeactivateTemplate Deactivate a template
 	// (POST /v1/templates/{name}/deactivate)
 	DeactivateTemplate(ctx context.Context, request DeactivateTemplateRequestObject) (DeactivateTemplateResponseObject, error)
+	// PreviewTemplate Render a template without storing anything
+	// (POST /v1/templates/{name}/preview)
+	PreviewTemplate(ctx context.Context, request PreviewTemplateRequestObject) (PreviewTemplateResponseObject, error)
 	// CreateTemplateVersion Add a version to a template
 	// (POST /v1/templates/{name}/versions)
 	CreateTemplateVersion(ctx context.Context, request CreateTemplateVersionRequestObject) (CreateTemplateVersionResponseObject, error)
@@ -4683,6 +5015,43 @@ func (sh *strictHandler) DeactivateTemplate(w http.ResponseWriter, r *http.Reque
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(DeactivateTemplateResponseObject); ok {
 		if err := validResponse.VisitDeactivateTemplateResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// PreviewTemplate operation middleware
+func (sh *strictHandler) PreviewTemplate(w http.ResponseWriter, r *http.Request, name TemplateName, params PreviewTemplateParams) {
+	var request PreviewTemplateRequestObject
+
+	request.Name = name
+	request.Params = params
+
+	var body PreviewTemplateJSONRequestBody
+	if err := runtime.BindJSONBody(r, &body); err != nil {
+		if !errors.Is(err, io.EOF) {
+			sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+			return
+		}
+	} else {
+		request.Body = &body
+	}
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.PreviewTemplate(ctx, request.(PreviewTemplateRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "PreviewTemplate")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(PreviewTemplateResponseObject); ok {
+		if err := validResponse.VisitPreviewTemplateResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

@@ -9,8 +9,9 @@ info:
     This version of the contract has the single and the batch create with
     idempotency keys and `dedupe_key`, the reads (by id, the attempts, a
     batch, the filtered list), cancel (one notification or a batch) and
-    redrive, and the management of templates. Rendering a template and
-    scheduling are added in later versions.
+    redrive, the management of templates, the preview of a template and
+    notifications created from a template. Scheduling is added in a later
+    version.
 
     **States.** `cancelled` and `failed` are not strictly final: a
     notification in either state becomes `sent` when a late result proves
@@ -45,6 +46,15 @@ paths:
         notification in state `pending`. The content is stored and sent but
         not returned. A field that this version does not define is rejected
         with `422` and code `unknown_field`, never ignored.
+
+        The message is given either as `content` or as `template`. A template
+        is rendered when the notification is created: the rendered text is
+        validated like a `content` of the channel and stored, and `template`
+        in the response names the version that produced it. Rendering errors
+        are answered `422` (`template.variables.<name>`, `template.name`,
+        `template.version`, `template`). A retry with the same
+        `Idempotency-Key` and the same body returns the stored answer even if
+        the template was changed or deactivated since.
       parameters:
         - $ref: "#/components/parameters/XRequestID"
         - $ref: "#/components/parameters/TraceParent"
@@ -326,7 +336,8 @@ paths:
         validated on its own: the valid ones are stored, the invalid ones are
         listed in `rejected` with their position in the request. The answer is
         `202` when at least one item is stored and `422` (with `rejected`)
-        when none is.
+        when none is. An item may use `template`; an item whose template
+        cannot be rendered is rejected with its errors and the others go on.
       parameters:
         - $ref: "#/components/parameters/XRequestID"
         - $ref: "#/components/parameters/TraceParent"
@@ -667,6 +678,54 @@ paths:
           $ref: "#/components/responses/InternalError"
         "503":
           $ref: "#/components/responses/Unavailable"
+  /v1/templates/{name}/preview:
+    post:
+      operationId: previewTemplate
+      tags: [templates]
+      summary: Render a template without storing anything
+      description: |
+        A dry run: renders the template (the latest version, or `version`)
+        with `variables` for the template's own channel and returns the text
+        a notification would store, with its SMS encoding and segment count.
+        Nothing is stored. The answers are those of a create from the
+        template, with the field names `variables.<name>`, `version` and
+        `content` (the rendered text); unlike a create, an inactive template
+        can be previewed. An unknown name or version answers `404`. The body
+        is optional; when present it is a JSON object.
+      parameters:
+        - $ref: "#/components/parameters/TemplateName"
+        - $ref: "#/components/parameters/XRequestID"
+        - $ref: "#/components/parameters/TraceParent"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TemplatePreviewRequest"
+      responses:
+        "200":
+          description: The rendered text.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/XRequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TemplatePreview"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/Unavailable"
   /v1/templates/{name}/deactivate:
     post:
       operationId: deactivateTemplate
@@ -895,7 +954,10 @@ components:
     CreateNotificationRequest:
       type: object
       additionalProperties: false
-      required: [channel, recipient, content]
+      description: |
+        Exactly one of `content` and `template` is required (`template: null`
+        counts as absent).
+      required: [channel, recipient]
       properties:
         channel:
           $ref: "#/components/schemas/Channel"
@@ -913,10 +975,19 @@ components:
           type: string
           minLength: 1
           description: |
-            The message. Must not contain U+0000. At most 10 SMS segments for
+            The message; required unless `template` is given, and not allowed
+            with it. Must not contain U+0000. At most 10 SMS segments for
             `sms` (the encoding and segment count are returned as `sms`),
             100 KiB (102,400 bytes of UTF-8) for `email`, 4 KiB (4,096 bytes)
             for `push`.
+        template:
+          allOf:
+            - $ref: "#/components/schemas/TemplateUse"
+          nullable: true
+          description: |
+            Renders a stored template instead of giving `content`. The rendered
+            text must meet the limits of `content` for the channel, and the
+            template's channel must be the notification's.
         priority:
           $ref: "#/components/schemas/Priority"
         dedupe_key:
@@ -1050,6 +1121,7 @@ components:
         - status
         - version
         - sms
+        - template
         - scheduled_at
         - expires_at
         - attempt_count
@@ -1084,6 +1156,14 @@ components:
             - $ref: "#/components/schemas/SMSInfo"
           nullable: true
           description: Set for the channel `sms`, `null` for every other channel.
+        template:
+          allOf:
+            - $ref: "#/components/schemas/TemplateProvenance"
+          nullable: true
+          description: |
+            The template version that produced the content, `null` for a
+            notification created with `content`. The variables are not
+            returned.
         scheduled_at:
           type: string
           format: date-time
@@ -1284,6 +1364,78 @@ components:
         variable is rendered as the empty string. Absent means none.
       items:
         type: string
+    TemplateUse:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name:
+          type: string
+          pattern: "^[a-z0-9][a-z0-9_-]{0,63}$"
+          description: The template to render.
+        version:
+          type: integer
+          format: int32
+          minimum: 1
+          description: |
+            Pins a version. When absent, the latest version is used. An
+            inactive template is refused even with a pinned version.
+        variables:
+          $ref: "#/components/schemas/TemplateValues"
+    TemplateValues:
+      type: object
+      additionalProperties: true
+      description: |
+        The values of the template's variables, by name. Absent means none.
+        A value is a JSON string, number or boolean and is converted to a
+        string: a number keeps its digits as sent (`482913` stays `482913`),
+        and `true`, `false` and `0` are non-empty strings, so they count as
+        true in an `if`. At most 1,024 characters per value after conversion,
+        without U+0000. Every required variable must be given and every given
+        variable must be declared. How a template uses its variables is
+        described under `POST /v1/templates`.
+    TemplateProvenance:
+      type: object
+      additionalProperties: false
+      required: [name, version]
+      properties:
+        name:
+          type: string
+        version:
+          type: integer
+          format: int32
+          minimum: 1
+    TemplatePreviewRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        version:
+          type: integer
+          format: int32
+          minimum: 1
+          description: Pins a version. When absent, the latest version is used.
+        variables:
+          $ref: "#/components/schemas/TemplateValues"
+    TemplatePreview:
+      type: object
+      additionalProperties: false
+      required: [content, encoding, segments]
+      properties:
+        content:
+          type: string
+          description: The rendered text, as a notification would store it.
+        encoding:
+          type: string
+          enum: [GSM-7, UCS-2]
+          nullable: true
+          description: The SMS encoding of the content; `null` unless the template's channel is `sms`.
+        segments:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 10
+          nullable: true
+          description: The SMS segments of the content; `null` unless the template's channel is `sms`.
     Template:
       type: object
       additionalProperties: false

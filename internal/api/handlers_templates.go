@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strconv"
 
@@ -176,6 +177,46 @@ func (h *handlers) setTemplateActive(ctx context.Context, name string, active bo
 		return store.VersionedTemplate{}, templateStoreProblem(err)
 	}
 	return vt, nil
+}
+
+// PreviewTemplate renders a template without storing anything (ADR-0008
+// §9): the latest version or the pinned one, for the template's own channel,
+// with the stages of a create after the load (renderEntry). It answers what
+// a create would, with the field names of its body (variables.<name>,
+// version) and content for the rendered text, except that an inactive
+// template can be previewed; an unknown name or version is a 404. The guard
+// has validated the body and hands it on in the context.
+func (h *handlers) PreviewTemplate(ctx context.Context, req apigen.PreviewTemplateRequestObject) (apigen.PreviewTemplateResponseObject, error) {
+	use, ok := ctx.Value(previewInputKey{}).(templateUse)
+	if !ok {
+		return nil, internalProblem(errors.New("preview request without validated input"))
+	}
+	if !domain.ValidTemplateName(req.Name) {
+		return nil, templateNotFound()
+	}
+	e := h.newTemplateCache().load(ctx, req.Name, use.version)
+	if e.err != nil {
+		return nil, templateStoreProblem(e.err)
+	}
+	content, errs, p := renderEntry(e, use.vars, previewRenderFields)
+	if p != nil {
+		return nil, p
+	}
+	if len(errs) > 0 {
+		return nil, newProblem(kindValidation, fmt.Sprintf("%d field(s) are invalid.", len(errs)), errs...)
+	}
+	out := apigen.TemplatePreview{Content: content}
+	if e.vt.Channel == domain.ChannelSMS {
+		// The content has passed validation: at most MaxSMSSegments segments.
+		info := domain.CountSMS(content)
+		enc := apigen.TemplatePreviewEncoding(info.Encoding)
+		segments := int32Of(info.Segments)
+		out.Encoding, out.Segments = &enc, &segments
+	}
+	return apigen.PreviewTemplate200JSONResponse{
+		Body:    out,
+		Headers: apigen.PreviewTemplate200ResponseHeaders{XRequestID: stateFrom(ctx).correlationID},
+	}, nil
 }
 
 // invalidVersionProblem is the 400 of a version that is not a positive

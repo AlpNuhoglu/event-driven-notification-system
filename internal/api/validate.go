@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"slices"
@@ -29,6 +30,9 @@ const (
 	codeInvalidCharacter = "invalid_character"
 	codeUnknownField     = "unknown_field"
 	codeDuplicateField   = "duplicate_field"
+
+	// 422: content and template are both given.
+	codeConflictsWithContent = "conflicts_with_content"
 
 	// 422: a field is invalid for the notification's channel.
 	codeInvalidE164     = string(domain.RecipientNotE164)
@@ -73,6 +77,7 @@ const (
 	fieldChannel   = "channel"
 	fieldRecipient = "recipient"
 	fieldContent   = "content"
+	fieldTemplate  = "template"
 	fieldPriority  = "priority"
 	fieldDedupeKey = "dedupe_key"
 )
@@ -84,7 +89,7 @@ const fieldNotifications = "notifications"
 // Any other field is rejected with unknown_field: a client that sends a
 // field of a later phase (scheduled_at, say) must not get a different
 // behaviour than it asked for.
-var createFields = []string{fieldChannel, fieldRecipient, fieldContent, fieldPriority, fieldDedupeKey}
+var createFields = []string{fieldChannel, fieldRecipient, fieldContent, fieldTemplate, fieldPriority, fieldDedupeKey}
 
 // allowedChannels and allowedPriorities are the enum values of the request.
 var (
@@ -92,27 +97,39 @@ var (
 	allowedPriorities = []string{"high", "normal", "low"}
 )
 
-// validateCreate checks a create request body completely, before the
-// generated code decodes it. The generated decoder ignores unknown fields and
-// does not enforce the schema, so this is the place where the request schema
-// of api/openapi.yaml is enforced, followed by the rules of the channel
-// (ADR-0006 section 5) with the phone check at level phone. It returns nil
-// for a valid body, a 400 problem when the body is not a JSON object, and a
-// 422 problem that lists every invalid field otherwise. No message contains
-// a submitted value.
-func validateCreate(body []byte, phone domain.PhoneValidation) *problem {
+// validateCreate checks a create request body completely and parses it. The
+// generated decoder ignores unknown fields, does not enforce the schema and
+// would decode a template variable's number as a float64, so this is the
+// place where the request schema of api/openapi.yaml is enforced, followed
+// by the rules of the channel (ADR-0006 section 5) with the phone check at
+// level phone. What needs a stored template is checked later, by the
+// template stage (renderForCreate). It returns the parsed request for a
+// valid body, a 400 problem when the body is not a JSON object, and a 422
+// problem that lists every invalid field otherwise. No message contains a
+// submitted value.
+func validateCreate(body []byte, phone domain.PhoneValidation) (createRequest, *problem) {
 	if p := checkBodyIsJSON(body); p != nil {
-		return p
+		return createRequest{}, p
 	}
 	fields, order, dups, ok := objectMembers(body)
 	if !ok {
-		return notAnObject()
+		return createRequest{}, notAnObject()
 	}
-	errs := validateNotificationMembers(fields, order, dups, phone)
+	req, errs := validateNotificationMembers(fields, order, dups, phone)
 	if len(errs) == 0 {
-		return nil
+		return req, nil
 	}
-	return newProblem(kindValidation, fmt.Sprintf("%d field(s) are invalid.", len(errs)), errs...)
+	return createRequest{}, newProblem(kindValidation, fmt.Sprintf("%d field(s) are invalid.", len(errs)), errs...)
+}
+
+// createRequest is one valid notification of a create request. request holds
+// the decoded fields except the template: when the message is a template,
+// request.Content is nil and template holds the template use with its
+// variables as raw JSON. The template stage sets rendered.
+type createRequest struct {
+	request  apigen.CreateNotificationRequest
+	template *templateUse
+	rendered *renderedTemplate
 }
 
 // checkBodyIsJSON returns the 400 problem for an empty body or a body that is
@@ -135,18 +152,29 @@ func notAnObject() *problem {
 }
 
 // validateNotificationMembers checks one notification object, given as its
-// members (the result of objectMembers), and returns every invalid field:
-// the fields of the request in the order channel, recipient, content,
-// priority, dedupe_key, then unknown fields in the order they appear.
+// members (the result of objectMembers), and returns the parsed request or
+// every invalid field: the fields of the request in the order channel,
+// recipient, content, template, priority, dedupe_key, then unknown fields in
+// the order they appear.
 //
 // recipient and content are checked in two steps: first the rules every
 // channel shares (type, empty, length, U+0000), then, only when that step
 // and the channel are valid, the rules of the channel (validateForChannel).
 // So a missing or invalid channel gives no channel-specific error, and each
 // field has at most one error.
-func validateNotificationMembers(fields map[string]json.RawMessage, order []string, dups map[string]bool, phone domain.PhoneValidation) []apigen.FieldError {
+//
+// Exactly one of content and template is required; "template": null counts
+// as absent. Neither is content / required, both is template /
+// conflicts_with_content. The members of template are checked by
+// checkTemplateMember; what needs the stored template is not checked here.
+func validateNotificationMembers(fields map[string]json.RawMessage, order []string, dups map[string]bool, phone domain.PhoneValidation) (createRequest, []apigen.FieldError) {
 	var errs []apigen.FieldError
 	add := func(field, code, msg string) { errs = append(errs, fieldError(field, code, msg)) }
+
+	var out createRequest
+	_, contentGiven := fields[fieldContent]
+	templateRaw, templateGiven := fields[fieldTemplate]
+	templateGiven = templateGiven && (dups[fieldTemplate] || !isJSONNull(templateRaw))
 
 	var channel domain.Channel // "" unless valid
 	for _, name := range createFields {
@@ -162,21 +190,54 @@ func validateNotificationMembers(fields map[string]json.RawMessage, order []stri
 			if len(errs) == before {
 				s, _ := stringValue(raw)
 				channel = domain.Channel(s)
+				out.request.Channel = apigen.Channel(s)
 			}
 		case fieldPriority:
 			checkEnum(add, name, raw, present, false, allowedPriorities)
-		case fieldRecipient, fieldContent:
-			limit := 0
-			if name == fieldRecipient {
-				limit = maxRecipientChars
-			}
-			checkText(add, name, raw, present, true, limit)
-			if len(errs) == before && channel != "" {
+			if len(errs) == before && present {
 				s, _ := stringValue(raw)
-				validateForChannel(add, channel, name, s, phone)
+				p := apigen.Priority(s)
+				out.request.Priority = &p
 			}
+		case fieldRecipient:
+			checkText(add, name, raw, present, true, maxRecipientChars)
+			if len(errs) == before {
+				s, _ := stringValue(raw)
+				if channel != "" {
+					validateForChannel(add, channel, name, s, phone)
+				}
+				out.request.Recipient = s
+			}
+		case fieldContent:
+			if !present {
+				if !templateGiven {
+					add(name, codeRequired, "content or template is required")
+				}
+				continue
+			}
+			checkText(add, name, raw, present, true, 0)
+			if len(errs) == before {
+				s, _ := stringValue(raw)
+				if channel != "" {
+					validateForChannel(add, channel, name, s, phone)
+				}
+				out.request.Content = &s
+			}
+		case fieldTemplate:
+			if !templateGiven {
+				continue
+			}
+			if contentGiven {
+				add(name, codeConflictsWithContent, "template must not be given together with content")
+				continue
+			}
+			out.template = checkTemplateMember(add, raw)
 		case fieldDedupeKey:
 			checkText(add, name, raw, present, false, maxDedupeKeyChars)
+			if len(errs) == before && present {
+				s, _ := stringValue(raw)
+				out.request.DedupeKey = &s
+			}
 		}
 	}
 	reported := map[string]bool{}
@@ -188,8 +249,14 @@ func validateNotificationMembers(fields map[string]json.RawMessage, order []stri
 		echoed := truncate(name, maxEchoedFieldName)
 		add(echoed, codeUnknownField, "this field is not defined by the API")
 	}
-	return errs
+	if len(errs) > 0 {
+		return createRequest{}, errs
+	}
+	return out, nil
 }
+
+// isJSONNull reports whether a raw JSON value is null.
+func isJSONNull(raw json.RawMessage) bool { return string(bytes.TrimSpace(raw)) == "null" }
 
 // The messages of the recipient check per channel; none contains the value.
 var recipientMessages = map[domain.RecipientProblem]string{
@@ -209,19 +276,37 @@ func validateForChannel(add addFunc, channel domain.Channel, name, value string,
 		}
 		return
 	}
+	if exceedsContentLimit(channel, value) {
+		e := contentLimitError(channel, name)
+		add(e.Field, e.Code, e.Message)
+	}
+}
+
+// exceedsContentLimit reports whether a content is over the limit of its
+// channel (ADR-0006 section 5): more SMS segments than allowed, or more
+// bytes than an e-mail or a push may have.
+func exceedsContentLimit(channel domain.Channel, value string) bool {
 	switch channel {
 	case domain.ChannelSMS:
-		if domain.CountSMS(value).Segments > domain.MaxSMSSegments {
-			add(name, codeTooManySegments, fmt.Sprintf("content needs more than %d SMS segments", domain.MaxSMSSegments))
-		}
+		return domain.CountSMS(value).Segments > domain.MaxSMSSegments
 	case domain.ChannelEmail:
-		if len(value) > domain.MaxEmailContentBytes {
-			add(name, codeTooLong, fmt.Sprintf("content must be at most %d bytes for email", domain.MaxEmailContentBytes))
-		}
+		return len(value) > domain.MaxEmailContentBytes
 	case domain.ChannelPush:
-		if len(value) > domain.MaxPushContentBytes {
-			add(name, codeTooLong, fmt.Sprintf("content must be at most %d bytes for push", domain.MaxPushContentBytes))
-		}
+		return len(value) > domain.MaxPushContentBytes
+	}
+	return false
+}
+
+// contentLimitError is the error of a content over the limit of its channel,
+// reported on field: the content itself, or the template that rendered it.
+func contentLimitError(channel domain.Channel, field string) apigen.FieldError {
+	switch channel {
+	case domain.ChannelSMS:
+		return fieldError(field, codeTooManySegments, fmt.Sprintf("content needs more than %d SMS segments", domain.MaxSMSSegments))
+	case domain.ChannelEmail:
+		return fieldError(field, codeTooLong, fmt.Sprintf("content must be at most %d bytes for email", domain.MaxEmailContentBytes))
+	default:
+		return fieldError(field, codeTooLong, fmt.Sprintf("content must be at most %d bytes for push", domain.MaxPushContentBytes))
 	}
 }
 
@@ -332,8 +417,8 @@ func truncate(s string, maxRunes int) string {
 // batchItem is one valid item of a batch: its position in the request's
 // array and the parsed request.
 type batchItem struct {
-	index   int
-	request apigen.CreateNotificationRequest
+	index int
+	createRequest
 }
 
 // batchInput is the result of validating a batch body whose top level is
@@ -349,10 +434,11 @@ type batchInput struct {
 // the body cannot be read, a 422 problem when the top level is invalid (no
 // item is checked then), and otherwise the items sorted into valid and
 // rejected ones: a batch whose items are all rejected is still returned with
-// a nil problem, and the caller decides what to answer. Among the valid
-// items, the first one with a given dedupe_key stays valid and every later
-// one is rejected; an invalid item never claims its key. The work is linear
-// in the size of the body. No message contains a submitted value.
+// a nil problem, and the caller decides what to answer. The dedupe keys are
+// not claimed here: an item can still fail the template stage, and an
+// invalid item never claims its key (prepareBatch, claimDedupeKeys). The
+// work is linear in the size of the body. No message contains a submitted
+// value.
 func validateBatch(body []byte, phone domain.PhoneValidation) (batchInput, *problem) {
 	if p := checkBodyIsJSON(body); p != nil {
 		return batchInput{}, p
@@ -393,40 +479,69 @@ func validateBatch(body []byte, phone domain.PhoneValidation) (batchInput, *prob
 	}
 
 	in := batchInput{total: len(items)}
-	claimed := map[string]bool{}
 	for i, raw := range items {
-		itemErrs := validateBatchItem(raw, phone)
-		var req apigen.CreateNotificationRequest
-		if len(itemErrs) == 0 {
-			// The item passed validation, so it decodes.
-			if err := json.Unmarshal(raw, &req); err != nil {
-				itemErrs = []apigen.FieldError{fieldError("", codeInvalidType, "each item must be a JSON object")}
-			} else if req.DedupeKey != nil {
-				if claimed[*req.DedupeKey] {
-					itemErrs = []apigen.FieldError{fieldError(fieldDedupeKey, codeDuplicateInBatch,
-						"another item of this batch has the same dedupe_key")}
-				} else {
-					claimed[*req.DedupeKey] = true
-				}
-			}
-		}
+		req, itemErrs := validateBatchItem(raw, phone)
 		if len(itemErrs) > 0 {
-			if len(itemErrs) > maxReportedErrors {
-				itemErrs = itemErrs[:maxReportedErrors]
-			}
-			in.rejected = append(in.rejected, apigen.RejectedItem{Index: i, Errors: itemErrs})
+			in.reject(i, itemErrs)
 			continue
 		}
-		in.valid = append(in.valid, batchItem{index: i, request: req})
+		in.valid = append(in.valid, batchItem{index: i, createRequest: req})
 	}
 	return in, nil
 }
 
+// reject adds the item at index to the rejected ones with at most
+// maxReportedErrors of its errors. The caller keeps rejected in ascending
+// order of index (sortRejected).
+func (in *batchInput) reject(index int, errs []apigen.FieldError) {
+	if len(errs) > maxReportedErrors {
+		errs = errs[:maxReportedErrors]
+	}
+	in.rejected = append(in.rejected, apigen.RejectedItem{Index: index, Errors: errs})
+}
+
+// usesTemplate reports whether a valid item renders a template.
+func (in *batchInput) usesTemplate() bool {
+	for _, it := range in.valid {
+		if it.template != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// claimDedupeKeys applies duplicate_in_batch to the valid items: the first
+// one with a given dedupe_key stays valid and every later one is rejected.
+// It runs after every other check of an item, the template stage included,
+// so that an invalid item never claims its key (ADR-0006 section 6).
+func claimDedupeKeys(in *batchInput) {
+	claimed := map[string]bool{}
+	kept := make([]batchItem, 0, len(in.valid))
+	for _, it := range in.valid {
+		if k := it.request.DedupeKey; k != nil {
+			if claimed[*k] {
+				in.reject(it.index, []apigen.FieldError{fieldError(fieldDedupeKey, codeDuplicateInBatch,
+					"another item of this batch has the same dedupe_key")})
+				continue
+			}
+			claimed[*k] = true
+		}
+		kept = append(kept, it)
+	}
+	in.valid = kept
+	sortRejected(in.rejected)
+}
+
+// sortRejected puts rejected items in ascending order of index.
+func sortRejected(r []apigen.RejectedItem) {
+	slices.SortFunc(r, func(a, b apigen.RejectedItem) int { return cmp.Compare(a.Index, b.Index) })
+}
+
 // validateBatchItem checks one element of the notifications array.
-func validateBatchItem(raw json.RawMessage, phone domain.PhoneValidation) []apigen.FieldError {
+func validateBatchItem(raw json.RawMessage, phone domain.PhoneValidation) (createRequest, []apigen.FieldError) {
 	fields, order, dups, ok := objectMembers(raw)
 	if !ok {
-		return []apigen.FieldError{fieldError("", codeInvalidType, "each item must be a JSON object")}
+		return createRequest{}, []apigen.FieldError{fieldError("", codeInvalidType, "each item must be a JSON object")}
 	}
 	return validateNotificationMembers(fields, order, dups, phone)
 }

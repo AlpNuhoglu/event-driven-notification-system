@@ -48,7 +48,7 @@ Every non-2xx answer of the API is an RFC 9457 problem with `Content-Type: appli
 
 ## `not-found`
 
-**404 Not Found.** No notification, batch or template matches the request (an unknown id, a template name that does not exist or cannot exist because it does not match `^[a-z0-9][a-z0-9_-]{0,63}$`, a template version that does not exist), or no resource exists at this path. A path that is not in canonical form (`//healthz`, a `..` segment) is answered the same way instead of being redirected.
+**404 Not Found.** No notification, batch or template matches the request (an unknown id, a template name that does not exist or cannot exist because it does not match `^[a-z0-9][a-z0-9_-]{0,63}$`, a template version that does not exist, also in the `version` of a preview), or no resource exists at this path. A path that is not in canonical form (`//healthz`, a `..` segment) is answered the same way instead of being redirected.
 
 ## `method-not-allowed`
 
@@ -64,24 +64,24 @@ Every non-2xx answer of the API is an RFC 9457 problem with `Content-Type: appli
 
 ## `validation`
 
-**422 Unprocessable Content.** The body is a JSON object, but fields are invalid. Every invalid field is reported in one answer: fields of the request in the order `channel`, `recipient`, `content`, `priority`, `dedupe_key`, then unknown fields in the order they appear.
+**422 Unprocessable Content.** The body is a JSON object, but fields are invalid. Every invalid field is reported in one answer: fields of the request in the order `channel`, `recipient`, `content`, `template`, `priority`, `dedupe_key`, then unknown fields in the order they appear.
 
 `recipient` and `content` are checked in two steps. First the rules every channel shares (type, empty, length, U+0000); then, only when that step passed and `channel` is valid, the rules of the channel. A field therefore has at most one error, and a missing or invalid `channel` gives no channel-specific error.
 
 | Code | When |
 |---|---|
-| `required` | A required field (`channel`, `recipient`, `content`; `notifications` in a batch; `name`, `channel`, `body` of a template) is missing. |
-| `invalid_type` | The field has the wrong JSON type; `null` is a wrong type for every field. `variables` and `optional_variables` of a template must be arrays of strings; the error is on the list's field whatever element is wrong. In a batch, `notifications` must be an array, and an item that is not a JSON object is rejected with this code and an empty `field`. |
-| `invalid_value` | The value is not one of the allowed values (`channel`: `sms`, `email`, `push`; `priority`: `high`, `normal`, `low`), or `name` of a template does not match `^[a-z0-9][a-z0-9_-]{0,63}$`, or `expires_at` of a redrive is not an RFC 3339 date-time with an offset. |
-| `empty` | `recipient`, `content`, `dedupe_key` or `body` of a template is an empty string, or `notifications` is an empty array. |
-| `too_long` | `recipient` is longer than 4,096 characters, or `dedupe_key` longer than 255 characters; or `body` of a template is longer than 65,536 bytes (or renders to more than 524,288 bytes); or `content` is longer than 102,400 bytes of UTF-8 for `email`, or 4,096 bytes for `push`. |
+| `required` | A required field (`channel`, `recipient`; `notifications` in a batch; `name`, `channel`, `body` of a template; `template.name`) is missing. A notification with neither `content` nor `template` has this error on `content` ("content or template is required"); `"template": null` counts as absent. |
+| `invalid_type` | The field has the wrong JSON type; `null` is a wrong type for every field except `template`, where it means absent. `template` and `template.variables` must be objects and `template.version` an integer (`"3"`, `1.5` and `1e2` are not); a template variable (`template.variables.<name>`, `variables.<name>` in a preview) must be a JSON string, number or boolean. `variables` and `optional_variables` of a template must be arrays of strings; the error is on the list's field whatever element is wrong. In a batch, `notifications` must be an array, and an item that is not a JSON object is rejected with this code and an empty `field`. |
+| `invalid_value` | The value is not one of the allowed values (`channel`: `sms`, `email`, `push`; `priority`: `high`, `normal`, `low`), or `name` of a template (or `template.name`) does not match `^[a-z0-9][a-z0-9_-]{0,63}$`, or `template.version` (`version` of a preview) is not from 1 to 2,147,483,647, or `expires_at` of a redrive is not an RFC 3339 date-time with an offset. |
+| `empty` | `recipient`, `content`, `dedupe_key` or `body` of a template is an empty string, or `notifications` is an empty array, or a template renders to an empty text (on `template`; on `content` in a preview). |
+| `too_long` | `recipient` is longer than 4,096 characters, or `dedupe_key` longer than 255 characters; or `body` of a template is longer than 65,536 bytes (or renders to more than 524,288 bytes); or `content` is longer than 102,400 bytes of UTF-8 for `email`, or 4,096 bytes for `push`; or the text a template renders is over that limit (on `template`; on `content` in a preview); or a template variable is longer than 1,024 characters once converted to a string. |
 | `invalid_e164` | `recipient` of an `sms` is not a possible E.164 number (`PHONE_VALIDATION=possible`, the default: length and structure for the country code) or not a valid one (`strict`: the national numbering plan). The number must already be in E.164 form, such as `+905551234567`; `05551234567` is not normalised but refused. |
 | `invalid_email` | `recipient` of an `email` is not a single address, or carries a display name (`Ali <ali@example.com>`): the parsed address must equal the input. At most 254 characters. |
 | `invalid_token` | `recipient` of a `push` is not a device token: 1 to 4,096 characters without control characters. |
-| `too_many_segments` | `content` of an `sms` needs more than 10 segments. The encoding is GSM-7 (160 septets in one segment, 153 per segment when concatenated; the extension characters `€`, `[`, `]`, `{`, `}`, `^`, `~`, `\|` and `\` cost two) unless one character is outside the GSM-7 alphabet (for example `ş`, `ğ`, `ı`), which puts the whole message into UCS-2 (70 UTF-16 code units, 67 when concatenated). An escape sequence or a surrogate pair is never split across segments. |
-| `invalid_character` | `recipient`, `content`, `dedupe_key` or `body` of a template contains the character U+0000, which cannot be stored. |
+| `too_many_segments` | `content` of an `sms`, or the text an `sms` template renders (on `template`; on `content` in a preview), needs more than 10 segments. The encoding is GSM-7 (160 septets in one segment, 153 per segment when concatenated; the extension characters `€`, `[`, `]`, `{`, `}`, `^`, `~`, `\|` and `\` cost two) unless one character is outside the GSM-7 alphabet (for example `ş`, `ğ`, `ı`), which puts the whole message into UCS-2 (70 UTF-16 code units, 67 when concatenated). An escape sequence or a surrogate pair is never split across segments. |
+| `invalid_character` | `recipient`, `content`, `dedupe_key`, `body` of a template or a template variable contains the character U+0000, which cannot be stored. |
 | `too_many_items` | `notifications` has more than 1,000 items. No item is checked then. |
-| `duplicate_in_batch` | `dedupe_key` of a batch item: another valid item of the same batch, earlier in the array, has the same `dedupe_key`. The first valid item stays; an invalid item never claims its key. |
+| `duplicate_in_batch` | `dedupe_key` of a batch item: another valid item of the same batch, earlier in the array, has the same `dedupe_key`. The first valid item stays; an invalid item never claims its key, also one whose template cannot be rendered. |
 | `too_soon` | `expires_at` of a redrive is closer than 30 seconds (`EXPIRES_AT_MIN_LEAD`). |
 | `unused_variable` | `variables` of a template: a declared variable (`variables` or `optional_variables`) is not used by the body. The message names the variable. |
 | `invalid_variable_name` | `variables` of a template: a variable name does not match `^[A-Za-z_][A-Za-z0-9_]{0,63}$` (ASCII only), in the declaration or in the body. |
@@ -94,16 +94,31 @@ Every non-2xx answer of the API is an RFC 9457 problem with `Content-Type: appli
 | `invalid_call` | `body` of a template calls `default` or `truncate` with the wrong arguments. |
 | `undeclared_variable` | `body` of a template uses a variable that is not declared in `variables` or `optional_variables`. |
 | `unsafe_html` | `body` of an e-mail template is refused by the HTML escaper, for example because it ends inside a tag, an attribute, a comment or a `<script>`. An e-mail body must be HTML that ends in plain text context. |
+| `conflicts_with_content` | `template`: the notification gives both `content` and `template`; exactly one is allowed. |
+| `template_not_found` | `template.name`: no template has this name. |
+| `template_version_not_found` | `template.version`: the template has no such version. |
+| `template_inactive` | `template.name`: the template is deactivated; no new notification can use it, also with a pinned version. `POST /v1/templates/{name}/activate` reverses this. A preview of an inactive template is allowed. |
+| `template_channel_mismatch` | `template.name`: the template's channel is not the notification's `channel`. |
+| `missing_variable` | `template.variables.<name>` (`variables.<name>` in a preview): a required variable of the template is not given. |
+| `unknown_variable` | `template.variables.<name>` (`variables.<name>` in a preview): the template does not declare this variable, for example a misspelt name. The name is cut to 64 characters. |
 | `unknown_field` | The API does not define this field. It is rejected rather than ignored, so a field of a later version (for example `scheduled_at`) never leads to a behaviour the client did not ask for. |
-| `duplicate_field` | The field appears more than once in the object. |
+| `duplicate_field` | The field appears more than once in the object; for a key repeated inside `template.variables`, the field is `template.variables.<name>`. |
 
 ### Template answers
 
 `POST /v1/templates` lists its fields in the order `name`, `channel`, `body`, `variables`, `optional_variables`, then unknown fields; `POST /v1/templates/{name}/versions` has no `name` and no `channel`. Only when every field passed this check is the body compiled for the channel, and then the first problem the engine finds is the one error of the answer: its code is the code of the problem (`template_syntax`, `construct_not_allowed`, ...), its field is `variables` for `unused_variable`, `invalid_variable_name`, `duplicate_variable` and `too_many_variables` and `body` for every other problem. A message names the construct, function or variable and the line, never other text of the body.
 
+### Notifications from a template
+
+A notification gives either `content` or `template` (`{"name", "version"?, "variables"?}`). The members of `template` are checked with the other fields: errors on `template.name`, `template.version`, `template.variables` and `template.<unknown member>`. Only a request whose fields are all valid is rendered: the template is loaded (the latest version unless `version` pins one), and the first of `template_not_found`, `template_version_not_found`, `template_inactive` and `template_channel_mismatch` that applies is the one error. Then the variables are checked against the template's declaration (`missing_variable`, `unknown_variable`, `invalid_type`, `too_long`, `invalid_character`, one entry per variable, in the order of the names), and the rendered text is checked as a `content` of the channel is (`empty`, `too_many_segments`, `too_long`), reported on `template`. A message names the variable, never its value.
+
+`POST /v1/templates/{name}/preview` gives the same answers with the field names of its body: `version`, `variables.<name>`, and `content` for the rendered text. An unknown name or version is a `404` instead, and an inactive template can be previewed.
+
+A stored template that cannot be compiled any more is a `500`, not a `422`: it is not the client's error.
+
 ### Batch answers
 
-`POST /v1/notifications/batch` checks the top level first (`notifications` present once, an array of 1 to 1,000 items, no other field); any error there is one `422` and no item is checked. Otherwise every item is checked on its own, and its errors are listed with its position in the array. The answer is `202` with `accepted` and `rejected` when at least one item is stored, and `422` with `rejected` (and no `errors`) when none is.
+`POST /v1/notifications/batch` checks the top level first (`notifications` present once, an array of 1 to 1,000 items, no other field); any error there is one `422` and no item is checked. Otherwise every item is checked on its own, and its errors are listed with its position in the array; an item whose template cannot be rendered is rejected with its errors and the other items go on. A database failure while a template is loaded fails the whole request (`503` or `500`). The answer is `202` with `accepted` and `rejected` when at least one item is stored, and `422` with `rejected` (and no `errors`) when none is.
 
 ## `duplicate`
 
@@ -128,7 +143,7 @@ A `409` without `errors` means that the notification changed state while the req
 
 ## `idempotency-key-reused`
 
-**422 Unprocessable Content.** This `Idempotency-Key` was already used with a different request (another method, path or body). Send a new key for a new request; a retry of the same request returns the stored answer. The entry of `errors` has the field `Idempotency-Key` and the code `idempotency_key_reused`.
+**422 Unprocessable Content.** This `Idempotency-Key` was already used with a different request (another method, path or body). Send a new key for a new request; a retry of the same request returns the stored answer, also when it uses a template that was changed or deactivated since: the key is looked up before the template is rendered. The entry of `errors` has the field `Idempotency-Key` and the code `idempotency_key_reused`.
 
 ## `internal`
 
