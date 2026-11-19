@@ -88,6 +88,22 @@ type Sent struct {
 	// From is the status the row left: processing for transition 4; pending,
 	// queued, retrying, failed or cancelled for transition 12.
 	From domain.Status
+	// EndToEnd is the notification's end-to-end latency on the database
+	// clock: from COALESCE(scheduled_at, created_at), which no retry changes,
+	// to the sent_at this transition wrote (ADR-0009 §1).
+	EndToEnd time.Duration
+}
+
+// endToEnd returns the end-to-end latency of a row that has become sent.
+func endToEnd(n Notification) time.Duration {
+	start := n.CreatedAt
+	if n.ScheduledAt != nil {
+		start = *n.ScheduledAt
+	}
+	if n.SentAt == nil {
+		return 0
+	}
+	return n.SentAt.Sub(start)
 }
 
 // CompleteSent records a successful attempt in one transaction (ADR-0004
@@ -135,8 +151,9 @@ func (s *Store) CompleteSent(ctx context.Context, id uuid.UUID, attemptNo int, p
 		switch {
 		case err == nil:
 			applied = true
-			sent = Sent{From: domain.StatusProcessing}
-			event = fromRow(row).Event()
+			n := fromRow(row)
+			sent = Sent{From: domain.StatusProcessing, EndToEnd: endToEnd(n)}
+			event = n.Event()
 		case !errors.Is(err, pgx.ErrNoRows):
 			return fmt.Errorf("mark sent: %w", err)
 		default:
@@ -151,8 +168,9 @@ func (s *Store) CompleteSent(ctx context.Context, id uuid.UUID, attemptNo int, p
 			switch {
 			case err == nil:
 				applied = true
-				sent = Sent{Late: true, From: domain.Status(late.FromStatus)}
-				event = fromRow(late.Notification).Event()
+				n := fromRow(late.Notification)
+				sent = Sent{Late: true, From: domain.Status(late.FromStatus), EndToEnd: endToEnd(n)}
+				event = n.Event()
 			case !errors.Is(err, pgx.ErrNoRows):
 				return fmt.Errorf("mark sent late: %w", err)
 			}

@@ -66,7 +66,7 @@ func TestTransitions_Invariants(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if sent != (Sent{Late: true, From: from}) {
+			if transitionOf(sent) != (Sent{Late: true, From: from}) {
 				t.Errorf("result %+v, want transition 12 from %s", sent, from)
 			}
 			return ev

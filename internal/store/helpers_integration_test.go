@@ -193,6 +193,10 @@ func checkTransition(t *testing.T, before, after Notification, ev domain.StatusC
 	}
 }
 
+// transitionOf returns which transition a Sent describes (Late and From),
+// without its end-to-end latency, which depends on the clock.
+func transitionOf(s Sent) Sent { return Sent{Late: s.Late, From: s.From} }
+
 func sqlState(err error) string {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {

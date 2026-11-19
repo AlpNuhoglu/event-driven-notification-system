@@ -62,7 +62,7 @@ func lateSuccess(t *testing.T, s *Store, id uuid.UUID) {
 
 func checkLateSuccess(t *testing.T, s *Store, before Notification, sent Sent, ev domain.StatusChanged) {
 	t.Helper()
-	if want := (Sent{Late: true, From: before.Status}); sent != want {
+	if want := (Sent{Late: true, From: before.Status}); transitionOf(sent) != want {
 		t.Errorf("result %+v, want %+v", sent, want)
 	}
 	after := get(t, s, before.ID)
@@ -422,7 +422,7 @@ func TestLeaseSweeper_VersusFinalWrite(t *testing.T) {
 	t.Run("final write first", func(t *testing.T) {
 		s, _, n := setup(t)
 		sent, _, err := s.CompleteSent(ctxT(t), n.ID, 1, testProvider, lateResult())
-		if err != nil || sent != (Sent{From: domain.StatusProcessing}) {
+		if err != nil || transitionOf(sent) != (Sent{From: domain.StatusProcessing}) {
 			t.Fatalf("final write: %+v %v", sent, err)
 		}
 		if evs, err := s.SweepExpiredLeases(ctxT(t), 10, zeroJitter); err != nil || len(evs) != 0 {
@@ -447,7 +447,7 @@ func TestLeaseSweeper_VersusFinalWrite(t *testing.T) {
 			t.Fatalf("sweep: %+v %v", evs, err)
 		}
 		r := receiveSent(t, done)
-		if r.err != nil || r.sent != (Sent{Late: true, From: domain.StatusRetrying}) || r.ev.Version != evs[0].Version+1 {
+		if r.err != nil || transitionOf(r.sent) != (Sent{Late: true, From: domain.StatusRetrying}) || r.ev.Version != evs[0].Version+1 {
 			t.Fatalf("final write after the sweep: %+v (sweep event %+v)", r, evs[0])
 		}
 		checkSentWithSuccess(t, s, n.ID)
@@ -476,7 +476,7 @@ func TestLeaseSweeper_VersusFinalWrite(t *testing.T) {
 			t.Fatal(err)
 		}
 		r := receiveSent(t, done)
-		if r.err != nil || r.sent != (Sent{From: domain.StatusProcessing}) {
+		if r.err != nil || transitionOf(r.sent) != (Sent{From: domain.StatusProcessing}) {
 			t.Fatalf("final write: %+v", r)
 		}
 		checkSentWithSuccess(t, s, n.ID)
