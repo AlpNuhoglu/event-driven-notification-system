@@ -273,47 +273,87 @@ func (w *Worker) attemptResult(res Response) store.AttemptResult {
 }
 
 // complete makes the fenced final write of the attempt and emits its event.
+// A success is transition 4, or transition 12 when the row has left
+// processing meanwhile and no newer attempt has started (D14).
 func (w *Worker) complete(ctx context.Context, n store.Notification, r store.AttemptResult) {
-	wctx, cancel := w.writeContext(ctx)
-	defer cancel()
-	var (
-		ev  domain.StatusChanged
-		err error
-	)
-	if r.Outcome == domain.OutcomeSuccess {
-		_, ev, err = w.store.CompleteSent(wctx, n.ID, n.AttemptCount, w.provider.Name(), r)
-	} else {
-		ev, err = w.store.CompleteFailure(wctx, n.ID, n.AttemptCount, r, w.jitter())
-	}
-	w.finished("final write", n.ID, ev, err)
+	w.write(ctx, "final write", n, func(wctx context.Context) (store.Sent, domain.StatusChanged, error) {
+		if r.Outcome == domain.OutcomeSuccess {
+			return w.store.CompleteSent(wctx, n.ID, n.AttemptCount, w.provider.Name(), r)
+		}
+		ev, err := w.store.CompleteFailure(wctx, n.ID, n.AttemptCount, r, w.jitter())
+		return store.Sent{}, ev, err
+	})
 }
 
 // abort closes the attempt without a send: the row returns to retrying,
 // due after delay, without consuming budget.
 func (w *Worker) abort(ctx context.Context, n store.Notification, delay time.Duration) {
-	wctx, cancel := w.writeContext(ctx)
-	defer cancel()
-	ev, err := w.store.AbortAttempt(wctx, n.ID, n.AttemptCount, delay)
-	w.finished("abort attempt", n.ID, ev, err)
+	w.write(ctx, "abort attempt", n, func(wctx context.Context) (store.Sent, domain.StatusChanged, error) {
+		ev, err := w.store.AbortAttempt(wctx, n.ID, n.AttemptCount, delay)
+		return store.Sent{}, ev, err
+	})
 }
 
-// writeContext returns a fresh context for a write after the claim: the
-// drain timeout cancelling ctx must not lose the write.
-func (w *Worker) writeContext(ctx context.Context) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.WithoutCancel(ctx), w.cfg.WriteMargin)
-}
-
-func (w *Worker) finished(op string, id uuid.UUID, ev domain.StatusChanged, err error) {
-	switch {
-	case err == nil:
-		w.events.Publish(ev)
-	case errors.Is(err, store.ErrNotApplied):
-		// A late worker: a newer attempt started or the row left processing.
-		// The attempt row holds the true outcome. Not an error.
-		w.log.Debug("worker: "+op+" not applied", slog.String("notification_id", id.String()))
-	default:
-		// The lease sweeper recovers the row (the 60-second retry of the
-		// final write is P3).
-		w.log.Error("worker: "+op+" failed", slog.String("notification_id", id.String()), slog.Any("error", err))
+// write makes a write after the claim (the final write of an attempt, or an
+// abort) and emits its event. While the write fails with a database error it
+// is made again, with the back-off of the claim's retry, for up to
+// FinalWriteRetry (D18, 60 s): the provider has answered, and the answer is
+// lost to the row if it cannot be written.
+//
+// What makes repeating it safe: every such write is fenced by attempt_count.
+//   - A write whose commit succeeded but whose answer was lost finds the row
+//     changed and returns store.ErrNotApplied: nothing is written twice.
+//   - The retries can outlast the lease (30 s). The lease sweeper then marks
+//     the attempt unknown and moves the row on. A success that lands
+//     afterwards still moves the row to sent (transition 12) unless a newer
+//     attempt has started; a failure or an abort that lands afterwards only
+//     corrects the attempt row.
+//
+// The retries end when the window is used up or when the drain timeout of a
+// shutdown ends (ctx): the result is then lost to the row, the lease sweeper
+// recovers the notification, and a send that had succeeded may be repeated
+// (ADR-0004 section 4). Each try runs on a context of its own that shutdown
+// does not cancel, bounded by the write margin, so a try that has started is
+// finished. Meanwhile the dispatch keeps its concurrency slot, like a claim
+// that is being retried.
+func (w *Worker) write(ctx context.Context, op string, n store.Notification,
+	do func(context.Context) (store.Sent, domain.StatusChanged, error),
+) {
+	id := slog.String("notification_id", n.ID.String())
+	deadline := w.clock.Now().Add(w.cfg.FinalWriteRetry)
+	backoff := w.cfg.ClaimRetryBase
+	for tries := 1; ; tries++ {
+		wctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), w.cfg.WriteMargin)
+		sent, ev, err := do(wctx)
+		cancel()
+		switch {
+		case err == nil:
+			w.events.Publish(ev)
+			if sent.Late {
+				w.log.Info("worker: late success applied: the lease had expired, no newer attempt had started",
+					id, slog.Int("attempt_no", n.AttemptCount), slog.String("from", string(sent.From)))
+			}
+			if tries > 1 {
+				w.log.Info("worker: "+op+" succeeded after retries", id, slog.Int("tries", tries))
+			}
+			return
+		case errors.Is(err, store.ErrNotApplied):
+			// A late worker: a newer attempt started, or the row left
+			// processing and the result was not a success; or this is the
+			// repeat of a write that had committed. The attempt row holds
+			// the true outcome. Not an error.
+			w.log.Debug("worker: "+op+" not applied", id, slog.Int("tries", tries))
+			return
+		}
+		if tries == 1 {
+			w.log.Warn("worker: "+op+" failed; retrying with back-off", id, slog.Any("error", err))
+		}
+		next := w.clock.Now().Add(backoff)
+		if !next.Before(deadline) || w.clock.WaitUntil(ctx, next) != nil {
+			w.log.Error("worker: "+op+" lost; the lease sweeper recovers the notification",
+				id, slog.Int("tries", tries), slog.Any("error", err))
+			return
+		}
+		backoff = min(2*backoff, w.cfg.ClaimRetryMax)
 	}
 }

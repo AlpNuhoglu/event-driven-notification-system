@@ -206,8 +206,9 @@ func newUnit(cfg config.Config, res Resources, logger *slog.Logger, st *store.St
 		Drain:         cfg.Worker.ShutdownDrain,
 		WriteMargin:   margin,
 
-		ClaimRetryBase: cfg.Worker.ClaimRetryBase,
-		ClaimRetryMax:  cfg.Worker.ClaimRetryMax,
+		ClaimRetryBase:  cfg.Worker.ClaimRetryBase,
+		ClaimRetryMax:   cfg.Worker.ClaimRetryMax,
+		FinalWriteRetry: cfg.Worker.FinalWriteRetryTime,
 	}, Deps{
 		Store:    st,
 		Limiter:  limiter,
