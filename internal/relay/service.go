@@ -12,6 +12,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/platform/config"
+	"github.com/AlpNuhoglu/event-driven-notification-system/internal/platform/health"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/queue"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/store"
 )
@@ -23,6 +24,7 @@ import (
 // cannot be reached at start and when the broker connection's recovery gives
 // up, so that the process exits with a non-zero code (ADR-0005).
 func Service(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
+	ready := registerReadiness(health.ReadinessFrom(ctx))
 	pool, err := openPool(ctx, cfg)
 	if err != nil {
 		return fmt.Errorf("postgres: %w", err)
@@ -31,6 +33,7 @@ func Service(ctx context.Context, cfg config.Config, logger *slog.Logger) error 
 	if err := pool.Ping(ctx); err != nil {
 		return fmt.Errorf("postgres: %w", err)
 	}
+	ready.pool.Store(pool)
 
 	conn, err := queue.Dial(cfg.Connections.RabbitMQURL, cfg.Connections.AMQPRecoveryRetryInterval,
 		cfg.Connections.AMQPRecoveryMaxRetries, logger)

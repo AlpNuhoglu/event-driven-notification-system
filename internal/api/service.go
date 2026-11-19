@@ -14,6 +14,7 @@ import (
 
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/domain"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/platform/config"
+	"github.com/AlpNuhoglu/event-driven-notification-system/internal/platform/health"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/queue"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/store"
 )
@@ -49,6 +50,7 @@ func Service(ctx context.Context, cfg config.Config, logger *slog.Logger) error 
 // stopped, which gives the events of the last requests their chance.
 func run(ctx context.Context, cfg config.Config, logger *slog.Logger, ev *queue.EventPublisher) error {
 	defer ev.Close()
+	ready := registerReadiness(health.ReadinessFrom(ctx))
 	pool, err := openPool(ctx, cfg)
 	if err != nil {
 		return fmt.Errorf("postgres: %w", err)
@@ -57,6 +59,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger, ev *queue.
 	if err := pool.Ping(ctx); err != nil {
 		return fmt.Errorf("postgres: %w", err)
 	}
+	ready.pool.Store(pool)
 	m, err := registerMetrics(prometheus.DefaultRegisterer, ev)
 	if err != nil {
 		return err
