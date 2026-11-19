@@ -40,10 +40,10 @@ Every non-2xx answer of the API is an RFC 9457 problem with `Content-Type: appli
 | `invalid_uuid` | `id` | The path parameter is not a UUID. |
 | `invalid_parameter` | `version` | The `version` of `GET /v1/templates/{name}/versions/{version}` is not a positive integer (`abc`, `0`, `-1`, `1.5`, or too large to be one). |
 | `unexpected_body` | (empty) | A cancel request (`POST /v1/notifications/{id}/cancel`, `POST /v1/batches/{id}/cancel`) or a template activation or deactivation (`POST /v1/templates/{name}/activate`, `POST /v1/templates/{name}/deactivate`) has a body. These take none. |
-| `unknown_parameter` | the parameter | A query parameter the operation does not define. Only `GET /v1/notifications` defines query parameters; every other operation under `/v1/` rejects any. Rejected rather than ignored, so a misspelled filter never returns an unfiltered list. |
-| `duplicate_parameter` | the parameter | A query parameter of the listing is given more than once. Every filter takes a single value. |
-| `invalid_parameter` | the parameter (empty for the query string as a whole) | The value is not valid: not one of the allowed values of `status`, `channel` or `priority`, `batch_id` not a UUID, `created_from` or `created_to` not RFC 3339 with an offset, `limit` not an integer from 1 to 200, an empty value, or a query string that is not well formed. |
-| `invalid_cursor` | `cursor` | The cursor is not a `next_cursor` this API returned. |
+| `unknown_parameter` | the parameter | A query parameter the operation does not define. Only `GET /v1/notifications` and `GET /v1/templates` define query parameters; every other operation under `/v1/` rejects any. Rejected rather than ignored, so a misspelled filter never returns an unfiltered list. |
+| `duplicate_parameter` | the parameter | A query parameter of a listing (`GET /v1/notifications`, `GET /v1/templates`) is given more than once. Every parameter takes a single value. |
+| `invalid_parameter` | the parameter (empty for the query string as a whole) | The value is not valid: not one of the allowed values of `status`, `channel` or `priority`, `batch_id` not a UUID, `created_from` or `created_to` not RFC 3339 with an offset, `limit` (of either listing) not an integer from 1 to 200, an empty value, or a query string that is not well formed. |
+| `invalid_cursor` | `cursor` | The cursor is not a `next_cursor` this API returned (either listing). |
 | `invalid_idempotency_key` | `Idempotency-Key` | The header is empty, longer than 255 bytes, contains a byte outside U+0021 to U+007E (a space included), or is sent more than once. |
 
 ## `not-found`

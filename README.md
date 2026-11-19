@@ -149,6 +149,12 @@ curl -sS -X POST localhost:8080/v1/templates/otp/versions \
   -d '{"body":"Doğrulama kodunuz {{ .code }}","variables":["code"]}'
 ```
 
+**List templates**, by name, with `limit` (1 to 200, 50 by default) and a `cursor` (pass `next_cursor` back until it is `null`). Each item is a summary (`name`, `channel`, `latest_version`, `is_active`); inactive templates are listed too.
+
+```
+curl -sS 'localhost:8080/v1/templates?limit=50'
+```
+
 **Preview** a template: it is rendered with the given variables and nothing is stored. For an SMS template the answer shows what the text costs.
 
 ```

@@ -607,6 +607,14 @@ type Template struct {
 	VersionCreatedAt time.Time `json:"version_created_at"`
 }
 
+// TemplateList defines model for TemplateList.
+type TemplateList struct {
+	Data []TemplateSummary `json:"data"`
+
+	// NextCursor Pass it as `cursor` to read the next page; `null` on the last page.
+	NextCursor *string `json:"next_cursor"`
+}
+
 // TemplateOptionalVariables The optional variables, under the same rules. A missing optional
 // variable is rendered as the empty string. Absent means none.
 type TemplateOptionalVariables = []string
@@ -647,6 +655,14 @@ type TemplatePreviewRequest struct {
 type TemplateProvenance struct {
 	Name    string `json:"name"`
 	Version int32  `json:"version"`
+}
+
+// TemplateSummary defines model for TemplateSummary.
+type TemplateSummary struct {
+	Channel       Channel `json:"channel"`
+	IsActive      bool    `json:"is_active"`
+	LatestVersion int32   `json:"latest_version"`
+	Name          string  `json:"name"`
 }
 
 // TemplateUse defines model for TemplateUse.
@@ -872,6 +888,24 @@ type RedriveNotificationParams struct {
 	Traceparent *TraceParent `json:"traceparent,omitempty"`
 }
 
+// ListTemplatesParams defines parameters for ListTemplates.
+type ListTemplatesParams struct {
+	// Limit Page size.
+	Limit *int32 `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// Cursor The `next_cursor` of the previous page, unchanged. Opaque.
+	Cursor *string `form:"cursor,omitempty" json:"cursor,omitempty"`
+
+	// XRequestID Correlation id. Accepted when it is at most 128 characters of
+	// `[A-Za-z0-9._-]`; otherwise it is ignored and a new id is generated.
+	// An invalid value is not an error.
+	XRequestID *XRequestID `json:"X-Request-ID,omitempty"`
+
+	// Traceparent W3C Trace Context. Stored with the notification when it is well
+	// formed; otherwise ignored. An invalid value is not an error.
+	Traceparent *TraceParent `json:"traceparent,omitempty"`
+}
+
 // CreateTemplateParams defines parameters for CreateTemplate.
 type CreateTemplateParams struct {
 	// XRequestID Correlation id. Accepted when it is at most 128 characters of
@@ -1012,6 +1046,9 @@ type ServerInterface interface {
 	// RedriveNotification Send a failed notification again
 	// (POST /v1/notifications/{id}/redrive)
 	RedriveNotification(w http.ResponseWriter, r *http.Request, id NotificationID, params RedriveNotificationParams)
+	// ListTemplates List templates
+	// (GET /v1/templates)
+	ListTemplates(w http.ResponseWriter, r *http.Request, params ListTemplatesParams)
 	// CreateTemplate Create a template
 	// (POST /v1/templates)
 	CreateTemplate(w http.ResponseWriter, r *http.Request, params CreateTemplateParams)
@@ -1822,6 +1859,92 @@ func (siw *ServerInterfaceWrapper) RedriveNotification(w http.ResponseWriter, r 
 	handler.ServeHTTP(w, r)
 }
 
+// ListTemplates operation middleware
+func (siw *ServerInterfaceWrapper) ListTemplates(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListTemplatesParams
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "limit", r.URL.Query(), &params.Limit, runtime.BindQueryParameterOptions{Type: "integer", Format: "int32"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "limit"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "cursor" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "cursor", r.URL.Query(), &params.Cursor, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "cursor"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "cursor", Err: err})
+		}
+		return
+	}
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Request-ID" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Request-ID")]; found {
+		var XRequestID XRequestID
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Request-ID", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Request-ID", valueList[0], &XRequestID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Request-ID", Err: err})
+			return
+		}
+
+		params.XRequestID = &XRequestID
+
+	}
+
+	// ------------- Optional header parameter "traceparent" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("traceparent")]; found {
+		var Traceparent TraceParent
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "traceparent", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "traceparent", valueList[0], &Traceparent, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "traceparent", Err: err})
+			return
+		}
+
+		params.Traceparent = &Traceparent
+
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListTemplates(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // CreateTemplate operation middleware
 func (siw *ServerInterfaceWrapper) CreateTemplate(w http.ResponseWriter, r *http.Request) {
 
@@ -2437,6 +2560,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/healthz", wrapper.GetHealthz)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/readyz", wrapper.GetReadyz)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/openapi.yaml", wrapper.GetOpenAPISpec)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/templates", wrapper.ListTemplates)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/templates", wrapper.CreateTemplate)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/templates/{name}", wrapper.GetTemplate)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/templates/{name}/versions", wrapper.CreateTemplateVersion)
@@ -3666,6 +3790,84 @@ func (response RedriveNotification503ApplicationProblemPlusJSONResponse) VisitRe
 	return err
 }
 
+type ListTemplatesRequestObject struct {
+	Params ListTemplatesParams
+}
+
+type ListTemplatesResponseObject interface {
+	VisitListTemplatesResponse(w http.ResponseWriter) error
+}
+
+type ListTemplates200ResponseHeaders struct {
+	XRequestID string
+}
+
+type ListTemplates200JSONResponse struct {
+	Body    TemplateList
+	Headers ListTemplates200ResponseHeaders
+}
+
+func (response ListTemplates200JSONResponse) VisitListTemplatesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-ID", fmt.Sprint(response.Headers.XRequestID))
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListTemplates400ApplicationProblemPlusJSONResponse struct {
+	BadRequestApplicationProblemPlusJSONResponse
+}
+
+func (response ListTemplates400ApplicationProblemPlusJSONResponse) VisitListTemplatesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListTemplates500ApplicationProblemPlusJSONResponse struct {
+	InternalErrorApplicationProblemPlusJSONResponse
+}
+
+func (response ListTemplates500ApplicationProblemPlusJSONResponse) VisitListTemplatesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListTemplates503ApplicationProblemPlusJSONResponse struct {
+	UnavailableApplicationProblemPlusJSONResponse
+}
+
+func (response ListTemplates503ApplicationProblemPlusJSONResponse) VisitListTemplatesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(503)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type CreateTemplateRequestObject struct {
 	Params CreateTemplateParams
 	Body   *CreateTemplateJSONRequestBody
@@ -4536,6 +4738,9 @@ type StrictServerInterface interface {
 	// RedriveNotification Send a failed notification again
 	// (POST /v1/notifications/{id}/redrive)
 	RedriveNotification(ctx context.Context, request RedriveNotificationRequestObject) (RedriveNotificationResponseObject, error)
+	// ListTemplates List templates
+	// (GET /v1/templates)
+	ListTemplates(ctx context.Context, request ListTemplatesRequestObject) (ListTemplatesResponseObject, error)
 	// CreateTemplate Create a template
 	// (POST /v1/templates)
 	CreateTemplate(ctx context.Context, request CreateTemplateRequestObject) (CreateTemplateResponseObject, error)
@@ -4927,6 +5132,32 @@ func (sh *strictHandler) RedriveNotification(w http.ResponseWriter, r *http.Requ
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(RedriveNotificationResponseObject); ok {
 		if err := validResponse.VisitRedriveNotificationResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListTemplates operation middleware
+func (sh *strictHandler) ListTemplates(w http.ResponseWriter, r *http.Request, params ListTemplatesParams) {
+	var request ListTemplatesRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListTemplates(ctx, request.(ListTemplatesRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListTemplates")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListTemplatesResponseObject); ok {
+		if err := validResponse.VisitListTemplatesResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

@@ -381,6 +381,10 @@ func parameterError(w http.ResponseWriter, r *http.Request, err error) {
 			writeProblem(w, r, p)
 			return
 		}
+		if p := templateListParameterProblem(r, invalid); p != nil {
+			writeProblem(w, r, p)
+			return
+		}
 		writeProblem(w, r, newProblem(kindMalformed, "A path parameter is invalid.",
 			fieldError(invalid.ParamName, codeInvalidUUID, invalid.ParamName+" must be a UUID")))
 		return

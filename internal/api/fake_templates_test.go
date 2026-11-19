@@ -21,6 +21,10 @@ func (f *fakeRepo) GetTemplate(context.Context, string) (store.VersionedTemplate
 	return store.VersionedTemplate{}, f.templateErr()
 }
 
+func (f *fakeRepo) ListTemplates(context.Context, string, int) ([]store.Template, bool, error) {
+	return nil, false, f.err
+}
+
 func (f *fakeRepo) GetTemplateVersion(context.Context, string, int) (store.VersionedTemplate, error) {
 	return store.VersionedTemplate{}, f.templateErr()
 }

@@ -201,7 +201,6 @@ GSM 03.38 defines national language shift tables, including Turkish, that encode
 
 ### 13. Template extensions
 
-- **Listing templates** (`GET /v1/templates`) and the versions of one; today a template is read by its name.
 - **Localisation:** language variants of a template, selected per recipient.
 - **Locale-aware case functions** (`upper`, `lower`), which need the recipient's language to be correct.
 - **Controlled iteration:** lists in variables with a bounded `range` (maximum length enforced before execution), behind the same allow-list validation.

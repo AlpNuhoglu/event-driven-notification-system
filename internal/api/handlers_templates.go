@@ -17,6 +17,7 @@ type templater interface {
 	CreateTemplate(ctx context.Context, t store.NewTemplate) (store.VersionedTemplate, error)
 	CreateTemplateVersion(ctx context.Context, v store.NewTemplateVersion) (store.VersionedTemplate, error)
 	GetTemplate(ctx context.Context, name string) (store.VersionedTemplate, error)
+	ListTemplates(ctx context.Context, after string, limit int) ([]store.Template, bool, error)
 	GetTemplateVersion(ctx context.Context, name string, version int) (store.VersionedTemplate, error)
 	SetTemplateActive(ctx context.Context, name string, active bool) (store.VersionedTemplate, error)
 }
