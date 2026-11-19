@@ -177,6 +177,8 @@ curl -sS -X POST localhost:8080/v1/notifications/<id>/redrive \
 
 To try cancel and redrive on the mock profile, make the mock provider fail first with `curl -X PUT localhost:8090/admin/config -H 'Content-Type: application/json' -d '{"status":500}'` (a notification then fails after its retries), and set it back with `{"status":202}`.
 
+`PUT /admin/config` replaces the whole configuration and is strict (an unknown field or an out-of-range value is `400`). Besides the `{"status":N}` shorthand it takes `{"default": {rule}, "channels": {"sms": {rule}, "email": {rule}, "push": {rule}}}`; a channel without a rule uses `default`. A rule may set `status`, `fail_status`, `fail_rate`, `fail_first` (the first N requests of each `Idempotency-Key` fail), `retry_after` (sent on `429` and `503`), `location` (sent on `3xx`), `latency_ms`, `latency_jitter_ms`, `close_connection`, `hang` and `malformed_body`. For example, `{"default":{"fail_first":2,"fail_status":503,"retry_after":"1"}}` makes every notification fail twice and then succeed. `POST /admin/reset` restores the default (`202`, no faults). `GET /admin/report` adds a `statuses` count per channel (`"closed"` and `"hung"` for requests that got no answer).
+
 ## Documentation
 
 | Document | Content |

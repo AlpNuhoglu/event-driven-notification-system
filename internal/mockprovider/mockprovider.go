@@ -4,10 +4,13 @@
 package mockprovider
 
 import (
+	"context"
 	"encoding/json"
 	"maps"
+	"math/rand/v2"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -28,6 +31,9 @@ type ChannelReport struct {
 	Count        int      `json:"count"`
 	MaxPerSecond int      `json:"max_per_second"`
 	Arrivals     []string `json:"arrivals"`
+	// Statuses maps an answer status to its count; "closed" and "hung" count
+	// the requests that got no answer.
+	Statuses map[string]int `json:"statuses"`
 }
 
 // Report is the body of GET /admin/report.
@@ -41,25 +47,55 @@ type Report struct {
 
 // Server is the mock provider. Create it with New.
 type Server struct {
-	now func() time.Time
+	now  func() time.Time
+	rand func() float64
+	wait func(ctx context.Context, d time.Duration)
 
 	mu       sync.Mutex
-	status   int
+	cfg      Config
+	statuses map[string]map[string]int
 	total    int
 	arrivals map[string][]time.Time
 	keys     map[string]int
 	fieldSet map[string][]string
 }
 
+// Option customizes a Server.
+type Option func(*Server)
+
+// WithRand sets the random source: a function returning a value in [0, 1).
+// It is called with the server lock held, so it need not be safe for
+// concurrent use.
+func WithRand(f func() float64) Option { return func(s *Server) { s.rand = f } }
+
+// WithWait sets how the latency is waited out. The function must return when
+// d has passed or ctx has ended.
+func WithWait(f func(ctx context.Context, d time.Duration)) Option {
+	return func(s *Server) { s.wait = f }
+}
+
 // New returns a Server that reads the time from now.
-func New(now func() time.Time) *Server {
-	s := &Server{now: now}
+func New(now func() time.Time, opts ...Option) *Server {
+	s := &Server{now: now, rand: rand.Float64, wait: sleepContext}
+	for _, o := range opts {
+		o(s)
+	}
 	s.reset()
 	return s
 }
 
+func sleepContext(ctx context.Context, d time.Duration) {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+	case <-ctx.Done():
+	}
+}
+
 func (s *Server) reset() {
-	s.status = http.StatusAccepted
+	s.cfg = defaultConfig()
+	s.statuses = map[string]map[string]int{}
 	s.total = 0
 	s.arrivals = map[string][]time.Time{}
 	s.keys = map[string]int{}
@@ -119,38 +155,85 @@ func (s *Server) handleProvider(w http.ResponseWriter, r *http.Request) {
 	}
 	fields = nil
 
+	key := r.Header.Get("Idempotency-Key")
 	s.mu.Lock()
 	s.total++
 	s.arrivals[channel] = append(s.arrivals[channel], arrived)
-	s.keys[r.Header.Get("Idempotency-Key")]++
+	seen := s.keys[key]
+	s.keys[key]++
 	s.fieldSet[strings.Join(names, "\x00")] = names
-	status := s.status
+	o := s.decideLocked(s.cfg.rule(channel), seen)
+	label := strconv.Itoa(o.status)
+	switch {
+	case o.rule.CloseConnection:
+		label = "closed"
+	case o.rule.Hang:
+		label = "hung"
+	}
+	if s.statuses[channel] == nil {
+		s.statuses[channel] = map[string]int{}
+	}
+	s.statuses[channel][label]++
 	s.mu.Unlock()
 
-	if status != http.StatusAccepted {
-		writeJSON(w, status, struct{}{})
+	if o.latency > 0 {
+		s.wait(r.Context(), o.latency)
+	}
+	switch label {
+	case "closed":
+		closeConnection(w)
+		return
+	case "hung":
+		<-r.Context().Done()
 		return
 	}
-	writeJSON(w, status, map[string]string{
-		"messageId": uuid.NewString(),
-		"status":    "accepted",
-		"timestamp": s.now().UTC().Format(time.RFC3339),
-	})
+	s.answer(w, o)
+}
+
+// closeConnection closes the TCP connection without writing a response.
+func closeConnection(w http.ResponseWriter) {
+	conn, _, err := http.NewResponseController(w).Hijack()
+	if err != nil {
+		// No hijack (for example HTTP/2): abort the handler instead.
+		panic(http.ErrAbortHandler)
+	}
+	_ = conn.Close()
+}
+
+func (s *Server) answer(w http.ResponseWriter, o outcome) {
+	status := o.status
+	if o.rule.RetryAfter != "" && (status == http.StatusTooManyRequests || status == http.StatusServiceUnavailable) {
+		w.Header().Set("Retry-After", o.rule.RetryAfter)
+	}
+	if o.rule.Location != "" && status >= 300 && status <= 399 {
+		w.Header().Set("Location", o.rule.Location)
+	}
+	switch {
+	case o.rule.MalformedBody && status >= 200 && status <= 299:
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte("not json"))
+	case status == http.StatusAccepted:
+		writeJSON(w, status, map[string]string{
+			"messageId": uuid.NewString(),
+			"status":    "accepted",
+			"timestamp": s.now().UTC().Format(time.RFC3339),
+		})
+	default:
+		writeJSON(w, status, struct{}{})
+	}
 }
 
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Status int `json:"status"`
-	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes)).Decode(&req); err != nil ||
-		req.Status < 100 || req.Status > 599 {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "status must be 100-599"})
+	cfg, err := parseConfig(http.MaxBytesReader(w, r.Body, maxBodyBytes))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
 	s.mu.Lock()
-	s.status = req.Status
+	s.cfg = cfg
 	s.mu.Unlock()
-	writeJSON(w, http.StatusOK, map[string]int{"status": req.Status})
+	writeJSON(w, http.StatusOK, cfg)
 }
 
 func (s *Server) handleReset(w http.ResponseWriter, _ *http.Request) {
@@ -175,6 +258,10 @@ func (s *Server) report() Report {
 		IdempotencyKeys: maps.Clone(s.keys),
 		FieldNameSets:   [][]string{},
 	}
+	statuses := make(map[string]map[string]int, len(s.statuses))
+	for ch, m := range s.statuses {
+		statuses[ch] = maps.Clone(m)
+	}
 	arrivals := make(map[string][]time.Time, len(s.arrivals))
 	for ch, ts := range s.arrivals {
 		arrivals[ch] = slices.Clone(ts)
@@ -190,6 +277,7 @@ func (s *Server) report() Report {
 			Count:        len(sorted),
 			MaxPerSecond: ratewindow.MaxInWindow(sorted, time.Second),
 			Arrivals:     make([]string, len(sorted)),
+			Statuses:     statuses[ch],
 		}
 		for i, t := range sorted {
 			cr.Arrivals[i] = t.Format(arrivalLayout)

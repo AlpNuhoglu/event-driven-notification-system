@@ -18,10 +18,14 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	// A hanging request ends with its context: cancel the base context before
+	// the shutdown, so the shutdown does not wait for such a request.
+	baseCtx, cancelBase := context.WithCancel(context.WithoutCancel(ctx))
+	defer cancelBase()
 	srv := &http.Server{
 		Handler:           New(time.Now).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
-		BaseContext:       func(net.Listener) context.Context { return context.WithoutCancel(ctx) },
+		BaseContext:       func(net.Listener) context.Context { return baseCtx },
 	}
 	errc := make(chan error, 1)
 	go func() { errc <- srv.Serve(ln) }()
@@ -31,6 +35,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		return err
 	case <-ctx.Done():
 	}
+	cancelBase()
 	shutCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(shutCtx); err != nil {

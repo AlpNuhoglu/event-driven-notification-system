@@ -165,7 +165,7 @@ func TestConfigurableStatusAndReset(t *testing.T) {
 	if r, _ := report(t, ts); r.Total != 1 {
 		t.Errorf("total %d", r.Total)
 	}
-	for _, bad := range []string{`{"status":99}`, `{"status":600}`, `nope`, `{}`} {
+	for _, bad := range []string{`{"status":99}`, `{"status":600}`, `nope`} {
 		if code, _ := do(t, http.MethodPut, ts.URL+"/admin/config", bad, nil); code != http.StatusBadRequest {
 			t.Errorf("%s: %d", bad, code)
 		}
