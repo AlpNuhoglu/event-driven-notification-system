@@ -486,6 +486,9 @@ func newHarness(t *testing.T) *harness {
 			RetryInterval: 50 * ms,
 			Drain:         15 * time.Second,
 			WriteMargin:   5 * time.Second,
+
+			ClaimRetryBase: 100 * ms,
+			ClaimRetryMax:  5 * time.Second,
 		},
 	}
 	h.build()
@@ -597,3 +600,23 @@ func (h *harness) runUntil(end time.Time) {
 }
 
 var errDatabase = errors.New("database unavailable")
+
+// perCall returns a function for fakeStore.claimDelay or claimErr that
+// answers the calls for an id in order from script[id], and after them (or
+// for an id without a script) with after.
+func perCall[T any](after T, script map[uuid.UUID][]T) func(uuid.UUID) T {
+	var (
+		mu    sync.Mutex
+		calls = map[uuid.UUID]int{}
+	)
+	return func(id uuid.UUID) T {
+		mu.Lock()
+		defer mu.Unlock()
+		n := calls[id]
+		calls[id]++
+		if n < len(script[id]) {
+			return script[id][n]
+		}
+		return after
+	}
+}

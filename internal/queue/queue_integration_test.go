@@ -571,3 +571,115 @@ func TestPublisher_ClosedChannelFailsEveryBatch(t *testing.T) {
 		t.Error("the connection is not open: only the channel was closed")
 	}
 }
+
+// returnObservation is what the broker did with one message that a test
+// returned to its dispatch queue again and again.
+type returnObservation struct {
+	deliveries    int    // deliveries the consumer received
+	deliveryCount []any  // the x-delivery-count header of each delivery (nil: absent)
+	redelivered   []bool // the redelivered flag of each delivery
+	deadLettered  bool   // the message reached the channel's poison queue
+}
+
+// returnRepeatedly publishes one message through the project's publisher to
+// the SMS dispatch queue of the project's topology and consumes it through
+// the project's consumer. Each delivery is handed to ret, up to returns
+// times; the delivery after that is acked. It stops early when the message
+// reaches the poison queue instead of being delivered again.
+func returnRepeatedly(t *testing.T, returns int, ret func(Delivery) error) returnObservation {
+	t.Helper()
+	url, c := setup(t)
+	admin := raw(t, url)
+	m := msg(domain.ChannelSMS, domain.PriorityNormal)
+	if published, err := newPublisher(t, c, 1).PublishBatch(ctxT(t), []Message{m}, confirmTimeout); err != nil || len(published) != 1 {
+		t.Fatalf("publish: %v, %d published", err, len(published))
+	}
+	cons := newConsumer(t, c)
+	got := make(chan Delivery, 1)
+	stop := runConsumer(t, cons, func(d Delivery) { got <- d })
+
+	var obs returnObservation
+	for {
+		var d Delivery
+		testutil.Eventually(t, func() bool {
+			select {
+			case d = <-got:
+				return true
+			default:
+			}
+			obs.deadLettered = ready(t, admin, PoisonQueue(domain.ChannelSMS)) > 0
+			return obs.deadLettered
+		}, waitTimeout)
+		if obs.deadLettered {
+			break
+		}
+		if d.ID != m.ID {
+			t.Fatalf("delivery %d carries %s, want %s", obs.deliveries+1, d.ID, m.ID)
+		}
+		obs.deliveries++
+		obs.deliveryCount = append(obs.deliveryCount, d.d.Headers["x-delivery-count"])
+		obs.redelivered = append(obs.redelivered, d.d.Redelivered)
+		if obs.deliveries > returns {
+			if err := d.Ack(); err != nil {
+				t.Fatalf("ack: %v", err)
+			}
+			break
+		}
+		if err := ret(d); err != nil {
+			t.Fatalf("return %d: %v", obs.deliveries, err)
+		}
+	}
+	if err := stop(); err != nil {
+		t.Fatalf("consumer: %v", err)
+	}
+	if err := cons.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// After the close nothing is unacknowledged: an un-acked message would
+	// be ready again now.
+	obs.deadLettered = ready(t, admin, PoisonQueue(domain.ChannelSMS)) > 0
+	left := ready(t, admin, DispatchQueue(domain.ChannelSMS))
+	t.Logf("deliveries %d, dead-lettered %v, left in the dispatch queue %d", obs.deliveries, obs.deadLettered, left)
+	t.Logf("x-delivery-count per delivery: %v", obs.deliveryCount)
+	t.Logf("redelivered per delivery: %v", obs.redelivered)
+	if !obs.deadLettered && left != 0 {
+		t.Errorf("the dispatch queue holds %d messages after the ack, want 0", left)
+	}
+	return obs
+}
+
+// ADR-0001 (D6, open issue 7): a nack with requeue does not count toward a
+// quorum queue's delivery limit (the broker default, 20). One message is
+// nacked 25 times through the project's consumer: it is delivered every
+// time, never dead-lettered, and the 26th delivery can be acked.
+func TestConsumer_NackWithRequeueDoesNotCountTowardDeliveryLimit(t *testing.T) {
+	const nacks = 25
+	obs := returnRepeatedly(t, nacks, Delivery.Nack)
+	if obs.deadLettered {
+		t.Fatalf("the message was dead-lettered after %d deliveries", obs.deliveries)
+	}
+	if obs.deliveries != nacks+1 {
+		t.Fatalf("%d deliveries, want %d (%d nacks, then the ack)", obs.deliveries, nacks+1, nacks)
+	}
+	// The broker counts no delivery: it sets no x-delivery-count header.
+	for i, n := range obs.deliveryCount {
+		if n != nil {
+			t.Errorf("delivery %d carries x-delivery-count %v, want none", i+1, n)
+		}
+	}
+}
+
+// The control, which shows that the test can see dead-lettering: basic.reject
+// with requeue counts toward the delivery limit (ADR-0001). With the default
+// limit of 20, the message is delivered 21 times and the 21st reject
+// dead-letters it to the poison queue.
+func TestConsumer_RejectWithRequeueCountsTowardDeliveryLimit(t *testing.T) {
+	const rejects = 25
+	obs := returnRepeatedly(t, rejects, func(d Delivery) error { return d.d.Reject(true) })
+	if !obs.deadLettered {
+		t.Fatalf("a message rejected %d times was not dead-lettered", obs.deliveries)
+	}
+	if obs.deliveries != 21 {
+		t.Errorf("dead-lettered after %d deliveries, want 21 (a delivery limit of 20)", obs.deliveries)
+	}
+}
