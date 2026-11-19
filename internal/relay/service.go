@@ -17,8 +17,9 @@ import (
 )
 
 // Service is the relay role (a bootstrap.Service). It connects to Postgres
-// and RabbitMQ, declares the topology and runs the publishing cycle and the
-// lease sweeper until ctx is cancelled. It returns an error when a dependency
+// and RabbitMQ, declares the topology and runs the publishing cycle, the
+// lease sweeper, the expiry pass and the idempotency-key cleanup until ctx is
+// cancelled. It returns an error when a dependency
 // cannot be reached at start and when the broker connection's recovery gives
 // up, so that the process exits with a non-zero code (ADR-0005).
 func Service(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
@@ -53,25 +54,23 @@ func Service(ctx context.Context, cfg config.Config, logger *slog.Logger) error 
 	return run(ctx, r, conn.GaveUp(), conn.Err)
 }
 
-// run runs both loops until ctx is cancelled, gaveUp is closed or a loop
-// ends with an error (the publisher's channel is closed), and waits for them
-// to finish. It returns an error in the last two cases, so that the process
+// run runs the four loops until ctx is cancelled, gaveUp is closed or a
+// loop ends with an error (the publisher's channel is closed), and waits for
+// them to finish. It returns an error in the last two cases, so that the process
 // exits with a non-zero code and is restarted.
 func run(ctx context.Context, r *Relay, gaveUp <-chan struct{}, gaveUpErr func() error) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	loopErr := make(chan error, 2)
+	loops := []func(context.Context) error{r.RunPublishing, r.RunLeaseSweeper, r.RunExpiry, r.RunIdempotencyCleanup}
+	loopErr := make(chan error, len(loops))
 	var wg sync.WaitGroup
-	wg.Go(func() {
-		if err := r.RunPublishing(runCtx); err != nil {
-			loopErr <- err
-		}
-	})
-	wg.Go(func() {
-		if err := r.RunLeaseSweeper(runCtx); err != nil {
-			loopErr <- err
-		}
-	})
+	for _, loop := range loops {
+		wg.Go(func() {
+			if err := loop(runCtx); err != nil {
+				loopErr <- err
+			}
+		})
+	}
 
 	var err error
 	select {
@@ -96,6 +95,10 @@ func ConfigFrom(c config.Relay) Config {
 		HWMLow:             c.LaneHWMLow,
 		LeaseSweepInterval: c.LeaseSweepEvery,
 		LeaseSweepBatch:    c.LeaseSweepBatch,
+
+		ExpiryInterval:             c.ExpiryInterval,
+		ExpiryBatch:                c.ExpiryBatchSize,
+		IdempotencyCleanupInterval: c.IdempotencyCleanupEvery,
 	}
 }
 

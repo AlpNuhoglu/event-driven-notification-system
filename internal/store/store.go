@@ -41,8 +41,10 @@ type decideFunc func(outcome domain.Outcome, failures, maxFailures int, expiresA
 type Store struct {
 	pool *pgxpool.Pool
 	q    *db.Queries
-	// list runs the listing queries with custom plans (see customPlanDB).
-	list     *db.Queries
+	// custom runs statements that must be planned with their bound values
+	// every time: the listing queries and the relay's two bounded passes
+	// (see customPlanDB).
+	custom   *db.Queries
 	profiles Profiles
 	decide   decideFunc
 }
@@ -50,7 +52,7 @@ type Store struct {
 // New returns a Store on pool. profiles supplies the back-off profile of each
 // priority for the retry decision of transitions 5, 6 and 7.
 func New(pool *pgxpool.Pool, profiles Profiles) *Store {
-	return &Store{pool: pool, q: db.New(pool), list: db.New(customPlanDB{pool}), profiles: profiles, decide: domain.DecideRetry}
+	return &Store{pool: pool, q: db.New(pool), custom: db.New(customPlanDB{pool}), profiles: profiles, decide: domain.DecideRetry}
 }
 
 // Notification is one row of the notifications table.

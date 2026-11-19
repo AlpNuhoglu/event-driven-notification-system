@@ -37,6 +37,19 @@ type fakeStore struct {
 	sweepLimit  int
 	sweepEvents []domain.StatusChanged
 	sweeps      atomic.Int32
+
+	// Expiry pass: call i returns expireBatches[i] (no events beyond the
+	// list) or expireErr; onExpire runs during each call.
+	expireBatches [][]domain.StatusChanged
+	expireErr     error
+	onExpire      func(ctx context.Context)
+	expireLimits  []int
+	// Idempotency-key cleanup: call i returns cleanupCounts[i] (0 beyond the
+	// list) or cleanupErr; onCleanup runs during each call.
+	cleanupCounts []int
+	cleanupErr    error
+	onCleanup     func(ctx context.Context)
+	cleanups      int
 }
 
 func (f *fakeStore) QueuedCounts(context.Context) (map[store.Lane]int, error) {
@@ -77,6 +90,56 @@ func (f *fakeStore) SweepExpiredLeases(_ context.Context, limit int, jitter func
 	_ = jitter()
 	f.sweeps.Add(1)
 	return f.sweepEvents, nil
+}
+
+func (f *fakeStore) ExpireDue(ctx context.Context, limit int) ([]domain.StatusChanged, error) {
+	f.mu.Lock()
+	i := len(f.expireLimits)
+	f.expireLimits = append(f.expireLimits, limit)
+	var evs []domain.StatusChanged
+	if i < len(f.expireBatches) {
+		evs = f.expireBatches[i]
+	}
+	err, hook := f.expireErr, f.onExpire
+	f.mu.Unlock()
+	if hook != nil {
+		hook(ctx)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return evs, nil
+}
+
+func (f *fakeStore) DeleteExpiredIdempotencyKeys(ctx context.Context) (int, error) {
+	f.mu.Lock()
+	i := f.cleanups
+	f.cleanups++
+	n := 0
+	if i < len(f.cleanupCounts) {
+		n = f.cleanupCounts[i]
+	}
+	err, hook := f.cleanupErr, f.onCleanup
+	f.mu.Unlock()
+	if hook != nil {
+		hook(ctx)
+	}
+	if err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
+func (f *fakeStore) expireCalls() []int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.expireLimits)
+}
+
+func (f *fakeStore) cleanupCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.cleanups
 }
 
 func (f *fakeStore) laneCalls() []laneCall {
@@ -135,6 +198,10 @@ var unitConfig = Config{
 	HWMLow:             500,
 	LeaseSweepInterval: 5 * time.Millisecond,
 	LeaseSweepBatch:    77,
+
+	ExpiryInterval:             5 * time.Millisecond,
+	ExpiryBatch:                3,
+	IdempotencyCleanupInterval: 5 * time.Millisecond,
 }
 
 func newUnit(st *fakeStore, cfg Config) (*Relay, *fakePublisher, *fakeConn, *recorder) {
