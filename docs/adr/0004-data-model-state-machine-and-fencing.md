@@ -155,7 +155,7 @@ decideRetry(outcome Outcome, failures, maxFailures int, expiresAt time.Time,
 
 - `failures` is the number of budget-consuming failures recorded on the row **before** the current outcome; the function adds the current one. The row fails when that total reaches `max_failures`, so `max_failures` is the total number of budget-consuming failures a notification may have ([ADR-0007](0007-retry-policy-and-circuit-breaker.md) §3).
 - It is exported from `domain/` as `DecideRetry`, because the repository functions of transitions 5, 6 and 7 call it inside their transaction.
-- It encodes the budget, the expiry shortcut (fail immediately if `now + Delay >= expiresAt`) and `Retry-After` handling ([ADR-0007](0007-retry-policy-and-circuit-breaker.md)).
+- It encodes the budget, the expiry shortcut (fail immediately if `now + Delay >= expiresAt`) and `Retry-After` handling ([ADR-0007](0007-retry-policy-and-circuit-breaker.md)). The order is: a `permanent` outcome fails at once without consuming budget; then the budget; then the delay and the expiry shortcut ([ADR-0007](0007-retry-policy-and-circuit-breaker.md) §3).
 - **It is deterministic.** The random part of full jitter is passed in as `jitter`, a number in `[0, 1)`, so the function can be table-tested exhaustively.
 - **It returns a delay, not a timestamp.** The caller passes the database `now()` read in the same transaction, and `due_at = now() + delay` is computed in SQL. Scheduling uses one clock ([ADR-0002](0002-postgres-as-outbox-scheduler-and-retry-delay.md)).
 

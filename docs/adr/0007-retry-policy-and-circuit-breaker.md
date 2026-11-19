@@ -47,6 +47,8 @@ The scope is certain for some results (`401`, `429`, a refused connection) and a
 
 **Detecting whether the request left the process.** The worker uses `net/http/httptrace`'s `ClientTrace.WroteRequest`. The request counts as *sent* only if the hook fired **and** `WroteRequestInfo.Err == nil`. The hook also fires on a failed write (for example a broken pipe), and such a request is treated as not sent (`unreachable`).
 
+**A response decides.** When a response arrived, its status is classified and `WroteRequest` is not consulted; the flag matters only when there is no response. The table is implemented once, in `domain.Classify`, and the three columns "scope", "consumes budget" and "counts toward breaker" are properties of the outcome (`Outcome.Scope`, `ConsumesBudget`, `Breaker`), so the retry decision and the breaker read the same source.
+
 **Counters.** `attempt_count` is the fencing token and increments on every claim. `failures` is the retry budget and increments only for budget-consuming outcomes ([ADR-0004](0004-data-model-state-machine-and-fencing.md)).
 
 **webhook.site limits.** The default provider is a free webhook.site URL, which has a request cap and expires. Whatever status it returns in those cases is classified as provider-scoped, so a capped or expired URL opens the circuit instead of failing notifications.
@@ -61,18 +63,21 @@ The delay uses **full jitter**: `delay = jitter × min(cap, base × 2^failures)`
 | `normal` | 5 s | 10 min | 8 | due time + **6 hours** | 21,600 s × 98 ≈ 2.1 M |
 | `low` | 30 s | 1 h | 10 | due time + **24 hours** | 86,400 s × 98 ≈ 8.5 M |
 
+- **In the formula, `failures` is the count before the current outcome** (the argument of `decideRetry`). The first retry of a `high` notification therefore draws from `[0, 1 s)` and is lifted to the floor; the second draws from `[0, 2 s)`. For an outcome that does not consume budget the count does not grow, so its back-off stays where the last budget-consuming failure left it.
 - **`max_failures` is the total number of budget-consuming failures** a notification may have: the row fails on the failure that makes `failures` equal to `max_failures` (with `max_failures = 1`, on the first one). `failures` is also incremented on that last failure, so an exhausted row shows `failures = max_failures` ([ADR-0004](0004-data-model-state-machine-and-fencing.md) §5).
 - **Every notification has an `expires_at`.** The due time is `scheduled_at` if set, otherwise creation time. Because provider-scoped failures do not consume budget, the TTL is what guarantees that nothing retries forever.
 - **The TTL also caps the burst a priority can absorb.** The last column assumes the channel carries nothing else and nothing is retried; messages beyond it expire before they are sent. A client that submits a larger burst must set a longer `expires_at`. The README states these figures.
-- **Expiry shortcut:** if the retry would fall at or after `expires_at`, `decideRetry` fails the notification immediately (`failed / expired`) instead of scheduling a retry that can never happen.
+- **The reason of an exhausted budget names the last outcome:** `max_failures_unknown_outcome` after `unknown`, `internal_error` after `internal_error`, otherwise `max_failures`.
+- **Expiry shortcut:** if the retry would fall at or after `expires_at`, `decideRetry` fails the notification immediately (`failed / expired`) instead of scheduling a retry that can never happen. The delay compared is the final one, hint included. When the budget is exhausted by the same outcome, the budget is the reason reported.
 - A retried notification returns to **its own lane** and is subject to that lane's HWM ([ADR-0003](0003-bounded-relay-buffer-and-sweepers.md)).
 - The profiles and TTLs are configuration, and all of this logic lives in the deterministic `decideRetry` function.
 
 ### 4. `Retry-After` and throttling
 
-- Both forms are parsed: delta-seconds and HTTP-date.
-- The retry delay is `max(backoff, retry_after, time until the circuit's next half-open probe)`.
-- `Retry-After` is **capped at 10 minutes**, so an absurd value cannot stall a channel.
+- Both forms are parsed: delta-seconds and HTTP-date. A value that is malformed, zero or a date in the past is not usable and counts as absent. An HTTP-date is compared with the worker's wall clock; the cap below bounds what a skewed clock can do.
+- The header is used on `429` and `503` only (section 2); on any other status it is ignored.
+- The retry delay is `max(backoff, retry_after, time until the circuit's next half-open probe)`, never below the floor. The worker passes the larger of the last two to `decideRetry` as its one hint.
+- `Retry-After` is **capped at 10 minutes**, so an absurd value cannot stall a channel. The cap applies to the hint, after the default below.
 - **`429` without a usable `Retry-After`** gets a default of 5 seconds, **doubling on consecutive `429`s up to 2 minutes**. This matters because throttling does not increase `failures`, so the back-off alone would stay at `base`, and the provider would be hit again every second.
 
 ### 5. Rate limiting: GCRA in Redis
@@ -220,4 +225,5 @@ Changes made after the design review, recorded in the [design review log](../ai/
 - Redirects are no longer followed and transport replays are disabled, because either could turn one attempt into a different or repeated request. (D27, D29)
 - The provider contract (request body, `202` response, other `2xx`, headers, webhook.site as default) was written down; it had been defined nowhere. (D28, D44)
 - The pacer's order of operations and the `aborted` outcome were defined, provider failover moved to future work, and the default TTLs were tied to the burst each priority can absorb. (D23, D32, D31)
+- In P3 the classification table and `decideRetry` were implemented in full. Stated here as a result: a response decides before `WroteRequest`; the exponent of the back-off is the failure count before the current outcome; the reason of an exhausted budget names the last outcome; budget exhaustion is reported in preference to the expiry shortcut; `Retry-After` is used on `429` and `503` only and an unusable value counts as absent. (D17, D27, D30)
 - In P1 the rate limit gained the missed-slot rule and the send deadline, after the implementation showed that a claim can outlast its slot while it waits on the relay's row lock; `max_failures` was stated as the total number of budget-consuming failures. (D77)

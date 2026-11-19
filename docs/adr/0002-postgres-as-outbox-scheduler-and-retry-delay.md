@@ -98,7 +98,11 @@ The relay also moves rows in `pending`, `retrying` or `queued` with `expires_at 
 | Cadence | Every second |
 | Batch | At most 1,000 rows, selected with `FOR UPDATE SKIP LOCKED` |
 | Backlog of expired rows | When a batch comes back full, the next one runs immediately |
-| Dependencies | None on Redis or on circuit state. Clients see an expired notification as `failed` when it expires, not when the provider recovers. |
+| Dependencies | None on Redis, on circuit state or on the broker connection: the pass runs while RabbitMQ is unreachable. Clients see an expired notification as `failed` when it expires, not when the provider recovers. |
+| Statement | One statement per batch: the rows are selected in `expires_at` order and locked with `SKIP LOCKED`, then updated. It never waits for a row lock, so it cannot delay or deadlock with the publishing cycle, a claim, a cancel or a redrive. A row that another transaction holds is left to the next pass, or to the claim's own expiry branch. |
+| Planning | The statement is planned with its values on every call, never as a cached prepared statement. A pass usually finds nothing, so a cached generic plan is built for one or two rows; when a backlog then expires at once, that plan joins each batch against every expired row ([design review log](../ai/design-review-log.md) §6). The idempotency-key cleanup runs the same way ([ADR-0006](0006-api-contract-and-three-layer-idempotency.md) §11). |
+| What changes | `status`, `failure_reason`, `version` and `updated_at`, as in the claim's expiry branch. `attempt_count`, `failures` and the attempt rows are untouched. `due_at` is not consulted: a `retrying` row whose back-off ends after its expiry is failed when it expires. |
+| Errors and shutdown | A failing batch is logged and tried again at the next tick; it never ends the relay. On shutdown the batch that has started is finished and no further one starts. |
 
 Workers additionally check expiry at claim time, so a stale message that is still in RabbitMQ is never sent ([ADR-0004](0004-data-model-state-machine-and-fencing.md), transition 3). Like every other transition, expiry emits a best-effort status event after commit.
 
