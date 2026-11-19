@@ -9,7 +9,8 @@ info:
     This version of the contract has the single and the batch create with
     idempotency keys and `dedupe_key`, the reads (by id, the attempts, a
     batch, the filtered list), cancel (one notification or a batch) and
-    redrive. Templates and scheduling are added in later versions.
+    redrive, and the management of templates. Rendering a template and
+    scheduling are added in later versions.
 
     **States.** `cancelled` and `failed` are not strictly final: a
     notification in either state becomes `sent` when a late result proves
@@ -30,6 +31,7 @@ info:
     (5 MB by default); a larger body is answered with `413`.
 tags:
   - name: notifications
+  - name: templates
   - name: health
   - name: meta
 paths:
@@ -490,6 +492,246 @@ paths:
             application/yaml: {}
         "500":
           $ref: "#/components/responses/InternalError"
+  /v1/templates:
+    post:
+      operationId: createTemplate
+      tags: [templates]
+      summary: Create a template
+      description: |
+        Creates the template with its version 1. The `channel` is fixed for
+        the life of the template. The body is compiled for the channel when it
+        is created: a source or a declaration the engine refuses is answered
+        with `422`, one error for the first problem found (the code is listed
+        in `docs/errors.md`). A name that exists answers `409`; new content
+        for an existing name goes through `POST /v1/templates/{name}/versions`.
+
+        **What a template may contain.** Text, `{{ .name }}` (one level, no
+        chained fields), `if` / `else`, string literals, and the two functions
+        `default` and `truncate`: `{{ .first_name | default "Customer" }}`,
+        `{{ .text | truncate 50 }}`. Everything else of Go's template language
+        is refused. Every variable used must be declared in `variables`
+        (required) or `optional_variables`, and every declared variable must
+        be used.
+
+        **Behaviour of the engine an author will meet.**
+
+        1. Every variable reaches the template as a string, so `{{ if .flag }}`
+           tests for a non-empty value: the JSON values `false` and `0` are the
+           strings `false` and `0` and count as true. Leave an optional
+           variable out (or send `""`) to take the `else` branch.
+        2. An e-mail body must be HTML that ends in plain text context: a body
+           that ends inside a tag, an attribute, a comment or a `<script>` is
+           refused (`unsafe_html`).
+        3. HTML comments in an e-mail body are removed from the output.
+      parameters:
+        - $ref: "#/components/parameters/XRequestID"
+        - $ref: "#/components/parameters/TraceParent"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTemplateRequest"
+      responses:
+        "201":
+          description: The template is created; the body shows its version 1.
+          headers:
+            Location:
+              description: The path of the created template.
+              required: true
+              schema:
+                type: string
+            X-Request-ID:
+              $ref: "#/components/headers/XRequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Template"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/TemplateExists"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+  /v1/templates/{name}:
+    get:
+      operationId: getTemplate
+      tags: [templates]
+      summary: Get a template
+      description: The template with its latest version.
+      parameters:
+        - $ref: "#/components/parameters/TemplateName"
+        - $ref: "#/components/parameters/XRequestID"
+        - $ref: "#/components/parameters/TraceParent"
+      responses:
+        "200":
+          description: The template with its latest version.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/XRequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Template"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+  /v1/templates/{name}/versions:
+    post:
+      operationId: createTemplateVersion
+      tags: [templates]
+      summary: Add a version to a template
+      description: |
+        Adds the next version. Versions are immutable: this never changes an
+        earlier one. The body is compiled for the template's channel, with the
+        same rules and the same `422` answers as `POST /v1/templates`. An
+        inactive template can receive a version.
+      parameters:
+        - $ref: "#/components/parameters/TemplateName"
+        - $ref: "#/components/parameters/XRequestID"
+        - $ref: "#/components/parameters/TraceParent"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTemplateVersionRequest"
+      responses:
+        "201":
+          description: The version is created; the body shows it.
+          headers:
+            Location:
+              description: The path of the created version.
+              required: true
+              schema:
+                type: string
+            X-Request-ID:
+              $ref: "#/components/headers/XRequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Template"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "422":
+          $ref: "#/components/responses/ValidationFailed"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+  /v1/templates/{name}/versions/{version}:
+    get:
+      operationId: getTemplateVersion
+      tags: [templates]
+      summary: Get one version of a template
+      description: |
+        The template as it is now (`is_active`, `latest_version`) with the
+        requested version, which never changes.
+      parameters:
+        - $ref: "#/components/parameters/TemplateName"
+        - $ref: "#/components/parameters/TemplateVersion"
+        - $ref: "#/components/parameters/XRequestID"
+        - $ref: "#/components/parameters/TraceParent"
+      responses:
+        "200":
+          description: The template with the requested version.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/XRequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Template"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+  /v1/templates/{name}/deactivate:
+    post:
+      operationId: deactivateTemplate
+      tags: [templates]
+      summary: Deactivate a template
+      description: |
+        No new notification can use an inactive template. Existing
+        notifications are not affected. Deactivating an inactive template
+        answers `200` again. The request has no body.
+      parameters:
+        - $ref: "#/components/parameters/TemplateName"
+        - $ref: "#/components/parameters/XRequestID"
+        - $ref: "#/components/parameters/TraceParent"
+      responses:
+        "200":
+          description: The template is inactive; the body shows its latest version.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/XRequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Template"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+  /v1/templates/{name}/activate:
+    post:
+      operationId: activateTemplate
+      tags: [templates]
+      summary: Reactivate a template
+      description: |
+        Reverses a deactivation. Activating an active template answers `200`
+        again. The request has no body.
+      parameters:
+        - $ref: "#/components/parameters/TemplateName"
+        - $ref: "#/components/parameters/XRequestID"
+        - $ref: "#/components/parameters/TraceParent"
+      responses:
+        "200":
+          description: The template is active; the body shows its latest version.
+          headers:
+            X-Request-ID:
+              $ref: "#/components/headers/XRequestID"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Template"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/Unavailable"
 components:
   parameters:
     NotificationID:
@@ -508,6 +750,23 @@ components:
       schema:
         type: string
         format: uuid
+    TemplateName:
+      name: name
+      in: path
+      required: true
+      description: The template name.
+      schema:
+        type: string
+        pattern: "^[a-z0-9][a-z0-9_-]{0,63}$"
+    TemplateVersion:
+      name: version
+      in: path
+      required: true
+      description: The version number, an integer from 1.
+      schema:
+        type: integer
+        format: int32
+        minimum: 1
     XRequestID:
       name: X-Request-ID
       in: header
@@ -555,7 +814,7 @@ components:
         type: string
   responses:
     BadRequest:
-      description: Malformed request (body that is not a JSON object, path parameter that is not a UUID).
+      description: Malformed request (body that is not a JSON object, path parameter that is not a UUID or, for a template version, not a positive integer).
       content:
         application/problem+json:
           schema:
@@ -575,13 +834,20 @@ components:
           schema:
             $ref: "#/components/schemas/Problem"
     NotFound:
-      description: No notification or batch has this id.
+      description: |
+        No notification, batch, template or template version matches the request.
       content:
         application/problem+json:
           schema:
             $ref: "#/components/schemas/Problem"
     PayloadTooLarge:
       description: The request body is larger than `MAX_BODY_BYTES`.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    TemplateExists:
+      description: A template with this name already exists; `errors` has the code `template_exists`.
       content:
         application/problem+json:
           schema:
@@ -971,6 +1237,106 @@ components:
           description: |
             Required when the stored `expires_at` has passed, and not allowed
             otherwise. RFC 3339 with an offset, at least 30 seconds ahead.
+    CreateTemplateRequest:
+      type: object
+      additionalProperties: false
+      required: [name, channel, body]
+      properties:
+        name:
+          type: string
+          pattern: "^[a-z0-9][a-z0-9_-]{0,63}$"
+          description: Lower-case letters, digits, `_` and `-`; 1 to 64 characters, not starting with `_` or `-`.
+        channel:
+          $ref: "#/components/schemas/Channel"
+        body:
+          type: string
+          minLength: 1
+          description: The template source, at most 64 KiB (65,536 bytes). Must not contain U+0000.
+        variables:
+          $ref: "#/components/schemas/TemplateVariables"
+        optional_variables:
+          $ref: "#/components/schemas/TemplateOptionalVariables"
+    CreateTemplateVersionRequest:
+      type: object
+      additionalProperties: false
+      required: [body]
+      properties:
+        body:
+          type: string
+          minLength: 1
+          description: The template source, at most 64 KiB (65,536 bytes). Must not contain U+0000.
+        variables:
+          $ref: "#/components/schemas/TemplateVariables"
+        optional_variables:
+          $ref: "#/components/schemas/TemplateOptionalVariables"
+    TemplateVariables:
+      type: array
+      description: |
+        The required variables. Each matches `^[A-Za-z_][A-Za-z0-9_]{0,63}$`;
+        at most 50 variables in both lists together; a name appears once.
+        Absent means none.
+      items:
+        type: string
+    TemplateOptionalVariables:
+      type: array
+      description: |
+        The optional variables, under the same rules. A missing optional
+        variable is rendered as the empty string. Absent means none.
+      items:
+        type: string
+    Template:
+      type: object
+      additionalProperties: false
+      required:
+        - name
+        - channel
+        - is_active
+        - latest_version
+        - version
+        - body
+        - variables
+        - optional_variables
+        - created_at
+        - updated_at
+        - version_created_at
+      properties:
+        name:
+          type: string
+        channel:
+          $ref: "#/components/schemas/Channel"
+        is_active:
+          type: boolean
+        latest_version:
+          type: integer
+          format: int32
+          minimum: 1
+        version:
+          type: integer
+          format: int32
+          minimum: 1
+          description: The version shown (the latest one, or the one asked for).
+        body:
+          type: string
+          description: The source of the version shown.
+        variables:
+          type: array
+          items:
+            type: string
+        optional_variables:
+          type: array
+          items:
+            type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+          description: When the template last changed (a new version, a deactivation or an activation).
+        version_created_at:
+          type: string
+          format: date-time
+          description: When the version shown was created.
     Health:
       type: object
       additionalProperties: false

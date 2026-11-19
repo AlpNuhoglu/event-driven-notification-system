@@ -63,6 +63,10 @@ var (
 		http.StatusConflict, "duplicate", "Duplicate notification",
 		"A notification with this dedupe_key already exists.",
 	}
+	kindTemplateExists = kind{
+		http.StatusConflict, "template-exists", "Template exists",
+		"A template with this name already exists; add a version to it instead.",
+	}
 	kindConflict = kind{
 		http.StatusConflict, "conflict", "Operation not allowed in this state",
 		"The notification's state does not allow this operation.",

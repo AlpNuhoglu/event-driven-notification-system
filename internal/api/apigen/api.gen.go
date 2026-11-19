@@ -354,6 +354,40 @@ type CreateNotificationRequest struct {
 	Recipient string `json:"recipient"`
 }
 
+// CreateTemplateRequest defines model for CreateTemplateRequest.
+type CreateTemplateRequest struct {
+	// Body The template source, at most 64 KiB (65,536 bytes). Must not contain U+0000.
+	Body    string  `json:"body"`
+	Channel Channel `json:"channel"`
+
+	// Name Lower-case letters, digits, `_` and `-`; 1 to 64 characters, not starting with `_` or `-`.
+	Name string `json:"name"`
+
+	// OptionalVariables The optional variables, under the same rules. A missing optional
+	// variable is rendered as the empty string. Absent means none.
+	OptionalVariables *TemplateOptionalVariables `json:"optional_variables,omitempty"`
+
+	// Variables The required variables. Each matches `^[A-Za-z_][A-Za-z0-9_]{0,63}$`;
+	// at most 50 variables in both lists together; a name appears once.
+	// Absent means none.
+	Variables *TemplateVariables `json:"variables,omitempty"`
+}
+
+// CreateTemplateVersionRequest defines model for CreateTemplateVersionRequest.
+type CreateTemplateVersionRequest struct {
+	// Body The template source, at most 64 KiB (65,536 bytes). Must not contain U+0000.
+	Body string `json:"body"`
+
+	// OptionalVariables The optional variables, under the same rules. A missing optional
+	// variable is rendered as the empty string. Absent means none.
+	OptionalVariables *TemplateOptionalVariables `json:"optional_variables,omitempty"`
+
+	// Variables The required variables. Each matches `^[A-Za-z_][A-Za-z0-9_]{0,63}$`;
+	// at most 50 variables in both lists together; a name appears once.
+	// Absent means none.
+	Variables *TemplateVariables `json:"variables,omitempty"`
+}
+
 // FailureReason defines model for FailureReason.
 type FailureReason string
 
@@ -498,6 +532,37 @@ type SMSInfoEncoding string
 // a late provider result proves that the message was delivered.
 type Status string
 
+// Template defines model for Template.
+type Template struct {
+	// Body The source of the version shown.
+	Body              string    `json:"body"`
+	Channel           Channel   `json:"channel"`
+	CreatedAt         time.Time `json:"created_at"`
+	IsActive          bool      `json:"is_active"`
+	LatestVersion     int32     `json:"latest_version"`
+	Name              string    `json:"name"`
+	OptionalVariables []string  `json:"optional_variables"`
+
+	// UpdatedAt When the template last changed (a new version, a deactivation or an activation).
+	UpdatedAt time.Time `json:"updated_at"`
+	Variables []string  `json:"variables"`
+
+	// Version The version shown (the latest one, or the one asked for).
+	Version int32 `json:"version"`
+
+	// VersionCreatedAt When the version shown was created.
+	VersionCreatedAt time.Time `json:"version_created_at"`
+}
+
+// TemplateOptionalVariables The optional variables, under the same rules. A missing optional
+// variable is rendered as the empty string. Absent means none.
+type TemplateOptionalVariables = []string
+
+// TemplateVariables The required variables. Each matches `^[A-Za-z_][A-Za-z0-9_]{0,63}$`;
+// at most 50 variables in both lists together; a name appears once.
+// Absent means none.
+type TemplateVariables = []string
+
 // BatchID defines model for BatchID.
 type BatchID = openapi_types.UUID
 
@@ -506,6 +571,12 @@ type IdempotencyKey = string
 
 // NotificationID defines model for NotificationID.
 type NotificationID = openapi_types.UUID
+
+// TemplateName defines model for TemplateName.
+type TemplateName = string
+
+// TemplateVersion defines model for TemplateVersion.
+type TemplateVersion = int32
 
 // TraceParent defines model for TraceParent.
 type TraceParent = string
@@ -530,6 +601,9 @@ type NotFound = Problem
 
 // PayloadTooLarge RFC 9457 Problem Details.
 type PayloadTooLarge = Problem
+
+// TemplateExists RFC 9457 Problem Details.
+type TemplateExists = Problem
 
 // Unavailable RFC 9457 Problem Details.
 type Unavailable = Problem
@@ -675,6 +749,78 @@ type RedriveNotificationParams struct {
 	Traceparent *TraceParent `json:"traceparent,omitempty"`
 }
 
+// CreateTemplateParams defines parameters for CreateTemplate.
+type CreateTemplateParams struct {
+	// XRequestID Correlation id. Accepted when it is at most 128 characters of
+	// `[A-Za-z0-9._-]`; otherwise it is ignored and a new id is generated.
+	// An invalid value is not an error.
+	XRequestID *XRequestID `json:"X-Request-ID,omitempty"`
+
+	// Traceparent W3C Trace Context. Stored with the notification when it is well
+	// formed; otherwise ignored. An invalid value is not an error.
+	Traceparent *TraceParent `json:"traceparent,omitempty"`
+}
+
+// GetTemplateParams defines parameters for GetTemplate.
+type GetTemplateParams struct {
+	// XRequestID Correlation id. Accepted when it is at most 128 characters of
+	// `[A-Za-z0-9._-]`; otherwise it is ignored and a new id is generated.
+	// An invalid value is not an error.
+	XRequestID *XRequestID `json:"X-Request-ID,omitempty"`
+
+	// Traceparent W3C Trace Context. Stored with the notification when it is well
+	// formed; otherwise ignored. An invalid value is not an error.
+	Traceparent *TraceParent `json:"traceparent,omitempty"`
+}
+
+// ActivateTemplateParams defines parameters for ActivateTemplate.
+type ActivateTemplateParams struct {
+	// XRequestID Correlation id. Accepted when it is at most 128 characters of
+	// `[A-Za-z0-9._-]`; otherwise it is ignored and a new id is generated.
+	// An invalid value is not an error.
+	XRequestID *XRequestID `json:"X-Request-ID,omitempty"`
+
+	// Traceparent W3C Trace Context. Stored with the notification when it is well
+	// formed; otherwise ignored. An invalid value is not an error.
+	Traceparent *TraceParent `json:"traceparent,omitempty"`
+}
+
+// DeactivateTemplateParams defines parameters for DeactivateTemplate.
+type DeactivateTemplateParams struct {
+	// XRequestID Correlation id. Accepted when it is at most 128 characters of
+	// `[A-Za-z0-9._-]`; otherwise it is ignored and a new id is generated.
+	// An invalid value is not an error.
+	XRequestID *XRequestID `json:"X-Request-ID,omitempty"`
+
+	// Traceparent W3C Trace Context. Stored with the notification when it is well
+	// formed; otherwise ignored. An invalid value is not an error.
+	Traceparent *TraceParent `json:"traceparent,omitempty"`
+}
+
+// CreateTemplateVersionParams defines parameters for CreateTemplateVersion.
+type CreateTemplateVersionParams struct {
+	// XRequestID Correlation id. Accepted when it is at most 128 characters of
+	// `[A-Za-z0-9._-]`; otherwise it is ignored and a new id is generated.
+	// An invalid value is not an error.
+	XRequestID *XRequestID `json:"X-Request-ID,omitempty"`
+
+	// Traceparent W3C Trace Context. Stored with the notification when it is well
+	// formed; otherwise ignored. An invalid value is not an error.
+	Traceparent *TraceParent `json:"traceparent,omitempty"`
+}
+
+// GetTemplateVersionParams defines parameters for GetTemplateVersion.
+type GetTemplateVersionParams struct {
+	// XRequestID Correlation id. Accepted when it is at most 128 characters of
+	// `[A-Za-z0-9._-]`; otherwise it is ignored and a new id is generated.
+	// An invalid value is not an error.
+	XRequestID *XRequestID `json:"X-Request-ID,omitempty"`
+
+	// Traceparent W3C Trace Context. Stored with the notification when it is well
+	// formed; otherwise ignored. An invalid value is not an error.
+	Traceparent *TraceParent `json:"traceparent,omitempty"`
+}
+
 // CreateNotificationJSONRequestBody defines body for CreateNotification for application/json ContentType.
 type CreateNotificationJSONRequestBody = CreateNotificationRequest
 
@@ -683,6 +829,12 @@ type CreateNotificationBatchJSONRequestBody = CreateBatchRequest
 
 // RedriveNotificationJSONRequestBody defines body for RedriveNotification for application/json ContentType.
 type RedriveNotificationJSONRequestBody = RedriveRequest
+
+// CreateTemplateJSONRequestBody defines body for CreateTemplate for application/json ContentType.
+type CreateTemplateJSONRequestBody = CreateTemplateRequest
+
+// CreateTemplateVersionJSONRequestBody defines body for CreateTemplateVersion for application/json ContentType.
+type CreateTemplateVersionJSONRequestBody = CreateTemplateVersionRequest
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
@@ -722,6 +874,24 @@ type ServerInterface interface {
 	// RedriveNotification Send a failed notification again
 	// (POST /v1/notifications/{id}/redrive)
 	RedriveNotification(w http.ResponseWriter, r *http.Request, id NotificationID, params RedriveNotificationParams)
+	// CreateTemplate Create a template
+	// (POST /v1/templates)
+	CreateTemplate(w http.ResponseWriter, r *http.Request, params CreateTemplateParams)
+	// GetTemplate Get a template
+	// (GET /v1/templates/{name})
+	GetTemplate(w http.ResponseWriter, r *http.Request, name TemplateName, params GetTemplateParams)
+	// ActivateTemplate Reactivate a template
+	// (POST /v1/templates/{name}/activate)
+	ActivateTemplate(w http.ResponseWriter, r *http.Request, name TemplateName, params ActivateTemplateParams)
+	// DeactivateTemplate Deactivate a template
+	// (POST /v1/templates/{name}/deactivate)
+	DeactivateTemplate(w http.ResponseWriter, r *http.Request, name TemplateName, params DeactivateTemplateParams)
+	// CreateTemplateVersion Add a version to a template
+	// (POST /v1/templates/{name}/versions)
+	CreateTemplateVersion(w http.ResponseWriter, r *http.Request, name TemplateName, params CreateTemplateVersionParams)
+	// GetTemplateVersion Get one version of a template
+	// (GET /v1/templates/{name}/versions/{version})
+	GetTemplateVersion(w http.ResponseWriter, r *http.Request, name TemplateName, version TemplateVersion, params GetTemplateVersionParams)
 }
 
 // ServerInterfaceWrapper converts contexts to parameters.
@@ -1511,6 +1681,420 @@ func (siw *ServerInterfaceWrapper) RedriveNotification(w http.ResponseWriter, r 
 	handler.ServeHTTP(w, r)
 }
 
+// CreateTemplate operation middleware
+func (siw *ServerInterfaceWrapper) CreateTemplate(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params CreateTemplateParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Request-ID" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Request-ID")]; found {
+		var XRequestID XRequestID
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Request-ID", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Request-ID", valueList[0], &XRequestID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Request-ID", Err: err})
+			return
+		}
+
+		params.XRequestID = &XRequestID
+
+	}
+
+	// ------------- Optional header parameter "traceparent" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("traceparent")]; found {
+		var Traceparent TraceParent
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "traceparent", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "traceparent", valueList[0], &Traceparent, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "traceparent", Err: err})
+			return
+		}
+
+		params.Traceparent = &Traceparent
+
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateTemplate(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetTemplate operation middleware
+func (siw *ServerInterfaceWrapper) GetTemplate(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "name" -------------
+	var name TemplateName
+
+	err = runtime.BindStyledParameterWithOptions("simple", "name", r.PathValue("name"), &name, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "name", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetTemplateParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Request-ID" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Request-ID")]; found {
+		var XRequestID XRequestID
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Request-ID", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Request-ID", valueList[0], &XRequestID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Request-ID", Err: err})
+			return
+		}
+
+		params.XRequestID = &XRequestID
+
+	}
+
+	// ------------- Optional header parameter "traceparent" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("traceparent")]; found {
+		var Traceparent TraceParent
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "traceparent", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "traceparent", valueList[0], &Traceparent, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "traceparent", Err: err})
+			return
+		}
+
+		params.Traceparent = &Traceparent
+
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetTemplate(w, r, name, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ActivateTemplate operation middleware
+func (siw *ServerInterfaceWrapper) ActivateTemplate(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "name" -------------
+	var name TemplateName
+
+	err = runtime.BindStyledParameterWithOptions("simple", "name", r.PathValue("name"), &name, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "name", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ActivateTemplateParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Request-ID" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Request-ID")]; found {
+		var XRequestID XRequestID
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Request-ID", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Request-ID", valueList[0], &XRequestID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Request-ID", Err: err})
+			return
+		}
+
+		params.XRequestID = &XRequestID
+
+	}
+
+	// ------------- Optional header parameter "traceparent" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("traceparent")]; found {
+		var Traceparent TraceParent
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "traceparent", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "traceparent", valueList[0], &Traceparent, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "traceparent", Err: err})
+			return
+		}
+
+		params.Traceparent = &Traceparent
+
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ActivateTemplate(w, r, name, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// DeactivateTemplate operation middleware
+func (siw *ServerInterfaceWrapper) DeactivateTemplate(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "name" -------------
+	var name TemplateName
+
+	err = runtime.BindStyledParameterWithOptions("simple", "name", r.PathValue("name"), &name, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "name", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params DeactivateTemplateParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Request-ID" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Request-ID")]; found {
+		var XRequestID XRequestID
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Request-ID", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Request-ID", valueList[0], &XRequestID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Request-ID", Err: err})
+			return
+		}
+
+		params.XRequestID = &XRequestID
+
+	}
+
+	// ------------- Optional header parameter "traceparent" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("traceparent")]; found {
+		var Traceparent TraceParent
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "traceparent", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "traceparent", valueList[0], &Traceparent, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "traceparent", Err: err})
+			return
+		}
+
+		params.Traceparent = &Traceparent
+
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeactivateTemplate(w, r, name, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateTemplateVersion operation middleware
+func (siw *ServerInterfaceWrapper) CreateTemplateVersion(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "name" -------------
+	var name TemplateName
+
+	err = runtime.BindStyledParameterWithOptions("simple", "name", r.PathValue("name"), &name, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "name", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params CreateTemplateVersionParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Request-ID" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Request-ID")]; found {
+		var XRequestID XRequestID
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Request-ID", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Request-ID", valueList[0], &XRequestID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Request-ID", Err: err})
+			return
+		}
+
+		params.XRequestID = &XRequestID
+
+	}
+
+	// ------------- Optional header parameter "traceparent" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("traceparent")]; found {
+		var Traceparent TraceParent
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "traceparent", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "traceparent", valueList[0], &Traceparent, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "traceparent", Err: err})
+			return
+		}
+
+		params.Traceparent = &Traceparent
+
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateTemplateVersion(w, r, name, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetTemplateVersion operation middleware
+func (siw *ServerInterfaceWrapper) GetTemplateVersion(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "name" -------------
+	var name TemplateName
+
+	err = runtime.BindStyledParameterWithOptions("simple", "name", r.PathValue("name"), &name, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "name", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "version" -------------
+	var version TemplateVersion
+
+	err = runtime.BindStyledParameterWithOptions("simple", "version", r.PathValue("version"), &version, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int32", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "version", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetTemplateVersionParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Request-ID" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Request-ID")]; found {
+		var XRequestID XRequestID
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Request-ID", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Request-ID", valueList[0], &XRequestID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Request-ID", Err: err})
+			return
+		}
+
+		params.XRequestID = &XRequestID
+
+	}
+
+	// ------------- Optional header parameter "traceparent" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("traceparent")]; found {
+		var Traceparent TraceParent
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "traceparent", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "traceparent", valueList[0], &Traceparent, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "traceparent", Err: err})
+			return
+		}
+
+		params.Traceparent = &Traceparent
+
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetTemplateVersion(w, r, name, version, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 type UnescapedCookieParamError struct {
 	ParamName string
 	Err       error
@@ -1643,6 +2227,12 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/healthz", wrapper.GetHealthz)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/readyz", wrapper.GetReadyz)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/openapi.yaml", wrapper.GetOpenAPISpec)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/templates", wrapper.CreateTemplate)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/templates/{name}", wrapper.GetTemplate)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/templates/{name}/versions", wrapper.CreateTemplateVersion)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/templates/{name}/versions/{version}", wrapper.GetTemplateVersion)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/templates/{name}/deactivate", wrapper.DeactivateTemplate)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/templates/{name}/activate", wrapper.ActivateTemplate)
 
 	return m
 }
@@ -1658,6 +2248,8 @@ type InternalErrorApplicationProblemPlusJSONResponse Problem
 type NotFoundApplicationProblemPlusJSONResponse Problem
 
 type PayloadTooLargeApplicationProblemPlusJSONResponse Problem
+
+type TemplateExistsApplicationProblemPlusJSONResponse Problem
 
 type UnavailableApplicationProblemPlusJSONResponse Problem
 
@@ -2863,6 +3455,694 @@ func (response RedriveNotification503ApplicationProblemPlusJSONResponse) VisitRe
 	return err
 }
 
+type CreateTemplateRequestObject struct {
+	Params CreateTemplateParams
+	Body   *CreateTemplateJSONRequestBody
+}
+
+type CreateTemplateResponseObject interface {
+	VisitCreateTemplateResponse(w http.ResponseWriter) error
+}
+
+type CreateTemplate201ResponseHeaders struct {
+	Location   string
+	XRequestID string
+}
+
+type CreateTemplate201JSONResponse struct {
+	Body    Template
+	Headers CreateTemplate201ResponseHeaders
+}
+
+func (response CreateTemplate201JSONResponse) VisitCreateTemplateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Location", fmt.Sprint(response.Headers.Location))
+	w.Header().Set("X-Request-ID", fmt.Sprint(response.Headers.XRequestID))
+	w.WriteHeader(201)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateTemplate400ApplicationProblemPlusJSONResponse struct {
+	BadRequestApplicationProblemPlusJSONResponse
+}
+
+func (response CreateTemplate400ApplicationProblemPlusJSONResponse) VisitCreateTemplateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateTemplate409ApplicationProblemPlusJSONResponse struct {
+	TemplateExistsApplicationProblemPlusJSONResponse
+}
+
+func (response CreateTemplate409ApplicationProblemPlusJSONResponse) VisitCreateTemplateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateTemplate413ApplicationProblemPlusJSONResponse struct {
+	PayloadTooLargeApplicationProblemPlusJSONResponse
+}
+
+func (response CreateTemplate413ApplicationProblemPlusJSONResponse) VisitCreateTemplateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(413)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateTemplate415ApplicationProblemPlusJSONResponse struct {
+	UnsupportedMediaTypeApplicationProblemPlusJSONResponse
+}
+
+func (response CreateTemplate415ApplicationProblemPlusJSONResponse) VisitCreateTemplateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(415)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateTemplate422ApplicationProblemPlusJSONResponse struct {
+	ValidationFailedApplicationProblemPlusJSONResponse
+}
+
+func (response CreateTemplate422ApplicationProblemPlusJSONResponse) VisitCreateTemplateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(422)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateTemplate500ApplicationProblemPlusJSONResponse struct {
+	InternalErrorApplicationProblemPlusJSONResponse
+}
+
+func (response CreateTemplate500ApplicationProblemPlusJSONResponse) VisitCreateTemplateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateTemplate503ApplicationProblemPlusJSONResponse struct {
+	UnavailableApplicationProblemPlusJSONResponse
+}
+
+func (response CreateTemplate503ApplicationProblemPlusJSONResponse) VisitCreateTemplateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(503)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetTemplateRequestObject struct {
+	Name   TemplateName `json:"name"`
+	Params GetTemplateParams
+}
+
+type GetTemplateResponseObject interface {
+	VisitGetTemplateResponse(w http.ResponseWriter) error
+}
+
+type GetTemplate200ResponseHeaders struct {
+	XRequestID string
+}
+
+type GetTemplate200JSONResponse struct {
+	Body    Template
+	Headers GetTemplate200ResponseHeaders
+}
+
+func (response GetTemplate200JSONResponse) VisitGetTemplateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-ID", fmt.Sprint(response.Headers.XRequestID))
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetTemplate404ApplicationProblemPlusJSONResponse struct {
+	NotFoundApplicationProblemPlusJSONResponse
+}
+
+func (response GetTemplate404ApplicationProblemPlusJSONResponse) VisitGetTemplateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetTemplate500ApplicationProblemPlusJSONResponse struct {
+	InternalErrorApplicationProblemPlusJSONResponse
+}
+
+func (response GetTemplate500ApplicationProblemPlusJSONResponse) VisitGetTemplateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetTemplate503ApplicationProblemPlusJSONResponse struct {
+	UnavailableApplicationProblemPlusJSONResponse
+}
+
+func (response GetTemplate503ApplicationProblemPlusJSONResponse) VisitGetTemplateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(503)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ActivateTemplateRequestObject struct {
+	Name   TemplateName `json:"name"`
+	Params ActivateTemplateParams
+}
+
+type ActivateTemplateResponseObject interface {
+	VisitActivateTemplateResponse(w http.ResponseWriter) error
+}
+
+type ActivateTemplate200ResponseHeaders struct {
+	XRequestID string
+}
+
+type ActivateTemplate200JSONResponse struct {
+	Body    Template
+	Headers ActivateTemplate200ResponseHeaders
+}
+
+func (response ActivateTemplate200JSONResponse) VisitActivateTemplateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-ID", fmt.Sprint(response.Headers.XRequestID))
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ActivateTemplate400ApplicationProblemPlusJSONResponse struct {
+	BadRequestApplicationProblemPlusJSONResponse
+}
+
+func (response ActivateTemplate400ApplicationProblemPlusJSONResponse) VisitActivateTemplateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ActivateTemplate404ApplicationProblemPlusJSONResponse struct {
+	NotFoundApplicationProblemPlusJSONResponse
+}
+
+func (response ActivateTemplate404ApplicationProblemPlusJSONResponse) VisitActivateTemplateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ActivateTemplate413ApplicationProblemPlusJSONResponse struct {
+	PayloadTooLargeApplicationProblemPlusJSONResponse
+}
+
+func (response ActivateTemplate413ApplicationProblemPlusJSONResponse) VisitActivateTemplateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(413)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ActivateTemplate500ApplicationProblemPlusJSONResponse struct {
+	InternalErrorApplicationProblemPlusJSONResponse
+}
+
+func (response ActivateTemplate500ApplicationProblemPlusJSONResponse) VisitActivateTemplateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ActivateTemplate503ApplicationProblemPlusJSONResponse struct {
+	UnavailableApplicationProblemPlusJSONResponse
+}
+
+func (response ActivateTemplate503ApplicationProblemPlusJSONResponse) VisitActivateTemplateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(503)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DeactivateTemplateRequestObject struct {
+	Name   TemplateName `json:"name"`
+	Params DeactivateTemplateParams
+}
+
+type DeactivateTemplateResponseObject interface {
+	VisitDeactivateTemplateResponse(w http.ResponseWriter) error
+}
+
+type DeactivateTemplate200ResponseHeaders struct {
+	XRequestID string
+}
+
+type DeactivateTemplate200JSONResponse struct {
+	Body    Template
+	Headers DeactivateTemplate200ResponseHeaders
+}
+
+func (response DeactivateTemplate200JSONResponse) VisitDeactivateTemplateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-ID", fmt.Sprint(response.Headers.XRequestID))
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DeactivateTemplate400ApplicationProblemPlusJSONResponse struct {
+	BadRequestApplicationProblemPlusJSONResponse
+}
+
+func (response DeactivateTemplate400ApplicationProblemPlusJSONResponse) VisitDeactivateTemplateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DeactivateTemplate404ApplicationProblemPlusJSONResponse struct {
+	NotFoundApplicationProblemPlusJSONResponse
+}
+
+func (response DeactivateTemplate404ApplicationProblemPlusJSONResponse) VisitDeactivateTemplateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DeactivateTemplate413ApplicationProblemPlusJSONResponse struct {
+	PayloadTooLargeApplicationProblemPlusJSONResponse
+}
+
+func (response DeactivateTemplate413ApplicationProblemPlusJSONResponse) VisitDeactivateTemplateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(413)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DeactivateTemplate500ApplicationProblemPlusJSONResponse struct {
+	InternalErrorApplicationProblemPlusJSONResponse
+}
+
+func (response DeactivateTemplate500ApplicationProblemPlusJSONResponse) VisitDeactivateTemplateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DeactivateTemplate503ApplicationProblemPlusJSONResponse struct {
+	UnavailableApplicationProblemPlusJSONResponse
+}
+
+func (response DeactivateTemplate503ApplicationProblemPlusJSONResponse) VisitDeactivateTemplateResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(503)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateTemplateVersionRequestObject struct {
+	Name   TemplateName `json:"name"`
+	Params CreateTemplateVersionParams
+	Body   *CreateTemplateVersionJSONRequestBody
+}
+
+type CreateTemplateVersionResponseObject interface {
+	VisitCreateTemplateVersionResponse(w http.ResponseWriter) error
+}
+
+type CreateTemplateVersion201ResponseHeaders struct {
+	Location   string
+	XRequestID string
+}
+
+type CreateTemplateVersion201JSONResponse struct {
+	Body    Template
+	Headers CreateTemplateVersion201ResponseHeaders
+}
+
+func (response CreateTemplateVersion201JSONResponse) VisitCreateTemplateVersionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Location", fmt.Sprint(response.Headers.Location))
+	w.Header().Set("X-Request-ID", fmt.Sprint(response.Headers.XRequestID))
+	w.WriteHeader(201)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateTemplateVersion400ApplicationProblemPlusJSONResponse struct {
+	BadRequestApplicationProblemPlusJSONResponse
+}
+
+func (response CreateTemplateVersion400ApplicationProblemPlusJSONResponse) VisitCreateTemplateVersionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateTemplateVersion404ApplicationProblemPlusJSONResponse struct {
+	NotFoundApplicationProblemPlusJSONResponse
+}
+
+func (response CreateTemplateVersion404ApplicationProblemPlusJSONResponse) VisitCreateTemplateVersionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateTemplateVersion413ApplicationProblemPlusJSONResponse struct {
+	PayloadTooLargeApplicationProblemPlusJSONResponse
+}
+
+func (response CreateTemplateVersion413ApplicationProblemPlusJSONResponse) VisitCreateTemplateVersionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(413)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateTemplateVersion415ApplicationProblemPlusJSONResponse struct {
+	UnsupportedMediaTypeApplicationProblemPlusJSONResponse
+}
+
+func (response CreateTemplateVersion415ApplicationProblemPlusJSONResponse) VisitCreateTemplateVersionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(415)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateTemplateVersion422ApplicationProblemPlusJSONResponse struct {
+	ValidationFailedApplicationProblemPlusJSONResponse
+}
+
+func (response CreateTemplateVersion422ApplicationProblemPlusJSONResponse) VisitCreateTemplateVersionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(422)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateTemplateVersion500ApplicationProblemPlusJSONResponse struct {
+	InternalErrorApplicationProblemPlusJSONResponse
+}
+
+func (response CreateTemplateVersion500ApplicationProblemPlusJSONResponse) VisitCreateTemplateVersionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateTemplateVersion503ApplicationProblemPlusJSONResponse struct {
+	UnavailableApplicationProblemPlusJSONResponse
+}
+
+func (response CreateTemplateVersion503ApplicationProblemPlusJSONResponse) VisitCreateTemplateVersionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(503)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetTemplateVersionRequestObject struct {
+	Name    TemplateName    `json:"name"`
+	Version TemplateVersion `json:"version"`
+	Params  GetTemplateVersionParams
+}
+
+type GetTemplateVersionResponseObject interface {
+	VisitGetTemplateVersionResponse(w http.ResponseWriter) error
+}
+
+type GetTemplateVersion200ResponseHeaders struct {
+	XRequestID string
+}
+
+type GetTemplateVersion200JSONResponse struct {
+	Body    Template
+	Headers GetTemplateVersion200ResponseHeaders
+}
+
+func (response GetTemplateVersion200JSONResponse) VisitGetTemplateVersionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-ID", fmt.Sprint(response.Headers.XRequestID))
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetTemplateVersion400ApplicationProblemPlusJSONResponse struct {
+	BadRequestApplicationProblemPlusJSONResponse
+}
+
+func (response GetTemplateVersion400ApplicationProblemPlusJSONResponse) VisitGetTemplateVersionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetTemplateVersion404ApplicationProblemPlusJSONResponse struct {
+	NotFoundApplicationProblemPlusJSONResponse
+}
+
+func (response GetTemplateVersion404ApplicationProblemPlusJSONResponse) VisitGetTemplateVersionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetTemplateVersion500ApplicationProblemPlusJSONResponse struct {
+	InternalErrorApplicationProblemPlusJSONResponse
+}
+
+func (response GetTemplateVersion500ApplicationProblemPlusJSONResponse) VisitGetTemplateVersionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetTemplateVersion503ApplicationProblemPlusJSONResponse struct {
+	UnavailableApplicationProblemPlusJSONResponse
+}
+
+func (response GetTemplateVersion503ApplicationProblemPlusJSONResponse) VisitGetTemplateVersionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(503)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 // StrictServerInterface represents all server handlers.
 type StrictServerInterface interface {
 	// GetHealthz Liveness
@@ -2901,6 +4181,24 @@ type StrictServerInterface interface {
 	// RedriveNotification Send a failed notification again
 	// (POST /v1/notifications/{id}/redrive)
 	RedriveNotification(ctx context.Context, request RedriveNotificationRequestObject) (RedriveNotificationResponseObject, error)
+	// CreateTemplate Create a template
+	// (POST /v1/templates)
+	CreateTemplate(ctx context.Context, request CreateTemplateRequestObject) (CreateTemplateResponseObject, error)
+	// GetTemplate Get a template
+	// (GET /v1/templates/{name})
+	GetTemplate(ctx context.Context, request GetTemplateRequestObject) (GetTemplateResponseObject, error)
+	// ActivateTemplate Reactivate a template
+	// (POST /v1/templates/{name}/activate)
+	ActivateTemplate(ctx context.Context, request ActivateTemplateRequestObject) (ActivateTemplateResponseObject, error)
+	// DeactivateTemplate Deactivate a template
+	// (POST /v1/templates/{name}/deactivate)
+	DeactivateTemplate(ctx context.Context, request DeactivateTemplateRequestObject) (DeactivateTemplateResponseObject, error)
+	// CreateTemplateVersion Add a version to a template
+	// (POST /v1/templates/{name}/versions)
+	CreateTemplateVersion(ctx context.Context, request CreateTemplateVersionRequestObject) (CreateTemplateVersionResponseObject, error)
+	// GetTemplateVersion Get one version of a template
+	// (GET /v1/templates/{name}/versions/{version})
+	GetTemplateVersion(ctx context.Context, request GetTemplateVersionRequestObject) (GetTemplateVersionResponseObject, error)
 }
 
 type StrictHandlerFunc func(ctx context.Context, w http.ResponseWriter, r *http.Request, request any) (any, error)
@@ -3271,6 +4569,182 @@ func (sh *strictHandler) RedriveNotification(w http.ResponseWriter, r *http.Requ
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(RedriveNotificationResponseObject); ok {
 		if err := validResponse.VisitRedriveNotificationResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// CreateTemplate operation middleware
+func (sh *strictHandler) CreateTemplate(w http.ResponseWriter, r *http.Request, params CreateTemplateParams) {
+	var request CreateTemplateRequestObject
+
+	request.Params = params
+
+	var body CreateTemplateJSONRequestBody
+	if err := runtime.BindJSONBody(r, &body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.CreateTemplate(ctx, request.(CreateTemplateRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "CreateTemplate")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(CreateTemplateResponseObject); ok {
+		if err := validResponse.VisitCreateTemplateResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetTemplate operation middleware
+func (sh *strictHandler) GetTemplate(w http.ResponseWriter, r *http.Request, name TemplateName, params GetTemplateParams) {
+	var request GetTemplateRequestObject
+
+	request.Name = name
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetTemplate(ctx, request.(GetTemplateRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetTemplate")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetTemplateResponseObject); ok {
+		if err := validResponse.VisitGetTemplateResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ActivateTemplate operation middleware
+func (sh *strictHandler) ActivateTemplate(w http.ResponseWriter, r *http.Request, name TemplateName, params ActivateTemplateParams) {
+	var request ActivateTemplateRequestObject
+
+	request.Name = name
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ActivateTemplate(ctx, request.(ActivateTemplateRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ActivateTemplate")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ActivateTemplateResponseObject); ok {
+		if err := validResponse.VisitActivateTemplateResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// DeactivateTemplate operation middleware
+func (sh *strictHandler) DeactivateTemplate(w http.ResponseWriter, r *http.Request, name TemplateName, params DeactivateTemplateParams) {
+	var request DeactivateTemplateRequestObject
+
+	request.Name = name
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.DeactivateTemplate(ctx, request.(DeactivateTemplateRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "DeactivateTemplate")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(DeactivateTemplateResponseObject); ok {
+		if err := validResponse.VisitDeactivateTemplateResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// CreateTemplateVersion operation middleware
+func (sh *strictHandler) CreateTemplateVersion(w http.ResponseWriter, r *http.Request, name TemplateName, params CreateTemplateVersionParams) {
+	var request CreateTemplateVersionRequestObject
+
+	request.Name = name
+	request.Params = params
+
+	var body CreateTemplateVersionJSONRequestBody
+	if err := runtime.BindJSONBody(r, &body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.CreateTemplateVersion(ctx, request.(CreateTemplateVersionRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "CreateTemplateVersion")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(CreateTemplateVersionResponseObject); ok {
+		if err := validResponse.VisitCreateTemplateVersionResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetTemplateVersion operation middleware
+func (sh *strictHandler) GetTemplateVersion(w http.ResponseWriter, r *http.Request, name TemplateName, version TemplateVersion, params GetTemplateVersionParams) {
+	var request GetTemplateVersionRequestObject
+
+	request.Name = name
+	request.Version = version
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetTemplateVersion(ctx, request.(GetTemplateVersionRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetTemplateVersion")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetTemplateVersionResponseObject); ok {
+		if err := validResponse.VisitGetTemplateVersionResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
