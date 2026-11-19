@@ -25,11 +25,16 @@ const (
 )
 
 // compose runs docker-compose on the stack under test: the two Compose files
-// of the repository root and the project E2E_PROJECT (make test-e2e sets it;
+// of the repository root, the e2e override of this directory (as make
+// test-e2e uses them) and the project E2E_PROJECT (make test-e2e sets it;
 // without it, Compose's default project, as for make up-mock).
 func compose(args ...string) (string, error) {
 	root := filepath.Join("..", "..")
-	all := []string{"-f", filepath.Join(root, "docker-compose.yml"), "-f", filepath.Join(root, "docker-compose.mock.yml")}
+	all := []string{
+		"-f", filepath.Join(root, "docker-compose.yml"),
+		"-f", filepath.Join(root, "docker-compose.mock.yml"),
+		"-f", "docker-compose.e2e.yml",
+	}
 	if p := os.Getenv("E2E_PROJECT"); p != "" {
 		all = append(all, "-p", p)
 	}
