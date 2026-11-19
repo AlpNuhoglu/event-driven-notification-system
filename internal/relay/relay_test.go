@@ -50,6 +50,32 @@ type fakeStore struct {
 	cleanupErr    error
 	onCleanup     func(ctx context.Context)
 	cleanups      int
+	// Reconciliation: every call returns reconcileEvents, or reconcileErr
+	// while it is set; onReconcile runs during each call.
+	reconcileEvents []domain.StatusChanged
+	reconcileErr    error
+	onReconcile     func(ctx context.Context)
+	reconciles      int
+}
+
+func (f *fakeStore) ReconcileQueued(ctx context.Context) ([]domain.StatusChanged, error) {
+	f.mu.Lock()
+	f.reconciles++
+	evs, err, hook := f.reconcileEvents, f.reconcileErr, f.onReconcile
+	f.mu.Unlock()
+	if hook != nil {
+		hook(ctx)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return evs, nil
+}
+
+func (f *fakeStore) reconcileCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.reconciles
 }
 
 func (f *fakeStore) QueuedCounts(context.Context) (map[store.Lane]int, error) {
@@ -167,9 +193,16 @@ func (p *fakePublisher) PublishBatch(_ context.Context, msgs []queue.Message, co
 	return ids, nil
 }
 
-type fakeConn struct{ open atomic.Bool }
+// fakeConn is the broker connection: open or not, and the count of
+// (re)connections that Opens reports.
+type fakeConn struct {
+	open  atomic.Bool
+	opens atomic.Uint64
+}
 
 func (c *fakeConn) IsOpen() bool { return c.open.Load() }
+
+func (c *fakeConn) Opens() (uint64, <-chan struct{}) { return c.opens.Load(), nil }
 
 // recorder is an events.Publisher that keeps the events.
 type recorder struct {
@@ -208,8 +241,9 @@ func newUnit(st *fakeStore, cfg Config) (*Relay, *fakePublisher, *fakeConn, *rec
 	pub := &fakePublisher{}
 	conn := &fakeConn{}
 	conn.open.Store(true)
+	conn.opens.Store(1) // the first connection, as the role starts the loops
 	rec := &recorder{}
-	r := New(st, pub, conn, rec, slog.New(slog.DiscardHandler), cfg, func() float64 { return 0.5 })
+	r := New(st, pub, conn, rec, slog.New(slog.DiscardHandler), cfg, func() float64 { return 0.5 }, nil)
 	return r, pub, conn, rec
 }
 
@@ -423,14 +457,14 @@ func TestRun_GiveUpEndsWithError(t *testing.T) {
 	gaveUp := make(chan struct{})
 	close(gaveUp)
 	cause := errors.New("connection refused")
-	err := run(context.Background(), r, gaveUp, func() error { return cause })
+	err := r.Run(context.Background(), gaveUp, func() error { return cause })
 	if err == nil || !errors.Is(err, cause) {
 		t.Errorf("run after give-up: %v, want an error wrapping the cause", err)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := run(ctx, r, make(chan struct{}), func() error { return nil }); err != nil {
+	if err := r.Run(ctx, make(chan struct{}), func() error { return nil }); err != nil {
 		t.Errorf("run after shutdown: %v, want nil", err)
 	}
 }
@@ -465,7 +499,7 @@ func TestCycle_PublisherChannelClosedStopsTheRelay(t *testing.T) {
 		t.Errorf("%d events, want 1 (the lane before the failure)", got)
 	}
 
-	// The publishing loop returns the error, and run turns it into the
+	// The publishing loop returns the error, and Run turns it into the
 	// role's error, as for a recovery that gave up.
 	st2 := &fakeStore{laneErr: map[store.Lane]error{closedAt: wrapped}}
 	r2, _, _, _ := newUnit(st2, unitConfig)
@@ -474,7 +508,7 @@ func TestCycle_PublisherChannelClosedStopsTheRelay(t *testing.T) {
 	}
 	st3 := &fakeStore{laneErr: map[store.Lane]error{closedAt: wrapped}}
 	r3, _, _, _ := newUnit(st3, unitConfig)
-	if err := run(context.Background(), r3, make(chan struct{}), func() error { return nil }); !errors.Is(err, queue.ErrPublisherChannelClosed) {
+	if err := r3.Run(context.Background(), make(chan struct{}), func() error { return nil }); !errors.Is(err, queue.ErrPublisherChannelClosed) {
 		t.Errorf("run = %v, want ErrPublisherChannelClosed", err)
 	}
 }

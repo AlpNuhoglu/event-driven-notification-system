@@ -18,7 +18,7 @@ import (
 // that has no publisher: the expiry pass and the cleanup need neither.
 func newBrokerlessRelay(st *store.Store, cfg Config) (*Relay, *recorder) {
 	rec := &recorder{}
-	return New(st, nil, &fakeConn{}, rec, slog.New(slog.DiscardHandler), cfg, func() float64 { return 0.5 }), rec
+	return New(st, nil, &fakeConn{}, rec, slog.New(slog.DiscardHandler), cfg, func() float64 { return 0.5 }, nil), rec
 }
 
 // TestRelay_ExpiryPassFailsBacklogInOneTick: with more expired rows than one

@@ -385,12 +385,21 @@ func (e *env) startRelay(cfg config.Config) *running {
 	return start(e.t, func(ctx context.Context) error { return relay.Service(ctx, cfg, e.log) })
 }
 
-// startRelayWith runs a relay built as relay.Service builds it, except that
-// its publisher is wrapped by wrap. relay.Service has no seam for that.
-func (e *env) startRelayWith(cfg config.Config, wrap func(relay.Publisher) relay.Publisher) *running {
+// startRelayWith runs a relay wired as relay.Service wires it, on cfg (its
+// broker connection to RABBITMQ_URL with the configured recovery budget),
+// with every loop of the role run by Relay.Run, reconciliation included.
+// Two differences, for which relay.Service has no seam: its publisher is
+// wrapped by wrap (nil leaves it as it is), and its counters are registered
+// on a registry of the test's own, which is returned.
+func (e *env) startRelayWith(cfg config.Config, wrap func(relay.Publisher) relay.Publisher) (*running, *prometheus.Registry) {
 	e.t.Helper()
 	pool := e.rolePool(cfg)
-	conn := e.dial()
+	conn, err := queue.Dial(cfg.Connections.RabbitMQURL, cfg.Connections.AMQPRecoveryRetryInterval,
+		cfg.Connections.AMQPRecoveryMaxRetries, e.log)
+	if err != nil {
+		e.t.Fatalf("dial: %v", err)
+	}
+	e.t.Cleanup(func() { _ = conn.Close() })
 	if err := conn.DeclareTopology(cfg.Worker.ConsumerTimeout); err != nil {
 		e.t.Fatalf("declare: %v", err)
 	}
@@ -398,17 +407,18 @@ func (e *env) startRelayWith(cfg config.Config, wrap func(relay.Publisher) relay
 	if err != nil {
 		e.t.Fatalf("publisher: %v", err)
 	}
-	r := relay.New(store.New(pool, store.ProfilesFrom(cfg.Retry)), wrap(pub), conn, events.Nop{}, e.log,
-		relay.ConfigFrom(cfg.Relay), func() float64 { return 0.5 })
-	return start(e.t, func(ctx context.Context) error {
-		var wg sync.WaitGroup
-		wg.Go(func() { _ = r.RunPublishing(ctx) })
-		wg.Go(func() { _ = r.RunLeaseSweeper(ctx) })
-		wg.Go(func() { _ = r.RunExpiry(ctx) })
-		wg.Go(func() { _ = r.RunIdempotencyCleanup(ctx) })
-		wg.Wait()
-		return nil
-	})
+	var p relay.Publisher = pub
+	if wrap != nil {
+		p = wrap(pub)
+	}
+	reg := prometheus.NewRegistry()
+	m, err := relay.NewMetrics(reg)
+	if err != nil {
+		e.t.Fatalf("relay metrics: %v", err)
+	}
+	r := relay.New(store.New(pool, store.ProfilesFrom(cfg.Retry)), p, conn, events.Nop{}, e.log,
+		relay.ConfigFrom(cfg.Relay), func() float64 { return 0.5 }, m)
+	return start(e.t, func(ctx context.Context) error { return r.Run(ctx, conn.GaveUp(), conn.Err) }), reg
 }
 
 // request is one request the provider received.

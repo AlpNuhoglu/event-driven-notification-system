@@ -99,7 +99,7 @@ func newRelay(t *testing.T, st *store.Store, url string, cfg Config) (*Relay, *q
 		t.Fatalf("publisher: %v", err)
 	}
 	rec := &recorder{}
-	return New(st, pub, c, rec, slog.New(slog.DiscardHandler), cfg, func() float64 { return 0.5 }), c, rec
+	return New(st, pub, c, rec, slog.New(slog.DiscardHandler), cfg, func() float64 { return 0.5 }, nil), c, rec
 }
 
 func newStore(t *testing.T) (*store.Store, *pgxpool.Pool) {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"net"
 	"strings"
@@ -161,5 +162,63 @@ func TestService_ErrorDuringStop(t *testing.T) {
 	cancel()
 	if code := <-done; code != 1 {
 		t.Errorf("exit code = %d, want 1", code)
+	}
+}
+
+// A role's operator subcommand runs instead of the role: its arguments are
+// parsed first (a usage error exits 2 before the configuration is loaded),
+// then it runs with the loaded configuration and its exit code is returned.
+// The usage text lists it next to healthcheck.
+func TestRunCommands(t *testing.T) {
+	var gotArgs []string
+	var gotTick string
+	cmd := Command{
+		Name:  "fix",
+		Usage: "fix [--all]",
+		Parse: func(args []string) (Action, error) {
+			gotArgs = args
+			if len(args) > 0 && args[0] == "--bad" {
+				return nil, errors.New("flag provided but not defined: -bad")
+			}
+			return func(_ context.Context, cfg config.Config, stdout, _ io.Writer) int {
+				gotTick = cfg.Relay.TickInterval.String()
+				_, _ = io.WriteString(stdout, "fixed\n")
+				return 3
+			}, nil
+		},
+	}
+	env := lookupWith(map[string]string{"RELAY_TICK_INTERVAL": "7ms"})
+
+	var so, se bytes.Buffer
+	if code := RunCommands(context.Background(), "relay", []string{"fix", "--all"}, env, &so, &se, nil, cmd); code != 3 {
+		t.Errorf("code = %d, want the command's 3; stderr %q", code, se.String())
+	}
+	if len(gotArgs) != 1 || gotArgs[0] != "--all" || gotTick != "7ms" || so.String() != "fixed\n" {
+		t.Errorf("args %v, tick %q, stdout %q", gotArgs, gotTick, so.String())
+	}
+
+	// A usage error comes before the configuration, even an invalid one.
+	so.Reset()
+	se.Reset()
+	bad := lookupWith(map[string]string{"RELAY_TICK_INTERVAL": "banana"})
+	if code := RunCommands(context.Background(), "relay", []string{"fix", "--bad"}, bad, &so, &se, nil, cmd); code != 2 {
+		t.Errorf("code = %d, want 2", code)
+	}
+	want := "fix: flag provided but not defined: -bad\nusage: relay [healthcheck | fix [--all]]\n"
+	if se.String() != want {
+		t.Errorf("stderr = %q, want %q", se.String(), want)
+	}
+	// A valid command with an invalid configuration fails with 1.
+	se.Reset()
+	if code := RunCommands(context.Background(), "relay", []string{"fix"}, bad, &so, &se, nil, cmd); code != 1 {
+		t.Errorf("code = %d, want 1", code)
+	}
+
+	se.Reset()
+	if code := RunCommands(context.Background(), "relay", []string{"bogus"}, env, &so, &se, nil, cmd); code != 2 {
+		t.Errorf("code = %d, want 2", code)
+	}
+	if se.String() != "usage: relay [healthcheck | fix [--all]]\n" {
+		t.Errorf("stderr = %q", se.String())
 	}
 }
