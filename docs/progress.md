@@ -4,18 +4,26 @@ The first file every session reads and the last one it updates. The phases and t
 
 ## Current phase
 
-**P4: templates and scheduling** — in review: `p4/templates` is merged, and `p4/scheduling`, the second and last pull request, is open with every exit criterion of the phase run.
+**P5: real-time and observability** — in progress: `p5/events-and-gateway`, the first of three pull requests.
 
-**Next step:** the author merges `p4/scheduling`. Then P5 (real-time and observability) from the updated `main`.
+**Next step:** the author merges `p5/events-and-gateway`. Then `p5/metrics-and-summary` from the updated `main`.
 
-**How P4 is split** (the plan names the two branches):
+**How P5 is split** (the plan names the three branches):
+
+| Pull request | Contents |
+|---|---|
+| `p5/events-and-gateway` (in review) | The repetition of the P4 tests and the three timing dependencies it led to. The status event's message, the lazy and bounded event publisher in api, relay and worker, the gateway with subscribe-then-snapshot, origin patterns, the bounded send queue and its own event queue, the `gateway` service in Compose, the Compose scenario create → subscribe → snapshot → events → `sent`. Mutation check: the snapshot read before the registration. |
+| `p5/metrics-and-summary` | Every metric of ADR-0009 §1 with the ones later decisions added (`expired_total` by priority and `notifications_finished_total`, D75; `pacer_slots_missed_total`, D77; `limiter_fallback_active`; the reconciliation counters), `GET /v1/metrics/summary` with its two caches, the "Overview" dashboard with its smoke test, `alerts.yml` with the thresholds of D74 and `promtool check rules`, Prometheus scraping the roles. |
+| `p5/logging-tracing-health` | `slog` with the central handler and the three redaction layers, the request log brought in line with ADR-0009 §4, correlation IDs, hybrid tracing, the health endpoints in full, the canary scan, `make demo`. |
+
+**How P4 was split** (the plan names the two branches):
 
 | Pull request | Contents |
 |---|---|
 | `p4/templates` (merged) | Template tables and store, the template engine with the allow-list walker, the seven template endpoints, notifications created from templates (single, batch, with `Idempotency-Key`), the Compose template scenario, `FuzzCompileTemplate`. Also: open issue 11 moved to the P6 tuning list, the log level of a channel closed with `CONNECTION_FORCED`. Mutation checks: the function-name check, the one-template rule. |
-| `p4/scheduling` (in review) | `scheduled_at` (the 30-second tolerance stored as `NULL`, the 30-day horizon), the `expires_at` rule on create, the replay of a keyed retry after the clock moved, the scheduled-delivery scenario. Two additions by the author, each in its own commit: a `false` template variable is the empty string (D40 amended), and `GET /v1/templates`. |
+| `p4/scheduling` (merged) | `scheduled_at` (the 30-second tolerance stored as `NULL`, the 30-day horizon), the `expires_at` rule on create, the replay of a keyed retry after the clock moved, the scheduled-delivery scenario. Two additions by the author, each in its own commit: a `false` template variable is the empty string (D40 amended), and `GET /v1/templates`. |
 
-**Rules of the phase (author):** the allow-list walker is read line by line by the main loop; the mock profile only, the default webhook.site URL is not used (48 of its 50 requests are left).
+**Rules of the phase (author):** subscribe-then-snapshot is the ordering the main loop reviews, with a mutation check; the canary scan also covers the gateway's WebSocket error messages and every problem document of a failed request; `make demo` is developed on the mock profile and its provider probe is tested against the mock and a throwaway URL; the default webhook.site URL is not used (48 of its 50 requests are left); one pull request at a time, each followed by green CI, a report and a stop.
 
 **How P3 was split** (the plan names the three branches, not their contents):
 
@@ -25,7 +33,7 @@ The first file every session reads and the last one it updates. The phases and t
 | `p3/breaker-and-fallback` (merged) | The circuit breaker with the abort path and the doubling of the throttle delay, the Redis-down fallback limiter with `/metrics` on the admin port, open issue 7 (the claim during a Postgres outage, with the 25-nack check), the measurement of the hot-path statements under both plan modes. Exit criteria: `401` → circuit open with `failures = 0`; sending continues with Redis stopped. Mutation check: the five-consecutive-failures rule. |
 | `p3/recovery` (merged) | D79 (every pool plans with the current values) with the burst measured on the real code; reconciliation with the deferred trigger, `requeue-stale`, transition 12 and the 60-second final-write retry, the lease sweeper's tests, resubscribe, the connection epoch (D76), topology redeclaration, the relay's publisher after a closed channel (the exit stays). Exit criteria: the RabbitMQ restart, the empty broker volume, `requeue-stale`, a real Postgres restart. Mutation checks: transition 12's guards, reconciliation. |
 
-**Minimum Compose version:** v2.24.0, from Docker's documentation and the release notes; tested with v5.6.1 (D45, D70). Re-derived in P1 when the application services and the one-shot `migrate` service landed. Three features decide it: `up --wait` (introduced in v2.1.1), `up --wait` with a one-shot container that other services wait for with `service_completed_successfully` (fixed in v2.7.0: "Use appropriate dependency condition for one-shot containers when running `compose up --wait`"), and the optional `.env` entry, `env_file` with `required: false` (the documentation says "As of Docker Compose version 2.24.0"); the last is the newest. The number is not run against a v2.24.0 binary; the practical check is the clean-clone rehearsal in P7. CI runs the stack with the standalone v5.6.1 binary.
+**Minimum Compose version:** v2.24.0, from Docker's documentation and the release notes; tested with v5.6.1 (D45, D70). Re-derived in P1 when the application services and the one-shot `migrate` service landed. Three features decide it: `up --wait` (introduced in v2.1.1), `up --wait` with a one-shot container that other services wait for with `service_completed_successfully` (fixed in v2.7.0: "Use appropriate dependency condition for one-shot containers when running `compose up --wait`"), and the optional `.env` entry, `env_file` with `required: false` (the documentation says "As of Docker Compose version 2.24.0"); the last is the newest. The number is not run against a v2.24.0 binary; the practical check is the clean-clone rehearsal in P7. CI runs the stack with the standalone v5.6.1 binary. **Re-derived in P5, when the `gateway` service was added:** the service uses nothing the file did not use (the shared `x-app` anchor, `command`, a published port with a default, `depends_on` with `service_healthy` and `service_completed_successfully`, `healthcheck`, `restart`), so the three features above still decide it and the number stays v2.24.0. Docker's documentation was read again on 2026-11-19: the sentence "As of Docker Compose version 2.24.0" about `required` is in the guide on setting environment variables; the Compose file reference describes `required` without a version, and the release notes of v2.24.0 do not mention it. Then `docker-compose up` ran in the foreground from a clean clone with no `.env` (session log, P5).
 
 **Decision ledger:** v4 (`D1`–`D79`; D40 amended in P4 by the author: a `false` template variable converts to the empty string), amended after the first-hour experiments: D5 and D7 were extended and D76 was added, by the author's decision. In P1 the author added D77 (the pacer's missed-slot rule and send deadline) and amended D20 and D23 to it. In P2 the author added D78 (the relay's idempotency-key cleanup, built in P3). In P3 the author added D79 (every Postgres pool plans with the current values, open issue 10). Section K records the points settled during the preparation session, and D76. The ADRs are the primary design documents; the ledger is the decision record.
 
@@ -39,8 +47,8 @@ Status is one of: `not started`, `in progress`, `in review` (pull requests open)
 | P1 | Core path | done | [#4](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/4) (`p1/schema-and-store`, merged), [#5](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/5) (`p1/relay-worker-provider`, merged), [#6](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/6) (`p1/compose-e2e`, merged) | 2026-11-19 |
 | P2 | API completeness | done | [#7](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/7) (`p2/batch-and-idempotency`, merged), [#8](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/8) (`p2/cancel-redrive-listing`, merged), [#9](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/9) (`p2/validation`, merged) | 2026-11-19 |
 | P3 | Delivery robustness | done | [#10](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/10) (`p3/classification-and-retry`, merged), [#11](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/11) (`p3/breaker-and-fallback`, merged), [#12](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/12) (`p3/recovery`, merged); follow-up [#13](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/13) (`p3/isopen-race`, merged) | 2026-11-19 |
-| P4 | Templates and scheduling | in review | [#14](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/14) (`p4/templates`, merged), [#15](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/15) (`p4/scheduling`, in review) | 2026-11-19 |
-| P5 | Real-time and observability | not started | | |
+| P4 | Templates and scheduling | done | [#14](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/14) (`p4/templates`, merged), [#15](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/15) (`p4/scheduling`, merged) | 2026-11-19 |
+| P5 | Real-time and observability | in progress | | |
 | P6 | Quality | not started | | |
 | P7 | Delivery | not started | | |
 
@@ -80,8 +88,9 @@ Questions that the ledger and the ADRs do not answer, and problems that are not 
 
 | # | Raised on | Issue | Blocks |
 |---|---|---|---|
+| 12 | 2026-11-19 (P5) | **The API accepts an id in spellings other than the canonical one.** The UUID parser behind every path and query id (`google/uuid` v1.6.0, through the generated parameter binding and `list_params.go`) also accepts `urn:uuid:…`, `{…}`, 32 digits without hyphens, and any 38-character string whose middle is a UUID: it drops the first and the last character without looking at them. On the stack: `GET /v1/notifications/x<id>y` and `/v1/notifications/{<id>}` answer `200` with the notification; `/v1/notifications/abc` answers `400`. Nothing wrong is read or written (the parsed id is the one used), and no label or log line takes the raw path. ADR-0006 says ids are UUIDs and not which spellings. The gateway, built in P5, accepts only the 36-character form (in either case). **Options:** (a) leave the API as it is and say so in ADR-0006; (b) the API refuses every other spelling like an id that is not a UUID (`400` for a path id, `invalid_parameter` for `batch_id` in a listing), a small change with table tests. **Recommended:** (b), so that one notification has one URL and the API and the gateway agree. | Nothing |
 
-No issue is open. Issue 11 (the claim misled by statistics from an empty outbox) was answered by the author with option (d): it is part of the tuning of P6, with its measurements named in the plan (session log, P4).
+Issue 11 (the claim misled by statistics from an empty outbox) was answered by the author with option (d): it is part of the tuning of P6, with its measurements named in the plan (session log, P4).
 
 ## Session log
 
@@ -97,6 +106,70 @@ Newest entry first. One entry per session, in this form:
 - **Open issues:** new entries added to the table above.
 - **Next step:** the first thing the next session does.
 ```
+
+### 2026-11-19 — P5: events and gateway (pull request 1 of 3)
+
+- **By the author, at the start:** `p4/scheduling` is merged, P4 is complete and its nine decisions are accepted. Before the first change of P5, the tests added in P4 are repeated and any test that depends on timing without a wait is fixed. Seven points for the phase: (1) the metrics of later decisions belong to it, and the alert rules use the thresholds of D74 with the circuit rule on "not closed for more than 5 minutes"; (2) subscribe-then-snapshot is reviewed by the main loop, with a mutation check whose output is in the report; (3) the canary scan also covers the gateway's WebSocket error messages and every problem document of a failed request; (4) the API's one info line per request is brought in line with ADR-0009; (5) `make demo` on the mock profile only; (6) with the gateway service, the minimum Compose version is derived again and `docker-compose up` is run in the foreground from a clean copy with no `.env`; (7) three pull requests in the plan's order, each followed by green CI, a report and a stop. Points 1, 3, 4 and 5 belong to the two later pull requests.
+- **The repetition of the P4 tests, done first:**
+  - `go test -race -tags=integration -count=20` over the scheduling and template tests of `internal/integration`, `internal/api`, `internal/store` and `internal/domain` (98 tests): **1,960 of 1,960 passed, no race report** (81 s).
+  - The scheduled-delivery Compose scenario, five runs on one stack: **5 of 5 passed** as it was on `main` (sent 36 to 137 ms after its `scheduled_at`), and 5 of 5 after the changes below (31 to 108 ms).
+  - **Nothing failed. Three dependencies on timing were found by reading, and fixed** (commit 1):
+    1. **The Compose scenario counted from the host's clock.** It sent "4 s ahead" and "5 s ago" by the host's clock, and the API judges them by the stack's. A stack whose clock is a few seconds ahead of the host's (containers in a virtual machine) would have taken the first for "in the past, so now". It now counts from the `created_at` of its first notification. Measured here: the two clocks were 5 to 9 ms apart.
+    2. **The wired-role tests had the same split inside one process:** the `scheduled_at` came from the database's clock, the API judged it by the host's. The API of these tests now has a clock that stands still, so a time chosen ahead of it is in the future whenever its request arrives.
+    3. **`TestE2E_ScheduledCancelledIsNeverSent` had to cancel within its 1.5 s lead** while the relay ran; a host that stalled longer got a `409` and a failed test. The relay now starts after the test has waited for the database's clock to pass both scheduled times; the test takes 0.3 s instead of 1.7 s. Checked that it still fails when it should: without the cancel, the first notification is sent and three assertions fail.
+  - **Left as they are, with their margins measured and now logged by the tests:** `TestE2E_ScheduledIsSentAtItsTimeNotBefore` must read the row once within its 1.5 s lead (it read it 299 or 300 times in each of 20 runs; that a send is "not before" is also asserted on `queued_at`, the attempt's `started_at` and `sent_at`, which need no timing), and the two "not much later" bounds, which are assertions about lateness, not waits: 9 to 27 ms against 2 s in the wired roles, 31 to 108 ms against 5 s on the stack.
+- **Done:**
+  - **The event's message** (`internal/queue/event_message.go`, by the main loop): the exchange, the name as the message type, the JSON body with its encoder and decoder.
+  - **The event publisher** (`queue.EventPublisher`) and its wiring into api, relay, worker and `requeue-stale`.
+  - **The gateway** (`internal/gateway`, `cmd/gateway`): subscribe, snapshot, live events, unsubscribe, errors, limits, origins, ping, slow clients, shutdown; its event consumer (`queue.EventConsumer`); the snapshot queries and the read-only pool (`store.OpenPoolWith`, `store.ReadOnly`).
+  - **Compose:** the `gateway` service on `GATEWAY_PORT` (8082); `make test-e2e` passes the gateway's URL.
+  - **Configuration:** `EVENT_FLUSH_TIMEOUT` (2 s) and `WS_WRITE_TIMEOUT` (10 s) are new.
+  - **Documents:** ADR-0001 (the message, the queue's name), ADR-0005 (the publisher table, the gateway table, shutdown, review history), ADR-0006 §10 (the details of the protocol, the error codes), ADR-0010 (the status-event and WebSocket rows, one mutation row), `future-work.md` (what "events can be lost" covers now), the README (real-time updates; five application containers), `.env.example`.
+- **Subscribe-then-snapshot, read line by line by the main loop** (`client.subscribe`, `client.register`, `Gateway.subscribe`, `Gateway.Dispatch`, `client.enqueue`, the writer and `Gateway.release`). What the reading checked:
+  - The registration is complete, under the index's write lock, before the first snapshot statement starts; a dispatch takes the read lock, so it sees the connection from then on.
+  - **Why the order is enough:** a transition committed before the read is in the snapshot; one that commits later publishes after its commit, so its dispatch finds the registration. The two snapshot statements (by ids, by batch) each satisfy this on their own.
+  - A request over the limit registers nothing; a failed snapshot read leaves the registration (and says so to the client).
+  - The connection's own maps are touched by its reader only, and by the release after the reader has ended. A dispatch never waits: a full queue asks the writer to close and returns. A reader blocked on handing over a snapshot is released when the writer ends (a write timeout) or the connection's context ends, so no goroutine is left waiting on another.
+- **Mutation check** (by the main loop; the file restored byte-identically, checksum compared, the package green afterwards):
+
+  | Mutation | Named test that fails | Its message |
+  |---|---|---|
+  | **The snapshot read before the registration** (the two statements of `client.subscribe` swapped: `snap, err := c.g.snapshot(…)` above `c.register(req)`) | `TestGateway_SubscriptionIsRegisteredBeforeTheSnapshotIsRead`, in 3 of 3 runs, and no other test of the package | "the client never received version 2 (cancelled), which committed after the snapshot read and was dispatched before the subscribe request finished; it received versions [1] up to the marker. The subscription must be registered before the snapshot is read" |
+
+  The test puts the transition exactly there: its snapshot reader does the real read, then cancels the row in Postgres and has the event dispatched before it returns. "Never" is decided without a sleep, by a marker event that both orders deliver.
+- **Pull requests opened:** see the phase table.
+- **Exit criteria of this pull request** (run by the main loop on this branch; mock profile and test containers only):
+  - `make test`: green, 22 packages (`internal/gateway` is new).
+  - `make test-e2e`: green, 168 s. `TestComposeE2E_GatewayFollowsNotificationsToSent`: a notification and a batch of three, each followed over the WebSocket as `pending → queued → processing → sent` with rising versions after its snapshot. `load-smoke`: 6,000 SMS in 61.2 s, 98.0/s, largest one-second window **99**.
+  - `make generate`: no drift (checksums compared). `make lint`: 0 issues.
+  - **`docker-compose up` in the foreground from a clean clone with no `.env`** (Compose v5.6.1; the application image deleted first, so the clone built its own): the ten long-running services healthy 21 s after the start, `migrate` exited 0. `/healthz` and `/readyz` answer. **Nothing was sent to the default provider URL:** one notification was created, scheduled a day ahead, followed over the WebSocket (snapshot `pending` version 1) and cancelled (live event `cancelled` version 2); its `attempt_count` is 0; the stack and its volumes were removed minutes later. A cross-origin upgrade is refused with `403`. No `ERROR` or `WARN` line in the four roles' logs. An interrupt (Ctrl-C) stops every service with exit code 0.
+  - `gh pr checks` is reported on the pull request.
+- **Decisions taken** (within the latitude of the ledger and the ADRs; the ADRs are updated):
+  1. **The event's body** has nine members, all always present: `id`, `batch_id`, `channel`, `priority`, `status`, `version`, `failure_reason`, `attempt_count`, `updated_at`. The name is the message's type; delivery is transient, without confirms and without `mandatory`. A consumer ignores an unknown member and drops a body it cannot use.
+  2. **A publisher has a connection of its own,** in every role, and does not use the client library's recovery: it dials when an event needs it, at most once per `AMQP_RECOVERY_RETRY_INTERVAL`, and never gives up. Without a connection events are dropped, not held.
+  3. **A role's stop gives buffered events `EVENT_FLUSH_TIMEOUT` (new, 2 s),** then cuts the dial or write in progress. The delegate had used the 5-second retry interval, which made the worker's worst stop 15 s + 5 s, exactly the grace period; the main loop gave the bound its own variable.
+  4. `requeue-stale` publishes its events too, silently: its output and exit code do not depend on the broker.
+  5. **Snapshot messages bypass the bounded send queue,** which is for live events: a batch snapshot is up to 1,000 messages against a queue of 256. The connection's reader hands them to the writer and reads no further request until they are handed over.
+  6. **Server messages for a bad request:** `{"type":"error","code","message"}` with four codes (`invalid_message`, `invalid_id`, `too_many_subscriptions`, `snapshot_unavailable`); the connection stays open; a message repeats nothing the client sent. ADR-0006 §10 named no error message.
+  7. **No acknowledgement** of subscribe or unsubscribe; a subscription to an unknown id is registered and gets no snapshot; a `null` member is absent; an unknown member is ignored (the REST API rejects one; here a later client should not break an older gateway).
+  8. **Ids in the canonical 36-character form only** at the gateway (open issue 12 is the same question for the API).
+  9. **The limit is all or nothing per request;** a repeated subscription does not count twice and sends its snapshot again.
+  10. **Close statuses:** 1013 for a full send queue, 1001 at shutdown, 1009 for an oversized request (the read limit is `4096 + 64 × WS_MAX_SUBSCRIPTIONS` bytes). A client that has not answered a ping when the next is due is disconnected.
+  11. **`WS_WRITE_TIMEOUT` (new, 10 s)** bounds every write and the closing of the connections at shutdown.
+  12. **The gateway's queue is named by the broker,** a new one on every (re)subscription; a fixed name could be refused as locked while the broker still holds the dead connection's queue.
+  13. **The gateway's consumer is its own connection type** with the library's recovery and the configured budget; `queue.Connection` and `queue.Consumer` are not changed. The role exits when recovery gives up and when its subscription ends.
+  14. **Read-only by `default_transaction_read_only`** on the gateway's pool: a guard against a mistake in the role's code, not a permission.
+  15. Neither the upgrade's error (it quotes the `Origin` header) nor a dropped event's body or decode error is logged.
+- **Observed:**
+  - `google/uuid`'s parser accepts more than the canonical spelling (open issue 12).
+  - RabbitMQ 4.4.1 refuses to delete an exclusive queue, also through the management API.
+  - `coder/websocket` v1.8.15: `Close` has fixed timeouts of 5 s for the close frame and 5 s for the answer; a refused origin's `403` body names the origin's host (to the requester only).
+  - `amqp091-go` v1.17.0: `Connection.Close` has no deadline (the publisher uses `CloseDeadline` and closes the socket); a virtual host deleted under a live connection ends the connection without recovery (the tests wipe a broker only while the connection is broken, as a restart does).
+  - On the API, `/readyz` already lists its Postgres check; the per-service readiness of ADR-0009 §7 is the third pull request.
+- **Not verified:** a v2.24.0 Compose binary (as before); a browser client and a real cross-origin page (the origin check is tested with headers); a client that never answers the close frame at shutdown; the relay's own stop with a stalled events broker (it shares one URL with dispatch; the same `Close` is tested through the worker and the api); a broker that blocks publishers with a resource alarm; AMQPS; the gateway under many connections or a high event rate (the queue sizes are first values, tuned in P6); a second gateway replica; `gateway.Service` itself has no test of its own (its parts have, and the stack ran it); `make test-docker`.
+- **Delegation:** two Opus delegates in parallel, each in its own worktree, from briefs that fixed the constraints and the tests and left the structure to them: one for the event publisher, its wiring and the twelve-transition test; one for the gateway with its consumer, queries, Compose service and scenario. The main loop ran the repetition and fixed the three tests, wrote the event's message, decided the protocol's open points and the snapshot path before the briefs, wrote both briefs, read the subscribe path and the publisher line by line, ran the mutation check, changed the flush bound, removed a helper both delegates had defined, verified the UUID finding of one delegate on the stack, ran `make test`, `make test-e2e`, lint, the drift check and the clean-copy run itself, and wrote the documents.
+- **Open issues:** 12 (ids in other spellings on the API).
+- **Next step:** after the merge, `p5/metrics-and-summary` from the updated `main`.
 
 ### 2026-11-19 — P4: scheduling (pull request 2 of 2)
 

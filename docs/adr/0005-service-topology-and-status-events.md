@@ -155,7 +155,7 @@ The tests are in [ADR-0010](0010-testing-and-ci.md): the connection is broken wh
 | worker | Cancel the consumers; nack prefetched messages that have not been claimed (requeue), including, at once and exactly once, a message whose claim is being retried after a database error; finish in-flight sends within 15 s, which is under the 30 s lease and the 20 s stop grace period; exit. A claimed notification whose send has not started when the 15 s end is closed as `aborted` and returns to `retrying` without consuming budget. A send that is still running then is cancelled and recorded as `unknown`: waiting for it could take the drain time plus the HTTP timeout, longer than the stop grace period. |
 | relay | Finish the current lane's transaction, start no further lane, and exit. |
 | api | `http.Server.Shutdown` drains in-flight requests. |
-| gateway | Send a WebSocket close frame. Clients reconnect with jittered back-off. |
+| gateway | Stop accepting, send every connection a close frame (1001, going away) and wait for the connections to end, at most `WS_WRITE_TIMEOUT`. Clients reconnect with jittered back-off. |
 
 ### Status events
 
@@ -168,6 +168,16 @@ The tests are in [ADR-0010](0010-testing-and-ci.md): the connection is broken wh
 | api | 9 (`cancelled`), 11 (redrive) |
 
 **Publishers are optional by construction.** Each one connects lazily, publishes through a bounded in-memory buffer and drops events when the buffer is full. A publisher never blocks a transition and never affects start-up or readiness.
+
+| Topic | Rule |
+|---|---|
+| Connection | **A connection of its own, never the role's dispatch connection:** a fault on the events path cannot touch dispatch, and the api has no other connection to the broker. Making a publisher does no I/O; it dials when it has an event to send. |
+| Hand-off | `Publish` puts the event in a buffer of `EVENT_BUFFER_SIZE` without waiting. A full buffer drops the event. |
+| No connection | Events are **dropped, not held**; there is no retry queue. The publisher dials again when an event needs it, at most once per `AMQP_RECOVERY_RETRY_INTERVAL`, and never gives up; it does not use the client library's recovery (that dials without events and gives up after its budget) and never ends the process. After the broker is back, events can therefore still be dropped for up to one interval. |
+| On every connection | The exchange is declared (a broker that came back empty has it again). A closed channel, also one closed by a failed publish, drops the whole connection; the next event dials. |
+| Counting and logging | Published and dropped events are counted, the dropped ones by reason (buffer full, no connection, publish error). A lost connection and a connection made are one log line each (`warn`, `info`); a broker that stays down adds `debug` lines only. |
+| Stop | A role closes its publisher last. The buffered events get `EVENT_FLUSH_TIMEOUT` (2 s) to reach the broker; then a dial or a write in progress is cut. With the worker's 15-second drain the stop stays under the 20-second grace period. |
+| `requeue-stale` | The command publishes the events of its rows the same way, with the same output and exit code whether the broker answers or not. Events beyond the buffer size are dropped. |
 
 Events are not routed through the outbox: that would add a database write to every transition for a channel that is best-effort by design.
 
@@ -182,12 +192,15 @@ Events are published from different processes and connections, so they can arriv
 
 | Topic | Rule |
 |---|---|
-| Event delivery | Each gateway instance consumes through its own exclusive, auto-delete queue with `x-max-length` and a short `x-message-ttl` ([ADR-0001](0001-rabbitmq-as-dispatch-broker.md)) |
-| **Snapshot on subscribe** | The gateway **registers the subscription first, then reads Postgres and sends a snapshot**: a `status_changed` message with the current `version`. For a batch subscription it sends one message per notification (at most 1,000). A client that subscribes after creating a notification therefore never misses its state, and the `version` rule discards whichever of snapshot and live event is older. |
-| Database access | Read-only |
-| Slow clients | Each connection has a bounded send queue. When it is full, the connection is closed; the client reconnects and receives a fresh snapshot. |
-| Origins | Allowed origins come from configuration (`OriginPatterns`) |
+| Event delivery | Each gateway instance consumes through its own exclusive, auto-delete queue with `x-max-length` and a short `x-message-ttl` ([ADR-0001](0001-rabbitmq-as-dispatch-broker.md)). An event goes to every connection subscribed to its `id` or to its `batch_id`, once per connection. |
+| **Snapshot on subscribe** | The gateway **registers the subscription first, then reads Postgres and sends a snapshot**: a `status_changed` message with the current `version`. For a batch subscription it sends one message per notification (at most 1,000). A client that subscribes after creating a notification therefore never misses its state, and the `version` rule discards whichever of snapshot and live event is older. **Why the order is enough:** a transition that committed before the read is in the snapshot; one that commits later publishes its event after its commit, so after the registration, and the event is dispatched to the connection. With the read first, a transition committing between the read and the registration would reach the client in neither; `TestGateway_SubscriptionIsRegisteredBeforeTheSnapshotIsRead` fails when the two steps are swapped ([ADR-0010](0010-testing-and-ci.md) §8). |
+| Database access | Read-only: the gateway's pool sets `default_transaction_read_only`, so a statement that writes is refused (a guard against a mistake in the role's code, not a permission). |
+| Slow clients | Each connection has a bounded send queue of `WS_SEND_QUEUE_SIZE` for live events. Dispatching never waits for a connection; when a connection's queue is full, it is closed with status 1013 (try again later), and the client reconnects and receives a fresh snapshot. **Snapshot messages do not go through that queue:** a batch snapshot is up to 1,000 messages against a queue of 256 and would close every connection that subscribes to a large batch while events flow. The connection's reader hands them to its writer one at a time and reads no further request until they are handed over, so a slow client slows only its own subscribe. |
+| Liveness | A ping every `WS_PING_INTERVAL`; a client that has not answered when the next one is due is disconnected. Every write is bounded by `WS_WRITE_TIMEOUT` (10 s). A request larger than one of 1,000 ids needs is refused by closing the connection (1009). |
+| Origins | Allowed origins come from configuration (`OriginPatterns`, `WS_ORIGIN_PATTERNS`). With none, only the same origin is accepted; a request without an `Origin` header (not a browser) always is. A disallowed origin is refused before the upgrade (`403`). |
 | Limits | At most 1,000 subscriptions per connection ([ADR-0006](0006-api-contract-and-three-layer-idempotency.md) §10) |
+| Broker connection | A connection of its own with the client library's recovery and the configured budget (below). The exchange, a new queue and its binding are declared at start and on every reconnection. The role exits with a non-zero code when recovery gives up, and when its subscription ends for another reason (the broker cancels it; RabbitMQ refuses even an operator's delete of an exclusive queue, so this is not expected). Whether the consumer is active is a flag that readiness reads ([ADR-0009](0009-observability.md) §7). |
+| After a broker outage | Events published while the gateway was not subscribed are lost, and connected clients are **not** sent a new snapshot. A client that must not miss a final status reads it with `GET` ([future work](../future-work.md)). |
 
 ### Code layout
 
@@ -250,4 +263,5 @@ Changes made after the design review, recorded in the [design review log](../ai/
 - The gateway sends a snapshot on subscribe and no longer keeps a `last_version` map, because a client learns a notification's `id` only after the first events may have been published. (D37)
 - Event publishers became lazy and optional, connection-recovery failure became an exit, and Compose details (fixed RabbitMQ hostname, `healthcheck` subcommand, stop grace period, pinned images) were added. (D11, D5, D9, D47, D48)
 - After experiment E4 (P0), the client's recovery is enabled explicitly with a configured budget of 24 attempts at 5 s, and the worker gained the connection epoch: a delivery that arrived before a reconnect is dropped from the local buffer and never acked, because delivery tags restart on the recovered channel. (D5, D76)
+- In P5 the event publishers and the gateway were built, and the points the design had left open were settled: a publisher has a connection of its own and drops events while it has none; a role's stop gives buffered events `EVENT_FLUSH_TIMEOUT`; the gateway's snapshot messages bypass the bounded send queue, which is for live events; the gateway's queue is named by the broker; a slow client is closed with 1013 and a shutdown with 1001. (D11, D37)
 - In P1 the worker loop gained the missed-slot rule and the send deadline: a claim that returns more than 5 ms after its slot gives the slot up and reserves a new one, and a send that cannot start within 15 s of the claim call is aborted. Sending late at once could put 101 arrivals into a one-second window. (D77)
