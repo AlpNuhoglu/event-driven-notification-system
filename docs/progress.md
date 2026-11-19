@@ -4,16 +4,16 @@ The first file every session reads and the last one it updates. The phases and t
 
 ## Current phase
 
-**P4: templates and scheduling** — in progress: the first of its two pull requests, `p4/templates`, is in review. P3 is done: its three pull requests and the follow-up `p3/isopen-race` are merged.
+**P4: templates and scheduling** — in review: `p4/templates` is merged, and `p4/scheduling`, the second and last pull request, is open with every exit criterion of the phase run.
 
-**Next step:** the author merges `p4/templates`; then `p4/scheduling` from the updated `main`.
+**Next step:** the author merges `p4/scheduling`. Then P5 (real-time and observability) from the updated `main`.
 
 **How P4 is split** (the plan names the two branches):
 
 | Pull request | Contents |
 |---|---|
-| `p4/templates` (in review) | Template tables and store, the template engine with the allow-list walker, the seven template endpoints, notifications created from templates (single, batch, with `Idempotency-Key`), the Compose template scenario, `FuzzCompileTemplate`. Also: open issue 11 moved to the P6 tuning list, the log level of a channel closed with `CONNECTION_FORCED`. Mutation checks: the function-name check, the one-template rule. |
-| `p4/scheduling` (next, from the updated `main`) | `scheduled_at` (the 30-second tolerance stored as `NULL`, the 30-day horizon), the `expires_at` rule on create, the scheduled-delivery scenario. |
+| `p4/templates` (merged) | Template tables and store, the template engine with the allow-list walker, the seven template endpoints, notifications created from templates (single, batch, with `Idempotency-Key`), the Compose template scenario, `FuzzCompileTemplate`. Also: open issue 11 moved to the P6 tuning list, the log level of a channel closed with `CONNECTION_FORCED`. Mutation checks: the function-name check, the one-template rule. |
+| `p4/scheduling` (in review) | `scheduled_at` (the 30-second tolerance stored as `NULL`, the 30-day horizon), the `expires_at` rule on create, the replay of a keyed retry after the clock moved, the scheduled-delivery scenario. Two additions by the author, each in its own commit: a `false` template variable is the empty string (D40 amended), and `GET /v1/templates`. |
 
 **Rules of the phase (author):** the allow-list walker is read line by line by the main loop; the mock profile only, the default webhook.site URL is not used (48 of its 50 requests are left).
 
@@ -27,7 +27,7 @@ The first file every session reads and the last one it updates. The phases and t
 
 **Minimum Compose version:** v2.24.0, from Docker's documentation and the release notes; tested with v5.6.1 (D45, D70). Re-derived in P1 when the application services and the one-shot `migrate` service landed. Three features decide it: `up --wait` (introduced in v2.1.1), `up --wait` with a one-shot container that other services wait for with `service_completed_successfully` (fixed in v2.7.0: "Use appropriate dependency condition for one-shot containers when running `compose up --wait`"), and the optional `.env` entry, `env_file` with `required: false` (the documentation says "As of Docker Compose version 2.24.0"); the last is the newest. The number is not run against a v2.24.0 binary; the practical check is the clean-clone rehearsal in P7. CI runs the stack with the standalone v5.6.1 binary.
 
-**Decision ledger:** v4 (`D1`–`D79`), amended after the first-hour experiments: D5 and D7 were extended and D76 was added, by the author's decision. In P1 the author added D77 (the pacer's missed-slot rule and send deadline) and amended D20 and D23 to it. In P2 the author added D78 (the relay's idempotency-key cleanup, built in P3). In P3 the author added D79 (every Postgres pool plans with the current values, open issue 10). Section K records the points settled during the preparation session, and D76. The ADRs are the primary design documents; the ledger is the decision record.
+**Decision ledger:** v4 (`D1`–`D79`; D40 amended in P4 by the author: a `false` template variable converts to the empty string), amended after the first-hour experiments: D5 and D7 were extended and D76 was added, by the author's decision. In P1 the author added D77 (the pacer's missed-slot rule and send deadline) and amended D20 and D23 to it. In P2 the author added D78 (the relay's idempotency-key cleanup, built in P3). In P3 the author added D79 (every Postgres pool plans with the current values, open issue 10). Section K records the points settled during the preparation session, and D76. The ADRs are the primary design documents; the ledger is the decision record.
 
 ## Phase status
 
@@ -39,7 +39,7 @@ Status is one of: `not started`, `in progress`, `in review` (pull requests open)
 | P1 | Core path | done | [#4](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/4) (`p1/schema-and-store`, merged), [#5](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/5) (`p1/relay-worker-provider`, merged), [#6](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/6) (`p1/compose-e2e`, merged) | 2026-11-19 |
 | P2 | API completeness | done | [#7](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/7) (`p2/batch-and-idempotency`, merged), [#8](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/8) (`p2/cancel-redrive-listing`, merged), [#9](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/9) (`p2/validation`, merged) | 2026-11-19 |
 | P3 | Delivery robustness | done | [#10](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/10) (`p3/classification-and-retry`, merged), [#11](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/11) (`p3/breaker-and-fallback`, merged), [#12](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/12) (`p3/recovery`, merged); follow-up [#13](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/13) (`p3/isopen-race`, merged) | 2026-11-19 |
-| P4 | Templates and scheduling | in progress | [#14](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/14) (`p4/templates`, in review) | |
+| P4 | Templates and scheduling | in review | [#14](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/14) (`p4/templates`, merged), `p4/scheduling` (in review) | 2026-11-19 |
 | P5 | Real-time and observability | not started | | |
 | P6 | Quality | not started | | |
 | P7 | Delivery | not started | | |
@@ -97,6 +97,45 @@ Newest entry first. One entry per session, in this form:
 - **Open issues:** new entries added to the table above.
 - **Next step:** the first thing the next session does.
 ```
+
+### 2026-11-19 — P4: scheduling (pull request 2 of 2)
+
+- **By the author, at the start:** `p4/templates` is merged and its nineteen decisions are accepted, the strengthened one-template rule included. A row in the review log, section 6, for that rule. Two additions to this pull request, each in its own commit: **(1) an amendment to D40:** JSON `false` converts to the empty string and `true` stays `true`, because `{{ if .flag }}` took the true branch for a client that sent `false`; **(2) a list endpoint,** `GET /v1/templates`, by name with a keyset cursor, contract-first with a contract test and a pagination walk, kept small. Then the exit criteria of P4 in full on the mock profile.
+- **The review log row exists already:** it was written with `p4/templates` and merged with it (section 6, the row of P4: a `define` named like the source passed "exactly one template"; found by probing the parser before the walker was specified). No second row was added.
+- **Done:**
+  - **D40 amended** (commit 1): `false` is the empty string. The ledger entry and its amendment line, ADR-0008 §4, the API description (both places), `future-work.md` and the README state the three consequences: `{{ .flag }}` prints nothing for `false`; the number `0` is the text `0` and is not empty; `default` applies to a `false` value. `TestTemplateRender_BooleanInIf` (true, false, an omitted optional, the empty string, `0` and the string `"false"`, on the three channels) and `TestTemplate_BooleanVariables` (the same through the preview and through a create, with the stored row; `template_vars` keeps `false` as sent).
+  - **Scheduling** (commit 2): `scheduled_at` and `expires_at` on the create request, single and batch, with their rules judged by the API's clock; the storage and the relay are unchanged.
+  - **`GET /v1/templates`** (commit 3): by name in ASCII order, keyset cursor, `limit` 1 to 200; summaries with name, channel, latest version and active flag; migration `000003` (an index of the `C` collation). The `future-work.md` note is removed.
+  - **Documents:** ADR-0008 (scheduling table, §4, §9), ADR-0006 (§3, §8, §11), ADR-0010 (the scheduling row, the template row), `future-work.md`, `errors.md`, the README (scheduling examples, the list; "Planned sections" no longer names either), `.env.example`.
+- **A finding of the review, fixed here: a retry under an `Idempotency-Key` could be answered `422` instead of its stored answer.** The delegate that built scheduling reported it and left it open. The rules of `scheduled_at` and `expires_at` depend on when a request arrives, and validation runs before the key is read: a create accepted with a `scheduled_at` inside the tolerance, or with an `expires_at` just far enough ahead, was refused (`in_the_past`, `too_soon`) when it was retried a minute later, although the notification exists. It is the case the key is for, and the same class as the template replay of the previous pull request (decision 12 there). **Fix:** a request that fails *only* rules judged against the clock and carries a key looks the key up before it is answered; live for the same request, the stored answer is replayed; otherwise the `422` stands. A batch needs it only when every item is rejected (with one valid item it reaches the claim, which replays). `TestCreate_ClockRulesDoNotBreakTheReplay` covers both, a request that was never accepted (no key stored) and a key that is live for another body; **with the fix disabled it fails** with "retry: 422 (Idempotent-Replayed "") … in_the_past".
+- **Pull requests opened:** `p4/scheduling` (the link is added with the next commit).
+- **Exit criteria of P4, all run by the main loop on this branch** (mock profile and test containers only; the default webhook.site URL received nothing in P4, 48 of its 50 requests are left):
+  - `make test`: green, 21 packages.
+  - `make fuzz`: green, five targets of 30 s (`FuzzCompileTemplate`: 5.7 million inputs).
+  - `make test-e2e`: green, 159 s.
+    - **The scheduled-delivery scenario** (`TestComposeE2E_Scheduling`): a notification scheduled 4 s ahead (sent with a `+03:00` offset) is `pending` with its `scheduled_at` in UTC, and is sent **69 ms after its `scheduled_at`** (`scheduled_at 19:08:30.382278Z, sent_at 19:08:30.451767Z`), never before, once at the provider. A `scheduled_at` 5 s in the past is answered `scheduled_at: null` and sent at once. A notification scheduled an hour ahead and cancelled never reaches the provider.
+    - **The template scenario** (`TestComposeE2E_Templates`): as in the previous pull request.
+    - `load-smoke`: 6,000 SMS in 61.2 s, 98.0/s, largest one-second window **99**.
+  - `make generate && git diff --exit-code`: no drift. `make lint`: 0 issues.
+  - `gh pr checks` is reported on the pull request.
+- **Decisions taken** (within the latitude of the ledger and the ADRs; the ADRs are updated):
+  1. **The rules of `scheduled_at` and `expires_at` are judged by the API's clock, read once per request** (every item of a batch at the same instant); no database round trip. Times are compared as they are stored, cut to the microsecond. The database's clock still decides when a row is due.
+  2. Codes: `in_the_past` (older than the tolerance), `too_far_ahead` (beyond the horizon), `too_soon` for an `expires_at` on create (the code of redrive). The tolerance and the horizon include their limits.
+  3. **`"scheduled_at": null` means absent** (the request example of ADR-0006 §3 sends it); `"expires_at": null` is `invalid_type`, like every member the example does not show as `null`.
+  4. The `expires_at` rule counts from the `scheduled_at` when that is in the future, otherwise from now (also for a `scheduled_at` inside the tolerance). When `scheduled_at` is invalid, `expires_at` is checked for type and format only.
+  5. **A request that fails only the clock rules is answered from its `Idempotency-Key` when it is a retry** (above). ADR-0006 §11 and ADR-0008 say so.
+  6. **The variables that existed are used:** `SCHEDULE_PAST_TOLERANCE` and `SCHEDULE_MAX_HORIZON` had been in the configuration and `.env.example` since P0, read by nothing. The brief named new ones and the delegate renamed the old; the main loop restored the old names.
+  7. Times are read as redrive reads its `expires_at` (`time.RFC3339`), with what that parser accepts.
+  8. **The list is in ASCII order** (`COLLATE "C"` in the comparison and the order, with an index of that collation), so the order and the walk do not depend on the database's default collation. The cursor is the base64url form of the last name, with one accepted spelling; an empty cursor is `invalid_parameter`. Inactive templates are listed.
+  9. With D40 as amended, only an empty value is false: the string `"false"` is not empty and takes the `if` branch, like the number `0`.
+- **Observed:**
+  - In the wired-role test a scheduled notification is checked against the database's clock in the same statement that reads its status, so "not before its time" does not depend on the test's own clock.
+  - The Compose scenario compares `sent_at` with `scheduled_at`, both from the API and both on the database's clock; what the API judges at creation is still its own clock against the test host's.
+  - `time.RFC3339` accepts an offset of `+24:00` and a comma before the fraction; kept, as for redrive.
+- **Not verified:** a host whose clock differs from the containers' by seconds (the scenario schedules 4 s ahead by the host's clock; a skew above the tolerance would fail it); the new integration and Compose tests were run two or three times each, not repeated to measure flakiness; a retry that overtakes its own first request (the look-up does not see an uncommitted key, as noted for templates); the list endpoint on a large table (the query is served by the index by construction; no `EXPLAIN` test, because a small table is scanned whatever the index); `make test-docker`.
+- **Delegation:** two delegates in parallel. **Sonnet,** in a worktree, for the list endpoint, from a brief that named the files, the query, the cursor rule and the tests. **Opus,** in the main checkout, for scheduling with its wired-role tests and the Compose scenario, from a brief that fixed the rules, the codes and the clock. The main loop wrote the D40 amendment with its tests and documents, decided the scheduling rules and the list's order and cursor, wrote both briefs, reviewed both diffs, **fixed the replay of a keyed retry** that the scheduling delegate had reported and left open (with its test, shown failing without the fix), restored the configuration names, merged the two changes, ran `make test`, `make fuzz`, `make test-e2e`, lint and the drift check itself, and wrote the documents.
+- **Open issues:** none.
+- **Next step:** after the merge, P5.
 
 ### 2026-11-19 — P4: templates (pull request 1 of 2)
 
