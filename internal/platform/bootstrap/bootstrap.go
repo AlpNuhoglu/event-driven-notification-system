@@ -21,6 +21,7 @@ import (
 
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/platform/config"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/platform/health"
+	"github.com/AlpNuhoglu/event-driven-notification-system/internal/platform/tracing"
 )
 
 // Service is the work a role runs next to its admin health server. It runs
@@ -125,6 +126,15 @@ func serveService(ctx context.Context, ln net.Listener, role string, cfg config.
 	// it starts; /readyz of the admin port runs them (ADR-0009 §7).
 	readiness := health.NewReadiness(cfg.Observability.ReadinessCheckTimeout)
 	ctx = health.WithReadiness(ctx, readiness)
+	// Tracing is optional: an unreachable endpoint never fails the start, and
+	// the stop waits for the buffered spans at most TRACING_SHUTDOWN_TIMEOUT.
+	// Only an invalid tracing configuration stops the role here.
+	traces, err := tracing.Start(ctx, cfg.Observability, role, logger)
+	if err != nil {
+		_, _ = fmt.Fprintln(stderr, err)
+		return 1
+	}
+	defer stopTracing(ctx, traces, logger)
 	srv := &http.Server{
 		Handler:           adminHandler(readiness),
 		ReadHeaderTimeout: 5 * time.Second,
@@ -181,6 +191,15 @@ func AdminHandler() http.Handler {
 
 func adminHandler(readiness *health.Readiness) http.Handler {
 	return health.AdminHandler(promhttp.HandlerFor(prometheus.DefaultGatherer, promhttp.HandlerOpts{}), readiness)
+}
+
+// stopTracing exports the role's buffered spans within the provider's
+// shutdown bound. Spans that cannot be exported by then are lost; the role
+// stops anyway and its exit code does not change.
+func stopTracing(ctx context.Context, p *tracing.Provider, logger *slog.Logger) {
+	if err := p.Shutdown(context.WithoutCancel(ctx)); err != nil {
+		logger.Warn("tracing: buffered spans not exported at stop", "error", err)
+	}
 }
 
 // serviceExit maps the error a Service returned to an exit code. Ending

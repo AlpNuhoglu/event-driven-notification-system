@@ -169,6 +169,10 @@ type Observability struct {
 	OTLPEndpoint          string
 	TracesSampler         string
 	TracesSamplerArg      float64
+
+	// TracingShutdownTimeout bounds the export of the buffered spans when a
+	// role stops; an unreachable collector cannot hold the stop longer.
+	TracingShutdownTimeout time.Duration
 }
 
 // Config is the complete service configuration.
@@ -432,6 +436,8 @@ func (l *loader) load() Config {
 		OTLPEndpoint:          l.str("OTEL_EXPORTER_OTLP_ENDPOINT", "http://jaeger:4317"),
 		TracesSampler:         l.str("OTEL_TRACES_SAMPLER", "parentbased_traceidratio"),
 		TracesSamplerArg:      l.float("OTEL_TRACES_SAMPLER_ARG", 1.0, 0, 1, false),
+
+		TracingShutdownTimeout: l.dur("TRACING_SHUTDOWN_TIMEOUT", 2*time.Second),
 	}
 	return c
 }
