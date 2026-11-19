@@ -607,9 +607,10 @@ type TemplatePreviewEncoding string
 type TemplatePreviewRequest struct {
 	// Variables The values of the template's variables, by name. Absent means none.
 	// A value is a JSON string, number or boolean and is converted to a
-	// string: a number keeps its digits as sent (`482913` stays `482913`),
-	// and `true`, `false` and `0` are non-empty strings, so they count as
-	// true in an `if`. At most 1,024 characters per value after conversion,
+	// string: a number keeps its digits as sent (`482913` stays `482913`,
+	// and `0` is the text `0`), `true` is the text `true`, and `false` is
+	// the empty string, so a template's `{{ if .flag }}` takes its `else`
+	// branch for `false`. At most 1,024 characters per value after conversion,
 	// without U+0000. Every required variable must be given and every given
 	// variable must be declared. How a template uses its variables is
 	// described under `POST /v1/templates`.
@@ -632,9 +633,10 @@ type TemplateUse struct {
 
 	// Variables The values of the template's variables, by name. Absent means none.
 	// A value is a JSON string, number or boolean and is converted to a
-	// string: a number keeps its digits as sent (`482913` stays `482913`),
-	// and `true`, `false` and `0` are non-empty strings, so they count as
-	// true in an `if`. At most 1,024 characters per value after conversion,
+	// string: a number keeps its digits as sent (`482913` stays `482913`,
+	// and `0` is the text `0`), `true` is the text `true`, and `false` is
+	// the empty string, so a template's `{{ if .flag }}` takes its `else`
+	// branch for `false`. At most 1,024 characters per value after conversion,
 	// without U+0000. Every required variable must be given and every given
 	// variable must be declared. How a template uses its variables is
 	// described under `POST /v1/templates`.
@@ -647,9 +649,10 @@ type TemplateUse struct {
 
 // TemplateValues The values of the template's variables, by name. Absent means none.
 // A value is a JSON string, number or boolean and is converted to a
-// string: a number keeps its digits as sent (`482913` stays `482913`),
-// and `true`, `false` and `0` are non-empty strings, so they count as
-// true in an `if`. At most 1,024 characters per value after conversion,
+// string: a number keeps its digits as sent (`482913` stays `482913`,
+// and `0` is the text `0`), `true` is the text `true`, and `false` is
+// the empty string, so a template's `{{ if .flag }}` takes its `else`
+// branch for `false`. At most 1,024 characters per value after conversion,
 // without U+0000. Every required variable must be given and every given
 // variable must be declared. How a template uses its variables is
 // described under `POST /v1/templates`.
