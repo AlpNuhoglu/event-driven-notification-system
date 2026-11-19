@@ -14,6 +14,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/redis/go-redis/v9"
 
+	"github.com/AlpNuhoglu/event-driven-notification-system/internal/breaker"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/domain"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/events"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/platform/config"
@@ -183,6 +184,11 @@ func newUnit(cfg config.Config, res Resources, logger *slog.Logger, st *store.St
 	if err != nil {
 		return unit{}, fmt.Errorf("worker role %s: %w", ch, err)
 	}
+	clock := SystemClock{}
+	br, err := newCircuit(cfg, ch, clock, logger)
+	if err != nil {
+		return unit{}, fmt.Errorf("worker role %s: %w", ch, err)
+	}
 	w, err := New(Config{
 		Channel:       ch,
 		Concurrency:   cfg.Worker.Concurrency,
@@ -198,10 +204,10 @@ func newUnit(cfg config.Config, res Resources, logger *slog.Logger, st *store.St
 	}, Deps{
 		Store:    st,
 		Limiter:  limiter,
-		Breaker:  AlwaysAllow{},
+		Breaker:  br,
 		Provider: providerClient{client},
 		Events:   events.Nop{},
-		Clock:    SystemClock{},
+		Clock:    clock,
 		Jitter:   jitter,
 		Logger:   logger,
 	})
@@ -331,6 +337,64 @@ func (p providerClient) Send(ctx context.Context, r Request) Response {
 		Latency:      res.Latency,
 		WroteRequest: res.WroteRequest,
 		RetryAfter:   res.RetryAfter,
+	}
+}
+
+// circuit adapts a *breaker.Breaker to Breaker.
+type circuit struct{ b *breaker.Breaker }
+
+func (c circuit) Ready() (bool, time.Time) { return c.b.Ready() }
+
+func (c circuit) Admit() (Permit, bool, time.Time) {
+	p, ok, until := c.b.Admit()
+	return p, ok, until
+}
+
+// newCircuit builds the circuit breaker of one (channel, provider) pair
+// (D26) on the worker's clock. Its state lives in this process only; every
+// state change is logged, and a circuit opened by a provider_fatal answer
+// (wrong credentials, a wrong or expired endpoint) at error level, because
+// only a person can fix its cause (ADR-0007 section 2).
+func newCircuit(cfg config.Config, ch domain.Channel, clock Clock, logger *slog.Logger) (circuit, error) {
+	log := logger.With(slog.String("channel", string(ch)), slog.String("provider", cfg.Provider.Name))
+	b, err := breaker.New(breaker.Config{
+		Window:              cfg.Breaker.Window,
+		MinRequests:         cfg.Breaker.MinRequests,
+		FailureRatio:        cfg.Breaker.FailureRatio,
+		ConsecutiveFailures: cfg.Breaker.ConsecutiveFailures,
+		OpenBase:            cfg.Breaker.OpenBase,
+		OpenMax:             cfg.Breaker.OpenMax,
+		FatalOpen:           cfg.Breaker.FatalOpen,
+		ThrottleDefault:     cfg.Retry.ThrottleDefaultDelay,
+		ThrottleMax:         cfg.Retry.ThrottleMaxDelay,
+		RetryAfterCap:       cfg.Retry.AfterCap,
+		// While a probe is in flight the pacer asks again at the pace at
+		// which it asks the limiter again.
+		ProbeWait: cfg.RateLimit.RetryInterval,
+	}, clock.Now, func(c breaker.Change) { logCircuit(log, clock, c) })
+	if err != nil {
+		return circuit{}, err
+	}
+	return circuit{b}, nil
+}
+
+func logCircuit(log *slog.Logger, clock Clock, c breaker.Change) {
+	attrs := []any{slog.String("from", c.From.String()), slog.String("to", c.To.String())}
+	if c.Outcome != "" {
+		attrs = append(attrs, slog.String("outcome", string(c.Outcome)))
+	}
+	switch c.To {
+	case breaker.Open:
+		attrs = append(attrs, slog.Duration("open_for", c.Until.Sub(clock.Now())))
+		if c.Outcome == domain.OutcomeProviderFatal {
+			log.Error("worker: circuit opened: the provider rejects the endpoint or the credentials; nothing is sent until a probe succeeds", attrs...)
+			return
+		}
+		log.Warn("worker: circuit opened", attrs...)
+	case breaker.Closed:
+		log.Info("worker: circuit closed", attrs...)
+	case breaker.HalfOpen:
+		log.Debug("worker: circuit half-open", attrs...)
 	}
 }
 

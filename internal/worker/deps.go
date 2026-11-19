@@ -35,18 +35,43 @@ type Limiter interface {
 	Reserve(ctx context.Context, channel domain.Channel) (wait time.Duration, ok bool, err error)
 }
 
-// Breaker is the circuit breaker of the channel's provider. allowed == false
-// means: do not send, and do not ask again before until.
+// Breaker is the circuit breaker of the channel's provider (implemented by
+// internal/breaker; ADR-0007 sections 7 and 8).
 type Breaker interface {
-	Allow() (allowed bool, until time.Time)
+	// Ready is asked by the pacer loop before it reserves a rate-limit slot.
+	// It consumes nothing. ok == false means: prepare nothing, and do not
+	// ask again before until.
+	Ready() (ok bool, until time.Time)
+	// Admit is asked at the slot time, immediately before the send. ok ==
+	// true means: send, and record the outcome on the permit exactly once.
+	// In a half-open circuit the one admitted send is the probe, so a permit
+	// that is never recorded would keep the circuit half-open for good.
+	// ok == false means: send nothing; until is when to ask again.
+	Admit() (p Permit, ok bool, until time.Time)
 }
 
-// AlwaysAllow is the Breaker of this phase: it never opens (the real breaker
-// arrives in P3).
+// Permit is the right to make one send.
+type Permit interface {
+	// Record reports the outcome of the send. retryAfter is the usable
+	// Retry-After hint of the response, zero when there is none. It returns
+	// the end of the open period when the circuit is open after this record,
+	// and the zero time otherwise.
+	Record(outcome domain.Outcome, retryAfter time.Duration) (openUntil time.Time)
+}
+
+// AlwaysAllow is a Breaker that never opens, for tests and for callers
+// without a provider to protect.
 type AlwaysAllow struct{}
 
-// Allow always allows.
-func (AlwaysAllow) Allow() (bool, time.Time) { return true, time.Time{} }
+// Ready is always ready.
+func (AlwaysAllow) Ready() (bool, time.Time) { return true, time.Time{} }
+
+// Admit always admits.
+func (AlwaysAllow) Admit() (Permit, bool, time.Time) { return noPermit{}, true, time.Time{} }
+
+type noPermit struct{}
+
+func (noPermit) Record(domain.Outcome, time.Duration) time.Time { return time.Time{} }
 
 // Provider sends one notification to the external provider (implemented by
 // internal/provider; the wiring adapts its types to Request and Response).

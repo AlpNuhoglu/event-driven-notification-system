@@ -235,11 +235,20 @@ func (l *fakeLimiter) granted() []time.Time {
 type fakeBreaker struct {
 	tr *trace
 	mu sync.Mutex
-	// answers are returned in order; after them, Allow allows.
+	// answers are returned in order, to Ready and Admit alike; after them,
+	// both allow.
 	answers []time.Time // a non-zero time means "not allowed until"
+	// openUntil is what every permit's Record returns.
+	openUntil time.Time
+	records   []permitRecord
 }
 
-func (b *fakeBreaker) Allow() (bool, time.Time) {
+type permitRecord struct {
+	outcome    domain.Outcome
+	retryAfter time.Duration
+}
+
+func (b *fakeBreaker) allow() (bool, time.Time) {
 	b.tr.add("allow")
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -249,6 +258,28 @@ func (b *fakeBreaker) Allow() (bool, time.Time) {
 	until := b.answers[0]
 	b.answers = b.answers[1:]
 	return until.IsZero(), until
+}
+
+func (b *fakeBreaker) Ready() (bool, time.Time) { return b.allow() }
+
+func (b *fakeBreaker) Admit() (Permit, bool, time.Time) {
+	ok, until := b.allow()
+	return fakePermit{b}, ok, until
+}
+
+func (b *fakeBreaker) recorded() []permitRecord {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return slices.Clone(b.records)
+}
+
+type fakePermit struct{ b *fakeBreaker }
+
+func (p fakePermit) Record(outcome domain.Outcome, retryAfter time.Duration) time.Time {
+	p.b.mu.Lock()
+	defer p.b.mu.Unlock()
+	p.b.records = append(p.b.records, permitRecord{outcome, retryAfter})
+	return p.b.openUntil
 }
 
 type claimRecord struct {

@@ -422,6 +422,110 @@ func TestBreakerOpenAtSlot(t *testing.T) {
 	}
 }
 
+// Every admitted send is recorded on its permit exactly once, with the
+// outcome and the usable Retry-After, also when the provider client panics.
+func TestPermitRecordedOncePerSend(t *testing.T) {
+	tests := []struct {
+		name    string
+		respond func(Request) Response
+		want    permitRecord
+	}{
+		{"success", func(Request) Response { return Response{StatusCode: 202} }, permitRecord{domain.OutcomeSuccess, 0}},
+		{"500", func(Request) Response { return Response{StatusCode: 500} }, permitRecord{domain.OutcomeRetryable, 0}},
+		{"401", func(Request) Response { return Response{StatusCode: 401} }, permitRecord{domain.OutcomeProviderFatal, 0}},
+		{
+			"429 with Retry-After", func(Request) Response { return Response{StatusCode: 429, RetryAfter: "7"} },
+			permitRecord{domain.OutcomeThrottled, 7 * time.Second},
+		},
+		{"429 without", func(Request) Response { return Response{StatusCode: 429} }, permitRecord{domain.OutcomeThrottled, 0}},
+		{"400", func(Request) Response { return Response{StatusCode: 400} }, permitRecord{domain.OutcomePermanent, 0}},
+		{"panic", func(Request) Response { panic("provider client bug") }, permitRecord{domain.OutcomeInternalError, 0}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.prov.respond = tt.respond
+			h.push(prioNormal)
+			h.start()
+			h.eventually(func() bool { return h.st.finals() == 1 })
+			h.stop()
+			if got := h.br.recorded(); len(got) != 1 || got[0] != tt.want {
+				t.Errorf("permit records %+v, want exactly %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+// An aborted attempt (the circuit refused at the slot time) got no permit,
+// so nothing is recorded.
+func TestNoPermitNoRecord(t *testing.T) {
+	h := newHarness(t)
+	h.br.answers = []time.Time{{}, t0.Add(time.Second)}
+	h.push(prioNormal)
+	h.start()
+	h.eventually(func() bool { return h.st.finals() == 1 })
+	h.stop()
+	if got := h.br.recorded(); len(got) != 0 {
+		t.Errorf("permit records %+v, want none", got)
+	}
+	if n := len(h.prov.sent()); n != 0 {
+		t.Errorf("provider called %d times, want 0", n)
+	}
+}
+
+// When the circuit is open after the record, the retry hint is at least the
+// time until the circuit can be probed; a larger Retry-After stays, and a
+// success carries no hint.
+func TestRetryHintCoversTheOpenPeriod(t *testing.T) {
+	tests := []struct {
+		name      string
+		respond   func(Request) Response
+		openFor   time.Duration // 0: the circuit is not open after the record
+		want      time.Duration
+		wantFinal string
+	}{
+		{"open after a 500", func(Request) Response { return Response{StatusCode: 500} }, 5 * time.Second, 5 * time.Second, "failure"},
+		{"open for a minute after a 401", func(Request) Response { return Response{StatusCode: 401} }, time.Minute, time.Minute, "failure"},
+		{
+			"Retry-After longer than the open period",
+			func(Request) Response { return Response{StatusCode: 429, RetryAfter: "30"} }, 5 * time.Second, 30 * time.Second, "failure",
+		},
+		{
+			"Retry-After shorter than the open period",
+			func(Request) Response { return Response{StatusCode: 429, RetryAfter: "2"} }, 10 * time.Second, 10 * time.Second, "failure",
+		},
+		{"not open", func(Request) Response { return Response{StatusCode: 500} }, 0, 0, "failure"},
+		{"success while another result opened the circuit", func(Request) Response { return Response{StatusCode: 202} }, 5 * time.Second, 0, "sent"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.prov.respond = tt.respond
+			if tt.openFor > 0 {
+				h.br.openUntil = t0.Add(tt.openFor)
+			}
+			h.push(prioNormal)
+			h.start()
+			h.eventually(func() bool { return h.st.finals() == 1 })
+			h.stop()
+
+			_, sent, failures, _ := h.st.snapshot()
+			var got time.Duration
+			switch {
+			case tt.wantFinal == "sent" && len(sent) == 1:
+				got = sent[0].result.RetryAfter
+			case tt.wantFinal == "failure" && len(failures) == 1:
+				got = failures[0].result.RetryAfter
+			default:
+				t.Fatalf("sent %d, failures %d", len(sent), len(failures))
+			}
+			if got != tt.want {
+				t.Errorf("retry hint = %s, want %s", got, tt.want)
+			}
+		})
+	}
+}
+
 // Test 10: outcomes of the send and the final write.
 func TestOutcomes(t *testing.T) {
 	ptr := func(s string) *string { return &s }

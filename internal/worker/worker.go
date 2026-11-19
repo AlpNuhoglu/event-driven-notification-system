@@ -209,9 +209,10 @@ func (w *Worker) next(ctx context.Context) (Message, time.Time, bool) {
 		if w.buf.wait(ctx) != nil {
 			return nil, time.Time{}, false
 		}
-		// 3. Breaker before limiter: while the circuit is open, no slot is
-		// reserved and nothing is claimed.
-		if allowed, until := w.breaker.Allow(); !allowed {
+		// 3. Breaker before limiter: while the circuit is open, or half-open
+		// with its probe in flight, no slot is reserved and nothing is
+		// claimed.
+		if ready, until := w.breaker.Ready(); !ready {
 			if w.clock.WaitUntil(ctx, until) != nil {
 				return nil, time.Time{}, false
 			}

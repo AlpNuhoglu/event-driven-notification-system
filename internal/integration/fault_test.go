@@ -48,6 +48,12 @@ func faultVars(providerURL string) map[string]string {
 		"RETRY_NORMAL_CAP":       millis(faultBackoff),
 		"RETRY_MIN_DELAY":        millis(faultBackoff),
 		"THROTTLE_DEFAULT_DELAY": millis(faultThrottleDefault),
+		// The circuit that a provider-scoped answer opens (D26), in
+		// milliseconds like every other duration.
+		"BREAKER_OPEN_BASE":  "50ms",
+		"BREAKER_OPEN_MAX":   "200ms",
+		"BREAKER_FATAL_OPEN": "100ms",
+		"THROTTLE_MAX_DELAY": "1200ms",
 	}
 }
 
