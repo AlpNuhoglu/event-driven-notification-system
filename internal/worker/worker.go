@@ -75,6 +75,9 @@ type Deps struct {
 	// Jitter returns a number in [0, 1) for the retry decision.
 	Jitter func() float64
 	Logger *slog.Logger
+	// Metrics receives the worker's metrics; nil means metrics that are not
+	// registered anywhere. The only optional dependency.
+	Metrics *Metrics
 }
 
 // Worker paces and delivers the notifications of one channel.
@@ -95,9 +98,11 @@ type Worker struct {
 	// sem holds one token per concurrency slot in use. The pacer loop
 	// acquires a token; the dispatch it starts releases it.
 	sem chan struct{}
-	// missed counts slots given up because they were stale (D77); exported
-	// as pacer_slots_missed_total{channel} when metrics land.
+	// missed counts slots given up because they were stale (D77); served as
+	// pacer_slots_missed_total{channel}.
 	missed atomic.Uint64
+	// metrics counts the attempts and the running dispatches.
+	metrics *channelMetrics
 }
 
 // New validates cfg and returns the worker of cfg.Channel.
@@ -122,7 +127,12 @@ func New(cfg Config, d Deps) (*Worker, error) {
 		d.Events == nil, d.Clock == nil, d.Jitter == nil, d.Logger == nil:
 		return nil, errors.New("worker: every dependency is required")
 	}
-	return &Worker{
+	m := d.Metrics
+	if m == nil {
+		m, _ = NewMetrics(nil) // cannot fail without a registry
+	}
+	d = m.instrument(cfg.Channel, d)
+	w := &Worker{
 		cfg:          cfg,
 		sendDeadline: sendDeadline,
 		store:        d.Store,
@@ -135,7 +145,9 @@ func New(cfg Config, d Deps) (*Worker, error) {
 		log:          d.Logger.With(slog.String("channel", string(cfg.Channel))),
 		buf:          newBuffer(),
 		sem:          make(chan struct{}, cfg.Concurrency),
-	}, nil
+	}
+	w.metrics = m.forChannel(cfg.Channel, d.Provider.Name(), w.MissedSlots)
+	return w, nil
 }
 
 // Push hands a delivery from the consumer to the buffer. Once shutdown has

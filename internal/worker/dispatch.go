@@ -29,6 +29,8 @@ import (
 //     connection epoch by then (D76).
 func (w *Worker) dispatch(shutdown, ctx context.Context, m Message, slot time.Time) {
 	defer func() { <-w.sem }()
+	w.metrics.inflight.Inc()
+	defer w.metrics.inflight.Dec()
 	defer func() {
 		if p := recover(); p != nil {
 			w.log.Error("worker: panic in dispatch recovered", slog.String("panic_type", fmt.Sprintf("%T", p)))
@@ -276,6 +278,7 @@ func (w *Worker) attemptResult(res Response) store.AttemptResult {
 // A success is transition 4, or transition 12 when the row has left
 // processing meanwhile and no newer attempt has started (D14).
 func (w *Worker) complete(ctx context.Context, n store.Notification, r store.AttemptResult) {
+	w.metrics.attempted(r)
 	w.write(ctx, "final write", n, func(wctx context.Context) (store.Sent, domain.StatusChanged, error) {
 		if r.Outcome == domain.OutcomeSuccess {
 			return w.store.CompleteSent(wctx, n.ID, n.AttemptCount, w.provider.Name(), r)
@@ -288,6 +291,7 @@ func (w *Worker) complete(ctx context.Context, n store.Notification, r store.Att
 // abort closes the attempt without a send: the row returns to retrying,
 // due after delay, without consuming budget.
 func (w *Worker) abort(ctx context.Context, n store.Notification, delay time.Duration) {
+	w.metrics.aborted()
 	w.write(ctx, "abort attempt", n, func(wctx context.Context) (store.Sent, domain.StatusChanged, error) {
 		ev, err := w.store.AbortAttempt(wctx, n.ID, n.AttemptCount, delay)
 		return store.Sent{}, ev, err

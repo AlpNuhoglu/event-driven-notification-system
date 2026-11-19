@@ -436,3 +436,19 @@ func TestNew_ClientsShareCountersOnOneRegistry(t *testing.T) {
 		}
 	}
 }
+
+// InitSeries creates provider_unexpected_2xx_total of the channel at zero
+// for every standard 2xx status but 202, which is not unexpected.
+func TestInitSeries_UnexpectedSuccessCodesExistAtZero(t *testing.T) {
+	c, reg := newClient(t, "http://127.0.0.1:1", nil)
+	c.InitSeries(domain.ChannelEmail)
+	if n, err := promtest.GatherAndCount(reg, "provider_unexpected_2xx_total"); err != nil || n != 9 {
+		t.Errorf("gathered %d series (%v), want 9 (200, 201, 203 to 208, 226)", n, err)
+	}
+	if v := promtest.ToFloat64(c.unexpected.WithLabelValues("email", "primary", "204")); v != 0 {
+		t.Errorf("204 = %v, want 0", v)
+	}
+	if n := promtest.CollectAndCount(c.unexpected); n != 9 {
+		t.Errorf("%d series after reading one, want 9", n)
+	}
+}

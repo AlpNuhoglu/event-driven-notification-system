@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/domain"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/store"
@@ -333,7 +334,15 @@ type fakeStore struct {
 	// anything is recorded: writes that did not reach the database.
 	finalErrs []error
 	// late is what CompleteSent answers.
-	late       store.Sent
+	late store.Sent
+	// queuedFor sets the claimed row's queued_at this long before its claim
+	// (updated_at); zero leaves queued_at NULL, as for a direct claim.
+	queuedFor time.Duration
+	// endToEnd is the end-to-end latency CompleteSent reports.
+	endToEnd time.Duration
+	// failStatus is the status of the event of CompleteFailure; retrying
+	// when empty.
+	failStatus domain.Status
 	finalTries []time.Time // every write after the claim, also a failed one
 
 	mu        sync.Mutex
@@ -369,9 +378,16 @@ func (s *fakeStore) Claim(ctx context.Context, id uuid.UUID, lease time.Duration
 		Status:       domain.StatusProcessing,
 		AttemptCount: 3,
 		TraceParent:  "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+		UpdatedAt:    s.clk.Now(),
+	}
+	if s.queuedFor > 0 {
+		at := n.UpdatedAt.Add(-s.queuedFor)
+		n.QueuedAt = &at
 	}
 	if s.expired != nil && s.expired(id) {
 		n.Status = domain.StatusFailed
+		reason := domain.ReasonExpired
+		n.FailureReason = &reason
 		return store.Claim{Notification: n, Expired: true}, n.Event(), nil
 	}
 	s.mu.Lock()
@@ -404,10 +420,11 @@ func (s *fakeStore) CompleteSent(_ context.Context, id uuid.UUID, attemptNo int,
 	if err != nil {
 		return store.Sent{}, ev, err
 	}
+	ev.Status = domain.StatusSent
 	if s.late.Late {
 		return s.late, ev, nil
 	}
-	return store.Sent{From: domain.StatusProcessing}, ev, nil
+	return store.Sent{From: domain.StatusProcessing, EndToEnd: s.endToEnd}, ev, nil
 }
 
 func (s *fakeStore) writeTimes() []time.Time {
@@ -417,7 +434,11 @@ func (s *fakeStore) writeTimes() []time.Time {
 }
 
 func (s *fakeStore) CompleteFailure(_ context.Context, id uuid.UUID, attemptNo int, r store.AttemptResult, jitter float64) (domain.StatusChanged, error) {
-	return s.record(&s.failures, finalRecord{id: id, attemptNo: attemptNo, result: r, jitter: jitter})
+	ev, err := s.record(&s.failures, finalRecord{id: id, attemptNo: attemptNo, result: r, jitter: jitter})
+	if err == nil && s.failStatus != "" {
+		ev.Status = s.failStatus
+	}
+	return ev, err
 }
 
 func (s *fakeStore) AbortAttempt(_ context.Context, id uuid.UUID, attemptNo int, delay time.Duration) (domain.StatusChanged, error) {
@@ -531,6 +552,7 @@ type harness struct {
 	prov *fakeProvider
 	pub  *fakePublisher
 	logs *syncBuffer
+	reg  *prometheus.Registry
 	cfg  Config
 	w    *Worker
 
@@ -555,6 +577,7 @@ func newHarness(t *testing.T) *harness {
 		prov: &fakeProvider{clk: clk, tr: tr},
 		pub:  &fakePublisher{},
 		logs: &syncBuffer{},
+		reg:  prometheus.NewRegistry(),
 		cfg: Config{
 			Channel:       domain.ChannelSMS,
 			Concurrency:   1,
@@ -576,6 +599,10 @@ func newHarness(t *testing.T) *harness {
 // build (re)creates the worker from h.cfg; call it after changing h.cfg.
 func (h *harness) build() {
 	h.t.Helper()
+	m, err := NewMetrics(h.reg)
+	if err != nil {
+		h.t.Fatal(err)
+	}
 	w, err := New(h.cfg, Deps{
 		Store:    h.st,
 		Limiter:  h.lim,
@@ -585,6 +612,7 @@ func (h *harness) build() {
 		Clock:    h.clk,
 		Jitter:   func() float64 { return 0.25 },
 		Logger:   slog.New(slog.NewJSONHandler(h.logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
+		Metrics:  m,
 	})
 	if err != nil {
 		h.t.Fatal(err)
