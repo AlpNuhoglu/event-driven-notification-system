@@ -40,6 +40,18 @@ Delivery is asynchronous, so the API acknowledges acceptance rather than deliver
 
 Prometheus metrics and `pprof` are served on each service's separate admin port ([ADR-0009](0009-observability.md) §8).
 
+**An id has one spelling.** Wherever an id arrives from outside (a path parameter, the `batch_id` query parameter, a WebSocket request, the worker's message body, a status event) it is accepted only in the canonical form of 36 characters, `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`, with hexadecimal digits in either letter case. The other spellings that UUID parsers accept (`urn:uuid:…`, braces, 32 digits without hyphens, and with the Go library also any 38-character string around a UUID) are refused, so that one notification has one URL and the API and the gateway agree.
+
+| Where | Answer to another spelling |
+|---|---|
+| Path id (`/v1/notifications/{id}`, its `attempts`, `cancel` and `redrive`, `/v1/batches/{id}` and its `cancel`) | `400`, `id` / `invalid_uuid`: the answer of a path id that is not a UUID at all |
+| `batch_id` in a listing | `400`, `batch_id` / `invalid_parameter` |
+| WebSocket `notification_ids`, `batch_id` | `invalid_id` (section 10) |
+| The worker's message body | The message goes to the poison queue |
+| A status event's `id`, `batch_id` | The event is dropped |
+
+One function parses them all (`domain.ParseID`). A test type-checks the module and fails if the library's own parser is used anywhere else, directly or through a JSON, XML or parameter binding into a value that holds a UUID; the API's id parameters are therefore bound as strings (the specification still documents them as UUIDs). A cursor carries its id as raw bytes and has one spelling by construction; no request body carries an id.
+
 **Request headers:**
 
 | Header | Rule |
@@ -223,7 +235,7 @@ Every non-2xx answer the server can produce is a problem document, including the
 |---|---|
 | Endpoint | `GET /v1/ws` on the gateway's port (`:8082`). Requests are JSON text frames. |
 | Request | `action` is `subscribe` or `unsubscribe`. `notification_ids` and `batch_id` are both optional, and at least one must be present; a `null` member counts as absent, and an empty `notification_ids` alone is not a request. A member the gateway does not know is ignored. An id repeated in one request counts once. |
-| Ids | Only the canonical form of 36 characters, in either case. The other spellings that UUID parsers accept (`urn:uuid:…`, braces, 32 digits without hyphens) are `invalid_id`. |
+| Ids | Only the canonical form of 36 characters, in either case, as everywhere (section 2). Another spelling is `invalid_id`. |
 | `status_changed` | Every member is always present; `batch_id` and `failure_reason` are `null` when there is none. Snapshots and live events have the same form. |
 | Limit | A subscribe request is all or nothing: one that would take the connection over the limit registers nothing; one that reaches it exactly is accepted. Subscribing again to something already subscribed does not count twice and sends its snapshot again. |
 | Unknown id | A subscription to an id that does not exist is registered and gets no snapshot. |
@@ -231,7 +243,7 @@ Every non-2xx answer the server can produce is a problem document, including the
 | Unsubscribe | Removes what is subscribed and ignores the rest. It is not answered. An event that was already queued for the connection can still arrive. |
 | No acknowledgement | Neither request is acknowledged. The snapshot is the answer to a subscribe. |
 | Errors | The connection stays open. **A message never repeats anything the client sent;** it names a member and, for a list, the index. |
-| Close statuses | 1013 (try again later) when the send queue is full; 1001 (going away) at shutdown; 1009 for a request larger than 1,000 ids need. A client that does not answer a ping is disconnected without a close frame. |
+| Close statuses | 1013 (try again later) when the send queue is full; 1001 (going away) at shutdown; 1009 for a request larger than 1,000 ids need. A client that does not answer a ping, or does not take the snapshot of a subscribe request within `WS_WRITE_TIMEOUT`, is disconnected without a close frame. |
 
 | `code` | When |
 |---|---|
