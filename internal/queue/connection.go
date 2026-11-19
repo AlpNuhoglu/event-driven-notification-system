@@ -55,6 +55,10 @@ const defaultConnectionTimeout = 30 * time.Second
 type Connection struct {
 	conn   *amqp.Connection
 	logger *slog.Logger
+	// closed reads the library's closed flag (conn.IsClosed). It is a field
+	// so that a test can place a reconnection attempt at an exact point of
+	// IsOpen.
+	closed func() bool
 
 	mu sync.Mutex
 	// lost is closed when the connection stops being open and replaced by a
@@ -127,6 +131,7 @@ func Dial(url string, retryInterval time.Duration, maxRetries int, logger *slog.
 		return nil, fmt.Errorf("dial rabbitmq: %w", err)
 	}
 	c.conn = conn
+	c.closed = conn.IsClosed
 	c.recovered(1) // the first connection is open
 	states := make(chan *amqp.StateChanged, 16)
 	conn.NotifyStateChange(states) // closed at once if the connection is already closed
@@ -276,7 +281,7 @@ func (c *Connection) watch(states <-chan *amqp.StateChanged) {
 			// does. The library sets the closed flag before it reports
 			// reconnecting, and clears it only during a reconnection
 			// attempt, whose Dial hook closes lost itself.
-			if c.conn.IsClosed() {
+			if c.closed() {
 				closeIfOpen(c.lost)
 			}
 		default: // closing or closed: final
@@ -299,13 +304,37 @@ func (c *Connection) watch(states <-chan *amqp.StateChanged) {
 // topology has been declared on the recovered one (D2), and on a connection
 // whose topology was never declared. The relay starts no transaction while
 // it is false.
+//
+// It combines two facts that a reconnection attempt changes one after the
+// other: the Dial hook starts a new generation (dials), then the library
+// clears its closed flag (resetState), and only later, in the topology
+// recovery, is the topology declared (declared). The order of the two reads
+// here is what makes the answer safe: **the library's flag first, our
+// generation second.**
+//
+//   - If the flag is read as set, the answer is false.
+//   - If it is read as cleared, either the connection has been open since
+//     the topology was declared on it, or an attempt cleared it; that
+//     attempt's Dial hook has then already run, so the generation read
+//     afterwards is the attempt's (or a later one), and declared equals it
+//     only once the topology is declared on that connection.
+//
+// Read the other way round, an attempt that began between the two reads made
+// IsOpen answer true for the old generation with the cleared flag of the new
+// connection, before the topology was declared on it
+// (TestIsOpen_ReconnectionAttemptBetweenItsTwoReads).
+//
+// Like every such check the answer can be stale at once: a connection lost
+// right after it is still reported open, and the publish then fails.
 func (c *Connection) IsOpen() bool {
-	c.mu.Lock()
-	usable := c.declared != 0 && c.declared == c.dials
-	c.mu.Unlock()
 	// The library sets the closed flag first thing when it shuts the
 	// connection down, before any recovery attempt dials again.
-	return usable && !c.conn.IsClosed()
+	if c.closed() {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.declared != 0 && c.declared == c.dials
 }
 
 // Opens reports the (re)connections: the number of times the connection has
