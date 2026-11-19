@@ -123,20 +123,50 @@ func (w *Worker) nextForSlot(slot time.Time) Message {
 	return w.buf.take()
 }
 
-// attempt waits for the slot, asks the breaker and sends: steps b to d.
+// attempt waits for the slot, asks the breaker for a permit and sends:
+// steps b to d.
 func (w *Worker) attempt(ctx context.Context, n store.Notification, claimStart, slot time.Time) {
 	// b.
 	if !w.awaitSlot(ctx, claimStart.Add(w.sendDeadline), slot) {
 		w.abort(ctx, n, 0)
 		return
 	}
-	// c. At the slot time, also for a re-reserved slot.
-	if allowed, until := w.breaker.Allow(); !allowed {
+	// c. At the slot time, also for a re-reserved slot. A circuit that
+	// opened after the claim sends nothing: the attempt is aborted and the
+	// row is due again when the circuit can be asked again (D23).
+	permit, admitted, until := w.breaker.Admit()
+	if !admitted {
 		w.abort(ctx, n, max(until.Sub(w.clock.Now()), 0))
 		return
 	}
 	// d.
-	w.complete(ctx, n, w.call(ctx, n))
+	w.complete(ctx, n, w.send(ctx, n, permit))
+}
+
+// send makes the admitted send and records its outcome on the permit,
+// exactly once on every path: in a half-open circuit this send is the probe,
+// and a probe that is never recorded would keep the circuit half-open for
+// good. call turns a panic of the provider client into internal_error; the
+// deferred record covers a panic anywhere else in between.
+//
+// When the circuit is open after the record, the retry is not due before the
+// circuit can be probed: the hint becomes max(Retry-After, time until the
+// next half-open probe), and the retry decision takes the larger of that and
+// the back-off (ADR-0007 section 4).
+func (w *Worker) send(ctx context.Context, n store.Notification, permit Permit) store.AttemptResult {
+	recorded := false
+	defer func() {
+		if !recorded {
+			permit.Record(domain.OutcomeInternalError, 0)
+		}
+	}()
+	r := w.call(ctx, n)
+	openUntil := permit.Record(r.Outcome, r.RetryAfter)
+	recorded = true
+	if r.Outcome != domain.OutcomeSuccess && !openUntil.IsZero() {
+		r.RetryAfter = max(r.RetryAfter, openUntil.Sub(w.clock.Now()))
+	}
+	return r
 }
 
 // awaitSlot applies the missed-slot rule (D77). It returns true at a time in
