@@ -62,6 +62,10 @@ var (
 		http.StatusConflict, "duplicate", "Duplicate notification",
 		"A notification with this dedupe_key already exists.",
 	}
+	kindConflict = kind{
+		http.StatusConflict, "conflict", "Operation not allowed in this state",
+		"The notification's state does not allow this operation.",
+	}
 	kindIdempotencyKeyReused = kind{
 		http.StatusUnprocessableEntity, "idempotency-key-reused", "Idempotency key reused",
 		"This Idempotency-Key was already used with a different request.",
@@ -108,6 +112,9 @@ type problem struct {
 	// rejected lists the rejected items of a batch whose items were all
 	// rejected: one entry per item, never truncated.
 	rejected []apigen.RejectedItem
+	// currentStatus is the notification's state on a 409 of cancel and
+	// redrive.
+	currentStatus *apigen.Status
 	// checks are the dependency checks of a failed readiness probe.
 	checks []apigen.Check
 	// cause is the underlying error of a 500 or 503. It is logged as a class
@@ -161,6 +168,9 @@ func (p *problem) body(correlationID string) apigen.Problem {
 	}
 	if len(p.rejected) > 0 {
 		doc.Rejected = &p.rejected
+	}
+	if p.currentStatus != nil {
+		doc.CurrentStatus = p.currentStatus
 	}
 	if len(p.checks) > 0 {
 		doc.Checks = &p.checks

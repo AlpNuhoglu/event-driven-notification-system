@@ -24,6 +24,7 @@ Every non-2xx answer of the API is an RFC 9457 problem with `Content-Type: appli
 | `detail` | An explanation of this occurrence. It never contains a recipient, message content or an internal cause. |
 | `correlation_id` | The request's correlation id, also returned in the `X-Request-ID` header. Quote it when reporting a problem. |
 | `errors` | Present for `400`, `409` and `422`: one entry per problem, with `field` (the request field, header or path parameter, empty for the body as a whole), a stable `code` and a `message` for humans. At most 50 entries are listed; `detail` gives the total. No `message` contains the submitted value. An entry with the code `duplicate` also carries `existing_id`. |
+| `current_status` | Only on a `409` of cancel and redrive: the state the notification is in. |
 | `rejected` | Only on the `422` of `POST /v1/notifications/batch` when every item was rejected: one entry per item with its `index` and its `errors`, never truncated. |
 
 ## `malformed-request`
@@ -36,6 +37,11 @@ Every non-2xx answer of the API is an RFC 9457 problem with `Content-Type: appli
 | `malformed_json` | (empty) | The body is not valid JSON or not valid UTF-8, or has data after the JSON value. |
 | `not_an_object` | (empty) | The body is valid JSON but not an object (an array, a string, a number, `null`). |
 | `invalid_uuid` | `id` | The path parameter is not a UUID. |
+| `unexpected_body` | (empty) | A cancel request (`POST /v1/notifications/{id}/cancel`, `POST /v1/batches/{id}/cancel`) has a body. Cancel takes none. |
+| `unknown_parameter` | the parameter | A query parameter the operation does not define. Only `GET /v1/notifications` defines query parameters; every other operation under `/v1/` rejects any. Rejected rather than ignored, so a misspelled filter never returns an unfiltered list. |
+| `duplicate_parameter` | the parameter | A query parameter of the listing is given more than once. Every filter takes a single value. |
+| `invalid_parameter` | the parameter (empty for the query string as a whole) | The value is not valid: not one of the allowed values of `status`, `channel` or `priority`, `batch_id` not a UUID, `created_from` or `created_to` not RFC 3339 with an offset, `limit` not an integer from 1 to 200, an empty value, or a query string that is not well formed. |
+| `invalid_cursor` | `cursor` | The cursor is not a `next_cursor` this API returned. |
 | `invalid_idempotency_key` | `Idempotency-Key` | The header is empty, longer than 255 bytes, contains a byte outside U+0021 to U+007E (a space included), or is sent more than once. |
 
 ## `not-found`
@@ -62,12 +68,13 @@ Every non-2xx answer of the API is an RFC 9457 problem with `Content-Type: appli
 |---|---|
 | `required` | A required field (`channel`, `recipient`, `content`; `notifications` in a batch) is missing. |
 | `invalid_type` | The field has the wrong JSON type; `null` is a wrong type for every field. In a batch, `notifications` must be an array, and an item that is not a JSON object is rejected with this code and an empty `field`. |
-| `invalid_value` | The value is not one of the allowed values (`channel`: `sms`, `email`, `push`; `priority`: `high`, `normal`, `low`). |
+| `invalid_value` | The value is not one of the allowed values (`channel`: `sms`, `email`, `push`; `priority`: `high`, `normal`, `low`), or `expires_at` of a redrive is not an RFC 3339 date-time with an offset. |
 | `empty` | `recipient`, `content` or `dedupe_key` is an empty string, or `notifications` is an empty array. |
 | `too_long` | `recipient` is longer than 512 characters, or `dedupe_key` longer than 255 characters. |
 | `invalid_character` | `recipient`, `content` or `dedupe_key` contains the character U+0000, which cannot be stored. |
 | `too_many_items` | `notifications` has more than 1,000 items. No item is checked then. |
 | `duplicate_in_batch` | `dedupe_key` of a batch item: another valid item of the same batch, earlier in the array, has the same `dedupe_key`. The first valid item stays; an invalid item never claims its key. |
+| `too_soon` | `expires_at` of a redrive is closer than 30 seconds (`EXPIRES_AT_MIN_LEAD`). |
 | `unknown_field` | The API does not define this field. It is rejected rather than ignored, so a field of a later version (for example `scheduled_at`) never leads to a behaviour the client did not ask for. |
 | `duplicate_field` | The field appears more than once in the object. |
 
@@ -78,6 +85,19 @@ Every non-2xx answer of the API is an RFC 9457 problem with `Content-Type: appli
 ## `duplicate`
 
 **409 Conflict.** A notification with this `dedupe_key` already exists. The entry of `errors` has the field `dedupe_key`, the code `duplicate` and `existing_id`: the id of the notification that holds the key. `existing_id` is absent when that notification released the key in the same instant (it was cancelled before any attempt); the request can then be sent again.
+
+## `conflict`
+
+**409 Conflict.** The notification's state does not allow the operation. `current_status` is the state it is in.
+
+| Code | Field | When |
+|---|---|---|
+| `not_cancellable` | `status` | Cancel: the notification is `processing` (a worker holds it), `sent` or `failed`. A notification that is already `cancelled` is not an error: the cancel answers `200` again. |
+| `not_failed` | `status` | Redrive: the notification is not `failed`. |
+| `expires_at_required` | `expires_at` | Redrive: the stored `expires_at` has passed, so the request must give a new one. |
+| `expires_at_not_allowed` | `expires_at` | Redrive: the stored `expires_at` is still in the future and is kept, so the request must not give one. |
+
+A `409` without `errors` means that the notification changed state while the request ran; the request can be repeated.
 
 ## `idempotency-key-reused`
 

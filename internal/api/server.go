@@ -19,6 +19,7 @@ import (
 
 	spec "github.com/AlpNuhoglu/event-driven-notification-system/api"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/api/apigen"
+	"github.com/AlpNuhoglu/event-driven-notification-system/internal/events"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/platform/config"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/store"
 )
@@ -31,6 +32,8 @@ type Repository interface {
 		respond func(store.BatchResult) (store.StoredResponse, error)) (store.BatchResult, error)
 	GetNotification(ctx context.Context, id uuid.UUID) (store.Notification, error)
 	GetBatch(ctx context.Context, id uuid.UUID) (store.Batch, error)
+	canceller
+	lister
 }
 
 // Pinger checks that the database answers (readiness).
@@ -46,6 +49,11 @@ const DefaultDBTimeout = 5 * time.Second
 // Options.IdempotencyKeyTTL is zero (the default of IDEMPOTENCY_KEY_TTL).
 const DefaultIdempotencyKeyTTL = 24 * time.Hour
 
+// DefaultExpiresAtMinLead is the smallest distance of a new expires_at from
+// now when Options.ExpiresAtMinLead is zero (the default of
+// EXPIRES_AT_MIN_LEAD).
+const DefaultExpiresAtMinLead = 30 * time.Second
+
 // Options configures NewHandler.
 type Options struct {
 	Repository Repository
@@ -58,6 +66,13 @@ type Options struct {
 	MaxBodyBytes int64
 	// DBTimeout bounds each database call; DefaultDBTimeout when zero.
 	DBTimeout time.Duration
+	// Events receives the status event of every transition the API makes
+	// (cancel, redrive), after its transaction has committed; events.Nop when
+	// nil.
+	Events events.Publisher
+	// ExpiresAtMinLead is how far ahead a new expires_at must be
+	// (EXPIRES_AT_MIN_LEAD); DefaultExpiresAtMinLead when zero.
+	ExpiresAtMinLead time.Duration
 	// IdempotencyKeyTTL is how long an Idempotency-Key stays live
 	// (IDEMPOTENCY_KEY_TTL); DefaultIdempotencyKeyTTL when zero.
 	IdempotencyKeyTTL time.Duration
@@ -71,11 +86,19 @@ func NewHandler(o Options) http.Handler {
 	if o.IdempotencyKeyTTL <= 0 {
 		o.IdempotencyKeyTTL = DefaultIdempotencyKeyTTL
 	}
+	if o.ExpiresAtMinLead <= 0 {
+		o.ExpiresAtMinLead = DefaultExpiresAtMinLead
+	}
+	if o.Events == nil {
+		o.Events = events.Nop{}
+	}
 	h := &handlers{
 		repo:      o.Repository,
 		db:        o.DB,
 		limits:    limitsFrom(o.Retry),
 		dbTimeout: o.DBTimeout,
+		events:    o.Events,
+		minLead:   o.ExpiresAtMinLead,
 		spec:      spec.OpenAPI(),
 	}
 	strict := apigen.NewStrictHandlerWithOptions(h, nil, apigen.StrictHTTPServerOptions{
@@ -241,8 +264,10 @@ func responseError(w http.ResponseWriter, r *http.Request, err error) {
 }
 
 // parameterError is the generated wrapper's handler for a parameter it
-// cannot bind: the id path parameter, or the Idempotency-Key header when it
-// is sent more than once (the wrapper refuses that before createGuard runs).
+// cannot bind: the id path parameter, a query parameter of the listing (it
+// gives the problems the guard gives, see parseListQuery), or the
+// Idempotency-Key header when it is sent more than once (the wrapper refuses
+// that before createGuard runs).
 // X-Request-ID and traceparent never fail: the middleware normalises them
 // first.
 func parameterError(w http.ResponseWriter, r *http.Request, err error) {
@@ -254,6 +279,10 @@ func parameterError(w http.ResponseWriter, r *http.Request, err error) {
 		return
 	}
 	if errors.As(err, &invalid) {
+		if p := listParameterProblem(r, invalid); p != nil {
+			writeProblem(w, r, p)
+			return
+		}
 		writeProblem(w, r, newProblem(kindMalformed, "A path parameter is invalid.",
 			fieldError(invalid.ParamName, codeInvalidUUID, invalid.ParamName+" must be a UUID")))
 		return
@@ -276,6 +305,10 @@ func (rt *router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	_, pattern := rt.mux.Handler(r)
 	st.setRoute(pattern)
+	if p := undefinedQueryProblem(pattern, r.URL.RawQuery); p != nil {
+		writeProblem(w, r, p)
+		return
+	}
 	rt.mux.ServeHTTP(&problemGuard{ResponseWriter: w, r: r}, r)
 }
 
