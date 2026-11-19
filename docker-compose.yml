@@ -1,6 +1,7 @@
 # Application services (migrate, api, relay, worker) and the six
 # infrastructure services. All four application services run the same image,
-# built from this repository; the command selects the role.
+# built from this repository; the command (for the relay, the entrypoint)
+# selects the role.
 #
 # The stack runs without a .env file. The worker's provider URL defaults to the
 # public webhook.site URL below; docker-compose.mock.yml replaces it with the
@@ -48,7 +49,9 @@ services:
 
   relay:
     <<: *app
-    command: ["relay"]
+    # The binary is the entrypoint, so that its operator subcommand runs as
+    # "docker-compose run --rm relay requeue-stale" (D64).
+    entrypoint: ["relay"]
     depends_on:
       postgres:
         condition: service_healthy

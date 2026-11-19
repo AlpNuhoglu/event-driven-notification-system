@@ -56,10 +56,10 @@ func (e *env) poisonDepth() int {
 // rate-limit calls does not grow. When the database is back, every
 // notification is sent once and the poison queue is empty.
 //
-// The provider holds the in-flight sends until the database is back: a send
-// that completed during the outage would lose its final write (it is not
-// retried yet) and be sent again after its lease, which is not what this
-// test is about.
+// The provider holds the in-flight sends until the database is back, so
+// that this test is about the claims only; a final write made during the
+// outage is retried, and TestE2E_FinalWriteRetriedThroughOutage and
+// TestE2E_FinalWriteOutageOutlastsLease cover it.
 func TestE2E_WorkerDatabaseOutage(t *testing.T) {
 	const (
 		concurrency = 6

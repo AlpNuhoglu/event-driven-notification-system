@@ -1,8 +1,9 @@
 // Package relay is the outbox relay (ADR-0002, ADR-0003): it publishes due
 // notification rows from Postgres to RabbitMQ lane by lane, below each lane's
 // high-water mark, recovers notifications whose lease has expired, fails
-// notifications whose expires_at has passed (transition 10) and deletes
-// expired idempotency keys (D78).
+// notifications whose expires_at has passed (transition 10), returns every
+// queued notification to pending on each (re)connection to RabbitMQ
+// (reconciliation, transition 8) and deletes expired idempotency keys (D78).
 package relay
 
 import (
@@ -27,6 +28,7 @@ type Store interface {
 	SweepExpiredLeases(ctx context.Context, limit int, jitter func() float64) ([]domain.StatusChanged, error)
 	ExpireDue(ctx context.Context, limit int) ([]domain.StatusChanged, error)
 	DeleteExpiredIdempotencyKeys(ctx context.Context) (int, error)
+	ReconcileQueued(ctx context.Context) ([]domain.StatusChanged, error)
 }
 
 // Publisher publishes one batch and returns the ids that were confirmed and
@@ -35,9 +37,11 @@ type Publisher interface {
 	PublishBatch(ctx context.Context, msgs []queue.Message, confirmTimeout time.Duration) ([]uuid.UUID, error)
 }
 
-// Connection tells whether the broker connection is open (queue.Connection).
+// Connection tells whether the broker connection is open and counts its
+// (re)connections (queue.Connection).
 type Connection interface {
 	IsOpen() bool
+	Opens() (uint64, <-chan struct{})
 }
 
 // Config holds the relay's settings; every duration comes from configuration.
@@ -55,6 +59,8 @@ type Config struct {
 	ExpiryInterval             time.Duration // EXPIRY_INTERVAL
 	ExpiryBatch                int           // EXPIRY_BATCH_SIZE
 	IdempotencyCleanupInterval time.Duration // IDEMPOTENCY_CLEANUP_INTERVAL
+
+	ReconcileMinInterval time.Duration // RECONCILE_MIN_INTERVAL
 }
 
 func (c Config) hwm(p domain.Priority) int {
@@ -68,41 +74,114 @@ func (c Config) hwm(p domain.Priority) int {
 	}
 }
 
-// Relay runs the publishing cycle, the lease sweeper, the expiry pass and
-// the idempotency-key cleanup.
+// Relay runs the publishing cycle with reconciliation, the lease sweeper,
+// the expiry pass and the idempotency-key cleanup.
 type Relay struct {
-	store  Store
-	pub    Publisher
-	conn   Connection
-	events events.Publisher
-	logger *slog.Logger
-	cfg    Config
-	jitter func() float64
+	store   Store
+	pub     Publisher
+	conn    Connection
+	events  events.Publisher
+	logger  *slog.Logger
+	cfg     Config
+	jitter  func() float64
+	metrics *Metrics
+	now     func() time.Time // the clock of the reconciliation window
 }
 
 // New returns a Relay. jitter returns a number in [0, 1) for the retry
-// decision of the lease sweeper.
-func New(st Store, pub Publisher, conn Connection, ev events.Publisher, logger *slog.Logger, cfg Config, jitter func() float64) *Relay {
-	return &Relay{store: st, pub: pub, conn: conn, events: ev, logger: logger, cfg: cfg, jitter: jitter}
+// decision of the lease sweeper. m receives the reconciliation counters; nil
+// means counters that are not registered anywhere.
+func New(st Store, pub Publisher, conn Connection, ev events.Publisher, logger *slog.Logger, cfg Config, jitter func() float64, m *Metrics) *Relay {
+	if m == nil {
+		m, _ = NewMetrics(nil) // cannot fail without a registry
+	}
+	return &Relay{store: st, pub: pub, conn: conn, events: ev, logger: logger, cfg: cfg, jitter: jitter, metrics: m, now: time.Now}
 }
 
 // RunPublishing runs the publishing cycle every TickInterval until ctx is
-// cancelled. A cycle in progress finishes its current lane transaction and
-// then stops. It returns an error only when the relay cannot go on
-// publishing: the publisher's channel is closed (the role then exits and is
-// restarted, like after a recovery that gave up).
+// cancelled, with reconciliation (transition 8) before a cycle when it is
+// due. A cycle in progress finishes its current lane transaction and then
+// stops. It returns an error only when the relay cannot go on publishing:
+// the publisher's channel is closed (the role then exits and is restarted,
+// like after a recovery that gave up).
 func (r *Relay) RunPublishing(ctx context.Context) error {
 	t := time.NewTicker(r.cfg.TickInterval)
 	defer t.Stop()
+	var rec reconciliation
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-t.C:
+			// Between two cycles, in this goroutine: see reconcileIfDue.
+			r.reconcileIfDue(ctx, &rec)
 			if err := r.cycle(ctx); err != nil {
 				return err
 			}
 		}
+	}
+}
+
+// reconciliation is the publishing loop's state of transition 8 (ADR-0003
+// §3, D5).
+type reconciliation struct {
+	handled uint64    // the (re)connections already taken into account (Connection.Opens)
+	pending bool      // a trigger that no successful run has served yet
+	last    time.Time // when the last successful run started; zero before the first
+}
+
+// reconcileIfDue returns every queued notification to pending (transition
+// 8) when a (re)connection to RabbitMQ has not been served yet and the last
+// run started at least ReconcileMinInterval ago. It never publishes: the
+// next cycles publish the rows again, and a copy still in the broker is
+// dropped by the claim guard.
+//
+// Invariants:
+//   - Every (re)connection triggers a run, the first one after start-up
+//     included: the count of Opens only grows and is compared with the count
+//     already handled, so a reconnection between two ticks is not missed,
+//     and several are one trigger.
+//   - A trigger inside the window is deferred, not dropped: pending stays
+//     set until a run succeeds, which happens at the first tick after the
+//     window ends.
+//   - A failed run leaves pending set and last unchanged: it is retried at
+//     the next tick and does not count as a run for the window.
+//   - It runs in the publishing loop's goroutine, so never while a lane
+//     transaction is open, and no lane starts while it runs. This is what
+//     makes it correct: the statement reconciles the rows that are queued in
+//     its snapshot, and a lane that committed queued just after that
+//     snapshot was taken would be missed; if that lane had published on the
+//     lost connection, its row would stay queued with no copy in the broker.
+//     Serialised with the lanes (and with a single relay process, D4), every
+//     lane has committed or rolled back before the statement starts.
+//   - Like a lane, a run that has started is finished on shutdown (its
+//     context is not cancelled); no run starts after ctx is cancelled.
+func (r *Relay) reconcileIfDue(ctx context.Context, s *reconciliation) {
+	if n, _ := r.conn.Opens(); n > s.handled {
+		s.handled, s.pending = n, true
+	}
+	if !s.pending || ctx.Err() != nil {
+		return
+	}
+	now := r.now()
+	if !s.last.IsZero() && now.Sub(s.last) < r.cfg.ReconcileMinInterval {
+		return // deferred to the end of the window
+	}
+	reason := "reconnection"
+	if s.last.IsZero() {
+		reason = "first connection"
+	}
+	evs, err := r.store.ReconcileQueued(context.WithoutCancel(ctx))
+	if err != nil {
+		r.logger.Warn("relay: reconciliation failed; retrying at the next tick", "reason", reason, "error", err)
+		return
+	}
+	s.pending, s.last = false, now
+	r.metrics.reconciliationRuns.Inc()
+	r.metrics.reconciledRows.Add(float64(len(evs)))
+	r.logger.Info("relay: reconciliation ran", "rows", len(evs), "reason", reason)
+	for _, e := range evs { // after the commit, as for every transition
+		r.events.Publish(e)
 	}
 }
 

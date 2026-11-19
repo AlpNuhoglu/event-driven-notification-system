@@ -1,7 +1,7 @@
 // Package bootstrap is the shared runner of the long-running roles. It loads
 // the configuration, serves the admin endpoints (health and metrics),
-// supports the healthcheck subcommand and runs the role's own work next to
-// them.
+// supports the healthcheck subcommand and a role's own operator
+// subcommands, and runs the role's own work next to them.
 package bootstrap
 
 import (
@@ -12,6 +12,8 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -39,13 +41,52 @@ func Run(ctx context.Context, role string, args []string, lookup func(string) (s
 // RunService is Run for a role with work of its own: svc runs next to the
 // health endpoints. The exit code is non-zero when svc returns an error.
 func RunService(ctx context.Context, role string, args []string, lookup func(string) (string, bool), stdout, stderr io.Writer, svc Service) int {
+	return RunCommands(ctx, role, args, lookup, stdout, stderr, svc)
+}
+
+// Command is an operator subcommand of a role's binary (the relay's
+// requeue-stale, D64). It runs instead of the role: no admin port is served
+// and the role's work does not start, so it can run next to a live instance.
+type Command struct {
+	// Name is the first argument, which selects the command.
+	Name string
+	// Usage is the command's synopsis after the binary's name, for example
+	// "requeue-stale [--older-than=5m] [--all]".
+	Usage string
+	// Parse parses the arguments after the name. An error is a usage error:
+	// it is printed with the usage and the exit code is 2, before the
+	// configuration is loaded.
+	Parse func(args []string) (Action, error)
+}
+
+// Action runs a parsed command with the loaded configuration and returns
+// the process exit code.
+type Action func(ctx context.Context, cfg config.Config, stdout, stderr io.Writer) int
+
+// RunCommands is RunService for a role whose binary also carries operator
+// subcommands: a first argument naming one of cmds runs that command instead
+// of the role.
+func RunCommands(ctx context.Context, role string, args []string, lookup func(string) (string, bool), stdout, stderr io.Writer, svc Service, cmds ...Command) int {
+	var action Action
 	if len(args) > 0 && args[0] != "healthcheck" {
-		return usage(role, stderr)
+		i := slices.IndexFunc(cmds, func(c Command) bool { return c.Name == args[0] })
+		if i < 0 {
+			return usage(role, stderr, cmds)
+		}
+		a, err := cmds[i].Parse(args[1:])
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "%s: %v\n", cmds[i].Name, err)
+			return usage(role, stderr, cmds)
+		}
+		action = a
 	}
 	cfg, err := config.LoadFrom(lookup)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, err)
 		return 1
+	}
+	if action != nil {
+		return action(ctx, cfg, stdout, stderr)
 	}
 	if len(args) > 0 {
 		if err := health.Probe(ctx, cfg.Ports.AdminAddr); err != nil {
@@ -62,8 +103,12 @@ func RunService(ctx context.Context, role string, args []string, lookup func(str
 	return serveService(ctx, ln, role, cfg, svc, stdout, stderr)
 }
 
-func usage(role string, stderr io.Writer) int {
-	_, _ = fmt.Fprintf(stderr, "usage: %s [healthcheck]\n", role)
+func usage(role string, stderr io.Writer, cmds []Command) int {
+	forms := []string{"healthcheck"}
+	for _, c := range cmds {
+		forms = append(forms, c.Usage)
+	}
+	_, _ = fmt.Fprintf(stderr, "usage: %s [%s]\n", role, strings.Join(forms, " | "))
 	return 2
 }
 

@@ -200,14 +200,14 @@ func TestCleanup_ErrorAndShutdown(t *testing.T) {
 	}
 }
 
-// run starts the expiry pass and the cleanup next to the other loops, and
+// Run starts the expiry pass and the cleanup next to the other loops, and
 // every loop stops when ctx is cancelled.
 func TestRun_StartsAndStopsTheHousekeepingLoops(t *testing.T) {
 	st := &fakeStore{}
 	r, _, _, _ := newUnit(st, unitConfig)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- run(ctx, r, make(chan struct{}), func() error { return nil }) }()
+	go func() { done <- r.Run(ctx, make(chan struct{}), func() error { return nil }) }()
 	testutil.Eventually(t, func() bool {
 		return len(st.expireCalls()) >= 2 && st.cleanupCalls() >= 2 && st.sweeps.Load() >= 2 && len(st.laneCalls()) >= 9
 	}, 5*time.Second)
@@ -215,7 +215,7 @@ func TestRun_StartsAndStopsTheHousekeepingLoops(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Errorf("run: %v", err)
 	}
-	// run has waited for every loop: no call starts after it returned.
+	// Run has waited for every loop: no call starts after it returned.
 	expiries, cleanups := len(st.expireCalls()), st.cleanupCalls()
 	r.expire(ctx)
 	r.cleanup(ctx)
