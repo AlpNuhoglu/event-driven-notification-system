@@ -74,3 +74,21 @@ type NotificationAttempt struct {
 	StartedAt         time.Time
 	FinishedAt        *time.Time
 }
+
+type Template struct {
+	Name          string
+	Channel       string
+	IsActive      bool
+	LatestVersion int32
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+}
+
+type TemplateVersion struct {
+	TemplateName      string
+	Version           int32
+	BodyTpl           string
+	Variables         []string
+	OptionalVariables []string
+	CreatedAt         time.Time
+}
