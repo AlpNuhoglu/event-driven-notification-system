@@ -39,7 +39,7 @@ Status is one of: `not started`, `in progress`, `in review` (pull requests open)
 | P1 | Core path | done | [#4](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/4) (`p1/schema-and-store`, merged), [#5](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/5) (`p1/relay-worker-provider`, merged), [#6](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/6) (`p1/compose-e2e`, merged) | 2026-11-19 |
 | P2 | API completeness | done | [#7](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/7) (`p2/batch-and-idempotency`, merged), [#8](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/8) (`p2/cancel-redrive-listing`, merged), [#9](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/9) (`p2/validation`, merged) | 2026-11-19 |
 | P3 | Delivery robustness | done | [#10](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/10) (`p3/classification-and-retry`, merged), [#11](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/11) (`p3/breaker-and-fallback`, merged), [#12](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/12) (`p3/recovery`, merged); follow-up [#13](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/13) (`p3/isopen-race`, merged) | 2026-11-19 |
-| P4 | Templates and scheduling | in progress | `p4/templates` (in review) | |
+| P4 | Templates and scheduling | in progress | [#14](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/14) (`p4/templates`, in review) | |
 | P5 | Real-time and observability | not started | | |
 | P6 | Quality | not started | | |
 | P7 | Delivery | not started | | |
@@ -123,7 +123,7 @@ Newest entry first. One entry per session, in this form:
 
   **What the first row showed:** with the name check alone removed, a builtin is still refused, by the argument check, which names the two functions too. The named tests fail because they assert the reason of a rejection, not only the rejection. The second row is the mutation in which a builtin is really accepted; it is reported so that the first is not read as more than it is.
 - **`FuzzCompileTemplate`:** never panics; every accepted source renders, with all variables and with the required ones only; an independent reference (the ordinary parser, a walk by reflection, no code shared with the walker) finds nothing outside the allow-list. In the delegate's run it found one disagreement in three seconds: `0{{define "body"}}{{end}}` is accepted, because the parser itself drops an empty definition of the source's own name; nothing can be hidden in it, and the reference was taught that case (the input is kept as a seed). Then 26.8 million inputs in 150 s without a finding; in `make fuzz` here 5.7 million in 30 s.
-- **Pull requests opened:** `p4/templates` (the link is added with the next commit).
+- **Pull requests opened:** [#14](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/14) from `p4/templates`.
 - **Exit criteria** (run by the main loop on this branch; mock profile and test containers only; the default webhook.site URL received nothing, 48 of its 50 requests are left):
   - `make test`: green, 21 packages.
   - `make fuzz`: green, five targets of 30 s each.
