@@ -73,7 +73,8 @@ const DefaultScheduledAtMaxAhead = 720 * time.Hour
 type Options struct {
 	Repository Repository
 	DB         Pinger
-	// Logger receives one line per request. It must not be nil.
+	// Logger receives one line per request and a line per notification a
+	// request creates or changes; nothing is logged when it is nil.
 	Logger *slog.Logger
 	// Retry supplies each priority's TTL and failure budget.
 	Retry config.RetryConfig
@@ -158,6 +159,9 @@ func NewHandler(o Options) http.Handler {
 	if o.Events == nil {
 		o.Events = events.Nop{}
 	}
+	if o.Logger == nil {
+		o.Logger = slog.New(slog.DiscardHandler)
+	}
 	if o.PhoneValidation == "" {
 		o.PhoneValidation = domain.PhonePossible
 	}
@@ -187,6 +191,7 @@ func NewHandler(o Options) http.Handler {
 			backlogTTL: o.SummaryBacklogTTL, dbTimeout: o.DBTimeout, hwm: o.LaneHWM,
 		},
 		metrics: o.Metrics,
+		log:     o.Logger,
 	}
 	strict := apigen.NewStrictHandlerWithOptions(h, nil, apigen.StrictHTTPServerOptions{
 		RequestErrorHandlerFunc:  requestError,
@@ -527,8 +532,9 @@ func (g *problemGuard) Unwrap() http.ResponseWriter { return g.ResponseWriter }
 // one line per request and counts it (http_requests_total and
 // http_request_duration_seconds, by route template). The line has the
 // method, the route template (never the raw path), the status, the duration
-// and the correlation id; never a header value, a recipient, a content or a
-// body.
+// and the correlation id; never a header value, a query string, a
+// recipient, a content or a body. It is at debug level, and at error level
+// for a 5xx answer.
 type frame struct {
 	next         http.Handler
 	logger       *slog.Logger
@@ -561,6 +567,9 @@ func (f *frame) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.next.ServeHTTP(rec, r)
 }
 
+// log writes the request's line: at debug, or at error for a 5xx answer
+// with the class of its cause (ADR-0009 §4). The correlation id comes from
+// the request's context (withRequestHeaders).
 func (f *frame) log(r *http.Request, st *requestState, status int, d time.Duration) {
 	route, cause := st.snapshot()
 	if route == "" {
@@ -571,9 +580,8 @@ func (f *frame) log(r *http.Request, st *requestState, status int, d time.Durati
 		slog.String("route", route),
 		slog.Int("status", status),
 		slog.Float64("duration_ms", float64(d.Microseconds())/1000),
-		slog.String("correlation_id", st.correlationID),
 	}
-	level := slog.LevelInfo
+	level := slog.LevelDebug
 	if status >= http.StatusInternalServerError {
 		level = slog.LevelError
 		if cause != nil {

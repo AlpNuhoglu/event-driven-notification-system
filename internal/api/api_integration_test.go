@@ -5,7 +5,6 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -53,7 +52,7 @@ func newTestAPIOn(t *testing.T, pool *pgxpool.Pool, logs *syncBuffer, mods ...fu
 	o := Options{
 		Repository:        st,
 		DB:                pool,
-		Logger:            slog.New(slog.NewJSONHandler(logs, nil)),
+		Logger:            testLogger(logs),
 		Retry:             testRetry(),
 		MaxBodyBytes:      itMaxBody,
 		DBTimeout:         itDBTimeout,
@@ -575,7 +574,7 @@ func TestNoPersonalDataInLogsOrErrors(t *testing.T) {
 			}
 		}
 	}
-	if strings.Count(logs.String(), "\n") != 20 {
-		t.Errorf("want one log line per request (20), got:\n%s", logs)
+	if strings.Count(logs.String(), `"msg":"http request"`) != 20 {
+		t.Errorf("want one request line per request (20), got:\n%s", logs)
 	}
 }

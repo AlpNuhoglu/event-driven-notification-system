@@ -111,6 +111,26 @@ func TestSend_ToIsTheRealRecipient(t *testing.T) {
 	}
 }
 
+// The provider request is one of the three paths that carry the real
+// recipient (ADR-0009 §4): the body on the wire is compared byte for byte
+// with the body the real value gives.
+func TestSend_BodyCarriesTheRealRecipientByteForByte(t *testing.T) {
+	for _, real := range []string{phone, email, "device-token-0123456789abcdef"} {
+		var got []byte
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			got, _ = io.ReadAll(r.Body)
+			accept(w, r)
+		}))
+		c, _ := newClient(t, srv.URL, nil)
+		c.Send(context.Background(), req(domain.Recipient(real).Reveal()))
+		srv.Close()
+		want := []byte(`{"to":"` + real + `","channel":"sms","content":"` + content + `"}`)
+		if string(got) != string(want) {
+			t.Errorf("body %d bytes, want the %d bytes of the real value", len(got), len(want))
+		}
+	}
+}
+
 func TestSend_Headers(t *testing.T) {
 	for _, tc := range []struct{ name, header, trace string }{
 		{"default", "", "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"},
@@ -242,6 +262,41 @@ func TestSend_Non2xxIsAResponse(t *testing.T) {
 		if r.StatusCode != code || r.Err != nil {
 			t.Errorf("code %d: response = %+v", code, r)
 		}
+	}
+}
+
+// The body of an answer that is not a 2xx is handed on, up to MaxErrorBody
+// bytes, with a mark when it was longer; the body of a 2xx is not.
+func TestSend_ErrorBodyIsKeptUpToItsLimit(t *testing.T) {
+	long := strings.Repeat("x", MaxErrorBody+100)
+	cases := []struct {
+		name     string
+		code     int
+		body     string
+		wantBody string
+		wantCut  bool
+	}{
+		{"a 400 with a body", 400, `{"error":"invalid number"}`, `{"error":"invalid number"}`, false},
+		{"a 503 without a body", 503, "", "", false},
+		{"a body of exactly the limit", 500, long[:MaxErrorBody], long[:MaxErrorBody], false},
+		{"a longer body", 500, long, long[:MaxErrorBody], true},
+		{"a 202", 202, `{"messageId":"m-1"}`, "", false},
+		{"another 2xx", 200, "ok, whatever", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tc.code)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer srv.Close()
+			c, _ := newClient(t, srv.URL, nil)
+			r := c.Send(context.Background(), req(phone))
+			if r.StatusCode != tc.code || r.Err != nil || r.ErrorBody != tc.wantBody || r.ErrorBodyCut != tc.wantCut {
+				t.Errorf("status %d, err %v, %d bytes of error body (cut %v); want %d bytes (cut %v)",
+					r.StatusCode, r.Err, len(r.ErrorBody), r.ErrorBodyCut, len(tc.wantBody), tc.wantCut)
+			}
+		})
 	}
 }
 

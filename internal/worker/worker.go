@@ -310,7 +310,9 @@ func (w *Worker) answered(op string, m Message, err error) {
 	switch {
 	case err == nil:
 	case errors.Is(err, ErrStale):
-		w.log.Info("worker: "+op+" not sent: the delivery is from an older connection epoch",
+		// One line per delivery after a reconnection, which is itself
+		// logged: debug (ADR-0009 §4).
+		w.log.Debug("worker: "+op+" not sent: the delivery is from an older connection epoch",
 			slog.String("notification_id", m.NotificationID().String()))
 	default:
 		w.log.Error("worker: "+op+" failed",

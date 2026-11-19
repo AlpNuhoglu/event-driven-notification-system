@@ -101,6 +101,7 @@ func (n Notification) Event() domain.StatusChanged {
 		FailureReason: n.FailureReason,
 		AttemptCount:  n.AttemptCount,
 		UpdatedAt:     n.UpdatedAt,
+		CorrelationID: n.CorrelationID,
 	}
 }
 

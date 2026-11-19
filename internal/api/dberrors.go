@@ -2,10 +2,13 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	htmltemplate "html/template"
 	"io"
 	"net"
+	"text/template"
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/puddle/v2"
@@ -55,14 +58,51 @@ func storeProblem(err error) *problem {
 	return p
 }
 
-// errorClass describes an error for the log without risking personal data:
-// a Postgres error is reduced to its SQLSTATE (its message can quote an
-// input value), every other error keeps its text, which the store builds
-// from fixed strings and driver errors.
+// errorClass describes an error for the log by its class, never by its
+// text: the text of a Postgres error, a JSON decoder's or a template's can
+// quote an input value (a request body, a template variable), so no error
+// text reaches the log line. A Postgres error is reduced to its SQLSTATE;
+// an error of no known class is named by the type of the innermost error
+// of its chain.
 func errorClass(err error) string {
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) {
+	var (
+		pgErr      *pgconn.PgError
+		connectErr *pgconn.ConnectError
+		netErr     net.Error
+		syntaxErr  *json.SyntaxError
+		typeErr    *json.UnmarshalTypeError
+		valueErr   *json.UnsupportedValueError
+		marshalErr *json.MarshalerError
+		execErr    template.ExecError
+		htmlErr    *htmltemplate.Error
+	)
+	switch {
+	case errors.As(err, &pgErr):
 		return fmt.Sprintf("postgres error, SQLSTATE %s", pgErr.Code)
+	case errors.Is(err, context.DeadlineExceeded):
+		return "deadline exceeded"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	case errors.Is(err, puddle.ErrClosedPool):
+		return "postgres pool closed"
+	case errors.As(err, &connectErr):
+		return "postgres connect error"
+	case errors.As(err, &netErr), errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF):
+		return "connection error"
+	case errors.As(err, &syntaxErr), errors.As(err, &typeErr), errors.As(err, &valueErr), errors.As(err, &marshalErr):
+		return "json error"
+	case errors.As(err, &execErr):
+		return "template execution error"
+	case errors.As(err, &htmlErr):
+		return "template escaping error"
 	}
-	return err.Error()
+	root := err
+	for {
+		next := errors.Unwrap(root)
+		if next == nil {
+			break
+		}
+		root = next
+	}
+	return fmt.Sprintf("error of type %T", root)
 }

@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/AlpNuhoglu/event-driven-notification-system/internal/platform/logging"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/platform/tracing"
 )
 
@@ -181,5 +182,8 @@ func withRequestHeaders(w http.ResponseWriter, r *http.Request) (*http.Request, 
 	if sc := trace.SpanContextFromContext(r.Context()); sc.IsValid() {
 		st.traceParent = tracing.FormatTraceParent(sc)
 	}
-	return r.WithContext(context.WithValue(r.Context(), stateKey{}, st)), st
+	// Every line logged with the request's context carries its correlation
+	// id (ADR-0009 §5).
+	ctx := logging.WithCorrelationID(context.WithValue(r.Context(), stateKey{}, st), st.correlationID)
+	return r.WithContext(ctx), st
 }

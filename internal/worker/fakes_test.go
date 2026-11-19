@@ -16,6 +16,7 @@ import (
 	oteltrace "go.opentelemetry.io/otel/trace"
 
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/domain"
+	"github.com/AlpNuhoglu/event-driven-notification-system/internal/platform/logging"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/store"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/testutil"
 )
@@ -382,6 +383,8 @@ func (s *fakeStore) Claim(ctx context.Context, id uuid.UUID, lease time.Duration
 		AttemptCount: 3,
 		TraceParent:  "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
 		UpdatedAt:    s.clk.Now(),
+		// Every claimed row carries the correlation id of its request.
+		CorrelationID: "corr-" + id.String(),
 	}
 	if s.queuedFor > 0 {
 		at := n.UpdatedAt.Add(-s.queuedFor)
@@ -563,6 +566,8 @@ type harness struct {
 	w    *Worker
 	// tp records the worker.process spans; the global provider when nil.
 	tp oteltrace.TracerProvider
+	// central makes build use the central log handler (see logger).
+	central bool
 
 	cancel context.CancelFunc
 	done   chan struct{}
@@ -619,7 +624,7 @@ func (h *harness) build() {
 		Events:   h.pub,
 		Clock:    h.clk,
 		Jitter:   func() float64 { return 0.25 },
-		Logger:   slog.New(slog.NewJSONHandler(h.logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
+		Logger:   h.logger(),
 		Metrics:  m,
 
 		TracerProvider: h.tp,
@@ -628,6 +633,16 @@ func (h *harness) build() {
 		h.t.Fatal(err)
 	}
 	h.w = w
+}
+
+// logger writes JSON lines at debug level to h.logs: through the central
+// handler when h.central is set (it adds the fields of the context),
+// otherwise through slog's own JSON handler.
+func (h *harness) logger() *slog.Logger {
+	if h.central {
+		return logging.New(h.logs, logging.Options{Service: "worker", Level: slog.LevelDebug})
+	}
+	return slog.New(slog.NewJSONHandler(h.logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 }
 
 func (h *harness) push(prio uint8) *fakeMessage {
