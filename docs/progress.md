@@ -48,7 +48,7 @@ Status is one of: `not started`, `in progress`, `in review` (pull requests open)
 | P2 | API completeness | done | [#7](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/7) (`p2/batch-and-idempotency`, merged), [#8](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/8) (`p2/cancel-redrive-listing`, merged), [#9](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/9) (`p2/validation`, merged) | 2026-11-19 |
 | P3 | Delivery robustness | done | [#10](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/10) (`p3/classification-and-retry`, merged), [#11](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/11) (`p3/breaker-and-fallback`, merged), [#12](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/12) (`p3/recovery`, merged); follow-up [#13](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/13) (`p3/isopen-race`, merged) | 2026-11-19 |
 | P4 | Templates and scheduling | done | [#14](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/14) (`p4/templates`, merged), [#15](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/15) (`p4/scheduling`, merged) | 2026-11-19 |
-| P5 | Real-time and observability | in progress | | |
+| P5 | Real-time and observability | in progress | [#16](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/16) (`p5/events-and-gateway`, in review) | |
 | P6 | Quality | not started | | |
 | P7 | Delivery | not started | | |
 
@@ -137,7 +137,7 @@ Newest entry first. One entry per session, in this form:
   | **The snapshot read before the registration** (the two statements of `client.subscribe` swapped: `snap, err := c.g.snapshot(…)` above `c.register(req)`) | `TestGateway_SubscriptionIsRegisteredBeforeTheSnapshotIsRead`, in 3 of 3 runs, and no other test of the package | "the client never received version 2 (cancelled), which committed after the snapshot read and was dispatched before the subscribe request finished; it received versions [1] up to the marker. The subscription must be registered before the snapshot is read" |
 
   The test puts the transition exactly there: its snapshot reader does the real read, then cancels the row in Postgres and has the event dispatched before it returns. "Never" is decided without a sleep, by a marker event that both orders deliver.
-- **Pull requests opened:** see the phase table.
+- **Pull requests opened:** [#16](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/16) from `p5/events-and-gateway`.
 - **Exit criteria of this pull request** (run by the main loop on this branch; mock profile and test containers only):
   - `make test`: green, 22 packages (`internal/gateway` is new).
   - `make test-e2e`: green, 168 s. `TestComposeE2E_GatewayFollowsNotificationsToSent`: a notification and a batch of three, each followed over the WebSocket as `pending → queued → processing → sent` with rising versions after its snapshot. `load-smoke`: 6,000 SMS in 61.2 s, 98.0/s, largest one-second window **99**.
