@@ -39,6 +39,10 @@ var integrationConfig = Config{
 	HWMLow:             500,
 	LeaseSweepInterval: 10 * time.Millisecond,
 	LeaseSweepBatch:    500,
+
+	ExpiryInterval:             10 * time.Millisecond,
+	ExpiryBatch:                1000,
+	IdempotencyCleanupInterval: 10 * time.Millisecond,
 }
 
 // zeroDelays makes a retried row due at once.

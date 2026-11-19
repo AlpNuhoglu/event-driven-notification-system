@@ -402,6 +402,8 @@ func (e *env) startRelayWith(cfg config.Config, wrap func(relay.Publisher) relay
 		var wg sync.WaitGroup
 		wg.Go(func() { _ = r.RunPublishing(ctx) })
 		wg.Go(func() { _ = r.RunLeaseSweeper(ctx) })
+		wg.Go(func() { _ = r.RunExpiry(ctx) })
+		wg.Go(func() { _ = r.RunIdempotencyCleanup(ctx) })
 		wg.Wait()
 		return nil
 	})

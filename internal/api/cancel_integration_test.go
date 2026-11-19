@@ -5,6 +5,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"reflect"
 	"slices"
@@ -504,6 +505,120 @@ func TestRedrive_VersusExpiry(t *testing.T) {
 		cancelled := a.create(t, smsBody)
 		decodeCancel(t, a.cancel(cancelled))
 		expectConflict(t, a.redrive(cancelled, ""), domain.StatusCancelled, "status:not_failed")
+	})
+
+	// The same rules against the relay's expiry pass (transition 10) instead
+	// of the claim's expiry branch.
+	t.Run("relay expiry pass", func(t *testing.T) {
+		pass := func(t *testing.T, id uuid.UUID) []domain.StatusChanged {
+			t.Helper()
+			evs, err := a.store.ExpireDue(ctxT(t), 1000)
+			if err != nil {
+				t.Fatalf("expiry pass: %v", err)
+			}
+			var mine []domain.StatusChanged
+			for _, e := range evs {
+				if e.ID == id {
+					mine = append(mine, e)
+				}
+			}
+			return mine
+		}
+
+		id := a.create(t, smsBody)
+		a.backdateExpiry(t, id)
+		if evs := pass(t, id); len(evs) != 1 || evs[0].Status != domain.StatusFailed {
+			t.Fatalf("pass events %+v", evs)
+		}
+		before := a.get(t, id)
+		if before.FailureReason == nil || *before.FailureReason != domain.ReasonExpired || before.AttemptCount != 0 {
+			t.Fatalf("expired by the pass: %+v", before)
+		}
+		expectConflict(t, a.redrive(id, ""), domain.StatusFailed, "expires_at:expires_at_required")
+
+		// A redriven row with a new future expires_at is not expired by a
+		// pass that runs after it.
+		if r := a.redrive(id, body(at(3_600_000*time.Millisecond))); r.status != http.StatusOK {
+			t.Fatalf("redrive: %d %s", r.status, r.body)
+		}
+		redriven := a.get(t, id)
+		if evs := pass(t, id); len(evs) != 0 {
+			t.Errorf("pass after the redrive: %+v", evs)
+		}
+		if got := a.get(t, id); got.Status != domain.StatusPending || got.Version != redriven.Version {
+			t.Errorf("redriven row changed by the pass: %+v", got)
+		}
+	})
+
+	// A pass and a redrive on the same row, concurrently, from an expired
+	// pending row and from an expired failed row: whatever the order, the row
+	// is never pending with an expires_at that has passed, and a later pass
+	// leaves a pending row alone.
+	t.Run("relay expiry pass and redrive concurrently", func(t *testing.T) {
+		const rounds = 20
+		for round := range rounds {
+			id := a.create(t, smsBody)
+			a.backdateExpiry(t, id)
+			if round%2 == 1 {
+				if _, err := a.store.ExpireDue(ctxT(t), 1000); err != nil {
+					t.Fatal(err)
+				}
+			}
+			newExp := time.Now().Add(3_600_000 * time.Millisecond)
+			start := make(chan struct{})
+			var passErr, redriveErr error
+			var wg sync.WaitGroup
+			wg.Go(func() {
+				<-start
+				_, passErr = a.store.ExpireDue(context.Background(), 1000)
+			})
+			wg.Go(func() {
+				<-start
+				_, _, redriveErr = a.store.RedriveNotification(context.Background(), id, &newExp, itMinLead)
+			})
+			close(start)
+			wg.Wait()
+			if passErr != nil {
+				t.Fatalf("round %d: pass: %v", round, passErr)
+			}
+			var refused *store.RefusedError
+			if redriveErr != nil && !errors.As(redriveErr, &refused) {
+				t.Fatalf("round %d: redrive: %v", round, redriveErr)
+			}
+
+			var status string
+			var expired bool
+			if err := a.pool.QueryRow(ctxT(t), `SELECT status, expires_at <= now() FROM notifications WHERE id = $1`, id).
+				Scan(&status, &expired); err != nil {
+				t.Fatal(err)
+			}
+			switch {
+			case status == string(domain.StatusPending) && expired:
+				t.Fatalf("round %d: a pending row that has already expired", round)
+			case status == string(domain.StatusPending):
+				if redriveErr != nil {
+					t.Fatalf("round %d: pending although the redrive was refused: %v", round, redriveErr)
+				}
+				v := a.get(t, id).Version
+				if _, err := a.store.ExpireDue(ctxT(t), 1000); err != nil {
+					t.Fatal(err)
+				}
+				if got := a.get(t, id); got.Status != domain.StatusPending || got.Version != v {
+					t.Fatalf("round %d: a later pass changed the redriven row: %+v", round, got)
+				}
+			case status == string(domain.StatusFailed):
+				if redriveErr == nil {
+					t.Fatalf("round %d: failed although the redrive applied", round)
+				}
+				// The redrive came first, on the pending row, and was refused.
+				// Once failed, it applies.
+				if _, _, err := a.store.RedriveNotification(ctxT(t), id, &newExp, itMinLead); err != nil {
+					t.Fatalf("round %d: redrive of the expired row: %v", round, err)
+				}
+			default:
+				t.Fatalf("round %d: status %s", round, status)
+			}
+		}
 	})
 }
 

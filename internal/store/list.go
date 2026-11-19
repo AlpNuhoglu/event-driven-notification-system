@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/domain"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/store/db"
@@ -67,7 +68,7 @@ func (s *Store) ListNotifications(ctx context.Context, f ListFilter) ([]Notifica
 	var rows []db.Notification
 	var err error
 	if f.Status != nil {
-		rows, err = s.list.ListNotificationsByStatus(ctx, db.ListNotificationsByStatusParams{
+		rows, err = s.custom.ListNotificationsByStatus(ctx, db.ListNotificationsByStatusParams{
 			Status:          string(*f.Status),
 			CursorCreatedAt: cursorAt,
 			CursorID:        cursorID,
@@ -79,7 +80,7 @@ func (s *Store) ListNotifications(ctx context.Context, f ListFilter) ([]Notifica
 			PageLimit:       pageLimit,
 		})
 	} else {
-		rows, err = s.list.ListNotifications(ctx, db.ListNotificationsParams{
+		rows, err = s.custom.ListNotifications(ctx, db.ListNotificationsParams{
 			CursorCreatedAt: cursorAt,
 			CursorID:        cursorID,
 			CreatedFrom:     f.CreatedFrom,
@@ -106,14 +107,28 @@ func (s *Store) ListNotifications(ctx context.Context, f ListFilter) ([]Notifica
 	return page, next, nil
 }
 
-// customPlanDB runs a query with pgx.QueryExecModeDescribeExec: the unnamed
-// statement, which Postgres plans with the bound values every time and which
-// never enters pgx's statement cache. The listing's optional filters
-// ("$n IS NULL OR col = $n") make the row estimate of a generic plan
-// meaningless, and the EXPLAIN check showed such a plan sorting the whole
-// status; Exec and QueryRow pass through unchanged.
+// customPlanDB runs a statement with pgx.QueryExecModeDescribeExec: the
+// unnamed statement, which Postgres plans with the bound values every time
+// and which never enters pgx's statement cache. Two kinds of statement need
+// it:
+//
+//   - The listing: its optional filters ("$n IS NULL OR col = $n") make the
+//     row estimate of a generic plan meaningless, and the EXPLAIN check showed
+//     such a plan sorting the whole status.
+//   - The expiry pass and the idempotency-key cleanup (expiry.go): they run
+//     every second or minute and usually find nothing, so Postgres caches a
+//     generic plan built for one or two rows. When a backlog expires at once
+//     (an outage), that plan joins the batch against every expired row. With
+//     200,000 expired keys one delete of 1,000 took 12 s while holding its
+//     row locks; planned with the values it takes 4 ms.
+//
+// QueryRow passes through unchanged.
 type customPlanDB struct{ db.DBTX }
 
 func (c customPlanDB) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
 	return c.DBTX.Query(ctx, sql, append([]any{pgx.QueryExecModeDescribeExec}, args...)...)
+}
+
+func (c customPlanDB) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+	return c.DBTX.Exec(ctx, sql, append([]any{pgx.QueryExecModeDescribeExec}, args...)...)
 }

@@ -73,8 +73,8 @@ type Relay struct {
 	LaneHWMLow      int
 	ExpiryInterval  time.Duration
 	ExpiryBatchSize int
-	// IdempotencyCleanupEvery is the cadence of the idempotency-key cleanup
-	// (D78; the pass itself arrives in P3).
+	// IdempotencyCleanupEvery is the cadence of the relay's idempotency-key
+	// cleanup (D78); its batch size, 1,000, is fixed and not configuration.
 	IdempotencyCleanupEvery time.Duration
 	LeaseSweepEvery         time.Duration
 	LeaseSweepBatch         int
