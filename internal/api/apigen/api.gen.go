@@ -703,13 +703,13 @@ type TemplateValues map[string]interface{}
 type TemplateVariables = []string
 
 // BatchID defines model for BatchID.
-type BatchID = openapi_types.UUID
+type BatchID = string
 
 // IdempotencyKey defines model for IdempotencyKey.
 type IdempotencyKey = string
 
 // NotificationID defines model for NotificationID.
-type NotificationID = openapi_types.UUID
+type NotificationID = string
 
 // TemplateName defines model for TemplateName.
 type TemplateName = string
@@ -779,10 +779,10 @@ type CancelBatchParams struct {
 
 // ListNotificationsParams defines parameters for ListNotifications.
 type ListNotificationsParams struct {
-	Status   *Status             `form:"status,omitempty" json:"status,omitempty"`
-	Channel  *Channel            `form:"channel,omitempty" json:"channel,omitempty"`
-	Priority *Priority           `form:"priority,omitempty" json:"priority,omitempty"`
-	BatchId  *openapi_types.UUID `form:"batch_id,omitempty" json:"batch_id,omitempty"`
+	Status   *Status   `form:"status,omitempty" json:"status,omitempty"`
+	Channel  *Channel  `form:"channel,omitempty" json:"channel,omitempty"`
+	Priority *Priority `form:"priority,omitempty" json:"priority,omitempty"`
+	BatchId  *string   `form:"batch_id,omitempty" json:"batch_id,omitempty"`
 
 	// CreatedFrom Inclusive lower bound of `created_at` (RFC 3339 with an offset).
 	CreatedFrom *time.Time `form:"created_from,omitempty" json:"created_from,omitempty"`
@@ -1021,7 +1021,7 @@ type ServerInterface interface {
 	GetReadyz(w http.ResponseWriter, r *http.Request)
 	// GetBatch Read a batch
 	// (GET /v1/batches/{id})
-	GetBatch(w http.ResponseWriter, r *http.Request, id openapi_types.UUID, params GetBatchParams)
+	GetBatch(w http.ResponseWriter, r *http.Request, id string, params GetBatchParams)
 	// CancelBatch Cancel the notifications of a batch
 	// (POST /v1/batches/{id}/cancel)
 	CancelBatch(w http.ResponseWriter, r *http.Request, id BatchID, params CancelBatchParams)
@@ -1036,7 +1036,7 @@ type ServerInterface interface {
 	CreateNotificationBatch(w http.ResponseWriter, r *http.Request, params CreateNotificationBatchParams)
 	// GetNotification Read a notification
 	// (GET /v1/notifications/{id})
-	GetNotification(w http.ResponseWriter, r *http.Request, id openapi_types.UUID, params GetNotificationParams)
+	GetNotification(w http.ResponseWriter, r *http.Request, id string, params GetNotificationParams)
 	// ListNotificationAttempts Read the delivery attempts of a notification
 	// (GET /v1/notifications/{id}/attempts)
 	ListNotificationAttempts(w http.ResponseWriter, r *http.Request, id NotificationID, params ListNotificationAttemptsParams)
@@ -1130,7 +1130,7 @@ func (siw *ServerInterfaceWrapper) GetBatch(w http.ResponseWriter, r *http.Reque
 	_ = err
 
 	// ------------- Path parameter "id" -------------
-	var id openapi_types.UUID
+	var id string
 
 	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: true})
 	if err != nil {
@@ -1590,7 +1590,7 @@ func (siw *ServerInterfaceWrapper) GetNotification(w http.ResponseWriter, r *htt
 	_ = err
 
 	// ------------- Path parameter "id" -------------
-	var id openapi_types.UUID
+	var id string
 
 	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: true})
 	if err != nil {
@@ -2748,7 +2748,7 @@ func (response GetReadyz503ApplicationProblemPlusJSONResponse) VisitGetReadyzRes
 }
 
 type GetBatchRequestObject struct {
-	Id     openapi_types.UUID `json:"id"`
+	Id     string `json:"id"`
 	Params GetBatchParams
 }
 
@@ -3314,7 +3314,7 @@ func (response CreateNotificationBatch503ApplicationProblemPlusJSONResponse) Vis
 }
 
 type GetNotificationRequestObject struct {
-	Id     openapi_types.UUID `json:"id"`
+	Id     string `json:"id"`
 	Params GetNotificationParams
 }
 
@@ -4876,7 +4876,7 @@ func (sh *strictHandler) GetReadyz(w http.ResponseWriter, r *http.Request) {
 }
 
 // GetBatch operation middleware
-func (sh *strictHandler) GetBatch(w http.ResponseWriter, r *http.Request, id openapi_types.UUID, params GetBatchParams) {
+func (sh *strictHandler) GetBatch(w http.ResponseWriter, r *http.Request, id string, params GetBatchParams) {
 	var request GetBatchRequestObject
 
 	request.Id = id
@@ -5022,7 +5022,7 @@ func (sh *strictHandler) CreateNotificationBatch(w http.ResponseWriter, r *http.
 }
 
 // GetNotification operation middleware
-func (sh *strictHandler) GetNotification(w http.ResponseWriter, r *http.Request, id openapi_types.UUID, params GetNotificationParams) {
+func (sh *strictHandler) GetNotification(w http.ResponseWriter, r *http.Request, id string, params GetNotificationParams) {
 	var request GetNotificationRequestObject
 
 	request.Id = id

@@ -8,8 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
-
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/api/apigen"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/domain"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/store"
@@ -135,7 +133,7 @@ func parseListQuery(rawQuery string) (store.ListFilter, []apigen.FieldError) {
 				invalid(name, "priority must be one of: high, normal, low")
 			}
 		case paramBatchID:
-			if id, ok := parseUUID(v); ok {
+			if id, err := domain.ParseID(v); err == nil {
 				f.BatchID = &id
 			} else {
 				invalid(name, "batch_id must be a UUID")
@@ -185,15 +183,6 @@ func joinNames[T ~string](vs []T) string {
 		names[i] = string(v)
 	}
 	return strings.Join(names, ", ")
-}
-
-// parseUUID accepts the canonical 36-character form only.
-func parseUUID(s string) (uuid.UUID, bool) {
-	if len(s) != 36 {
-		return uuid.UUID{}, false
-	}
-	id, err := uuid.Parse(s)
-	return id, err == nil
 }
 
 // parseBound parses an RFC 3339 date-time with an offset (Z or ±hh:mm) and

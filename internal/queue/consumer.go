@@ -371,7 +371,9 @@ func (k *Consumer) stale(epoch uint64) bool {
 }
 
 func (k *Consumer) dispatch(d amqp.Delivery, epoch uint64, handle Handler) {
-	id, err := uuid.ParseBytes(d.Body)
+	// The body is the id as text, as the publisher writes it; any other
+	// spelling of an id is a malformed message like any other.
+	id, err := domain.ParseID(string(d.Body))
 	if err != nil {
 		k.logger.Warn("rejecting a delivery whose body is not a notification id",
 			"queue", k.queue, "body_bytes", len(d.Body))

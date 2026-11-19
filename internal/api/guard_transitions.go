@@ -30,19 +30,19 @@ const (
 	fieldExpiresAt = "expires_at"
 )
 
-// CancelNotification refuses a request with a body (400), then hands it on
-// to the strict handler.
+// CancelNotification refuses an id that is not one and then a request with
+// a body (400), then hands it on to the strict handler.
 func (g createGuard) CancelNotification(w http.ResponseWriter, r *http.Request, id apigen.NotificationID, params apigen.CancelNotificationParams) {
-	if !requireNoBody(w, r) {
+	if !requirePathID(w, r, id) || !requireNoBody(w, r) {
 		return
 	}
 	g.ServerInterface.CancelNotification(w, r, id, params)
 }
 
-// CancelBatch refuses a request with a body (400), then hands it on to the
-// strict handler.
+// CancelBatch refuses an id that is not one and then a request with a body
+// (400), then hands it on to the strict handler.
 func (g createGuard) CancelBatch(w http.ResponseWriter, r *http.Request, id apigen.BatchID, params apigen.CancelBatchParams) {
-	if !requireNoBody(w, r) {
+	if !requirePathID(w, r, id) || !requireNoBody(w, r) {
 		return
 	}
 	g.ServerInterface.CancelBatch(w, r, id, params)
@@ -52,8 +52,12 @@ func (g createGuard) CancelBatch(w http.ResponseWriter, r *http.Request, id apig
 // ignores unknown and repeated fields, so the optional body is validated
 // here (validateRedrive) and passed on parsed. An empty body (nothing but
 // white space) gives no field and needs no Content-Type; a body that is not
-// empty must be application/json (415).
+// empty must be application/json (415). An id that is not one is refused
+// first (400).
 func (g createGuard) RedriveNotification(w http.ResponseWriter, r *http.Request, id apigen.NotificationID, params apigen.RedriveNotificationParams) {
+	if !requirePathID(w, r, id) {
+		return
+	}
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		writeProblem(w, r, bodyReadProblem(err))

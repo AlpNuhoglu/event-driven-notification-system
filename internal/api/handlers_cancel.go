@@ -26,9 +26,13 @@ type canceller interface {
 // has checked that the request has no body. A repeated cancel answers 200
 // again with the current row and publishes nothing.
 func (h *handlers) CancelNotification(ctx context.Context, req apigen.CancelNotificationRequestObject) (apigen.CancelNotificationResponseObject, error) {
+	id, p := pathID(req.Id)
+	if p != nil {
+		return nil, p
+	}
 	dbCtx, cancel := context.WithTimeout(ctx, h.dbTimeout)
 	defer cancel()
-	res, ev, err := h.repo.CancelNotification(dbCtx, uuid.UUID(req.Id))
+	res, ev, err := h.repo.CancelNotification(dbCtx, id)
 	if err != nil {
 		return nil, h.transitionProblem(err)
 	}
@@ -49,9 +53,13 @@ func (h *handlers) CancelNotification(ctx context.Context, req apigen.CancelNoti
 // D69). createGuard has checked that the request has no body. One event is
 // published per notification this call cancelled.
 func (h *handlers) CancelBatch(ctx context.Context, req apigen.CancelBatchRequestObject) (apigen.CancelBatchResponseObject, error) {
+	id, p := pathID(req.Id)
+	if p != nil {
+		return nil, p
+	}
 	dbCtx, cancel := context.WithTimeout(ctx, h.dbTimeout)
 	defer cancel()
-	res, evs, err := h.repo.CancelBatch(dbCtx, uuid.UUID(req.Id))
+	res, evs, err := h.repo.CancelBatch(dbCtx, id)
 	if errors.Is(err, store.ErrBatchNotFound) {
 		return nil, newProblem(kindNotFound, "No batch has this id.")
 	}
@@ -75,13 +83,17 @@ func (h *handlers) CancelBatch(ctx context.Context, req apigen.CancelBatchReques
 // createGuard has validated the optional body and passes it as req.Body
 // (nil or without expires_at when the request gave none).
 func (h *handlers) RedriveNotification(ctx context.Context, req apigen.RedriveNotificationRequestObject) (apigen.RedriveNotificationResponseObject, error) {
+	id, p := pathID(req.Id)
+	if p != nil {
+		return nil, p
+	}
 	var newExpiresAt *time.Time
 	if req.Body != nil {
 		newExpiresAt = req.Body.ExpiresAt
 	}
 	dbCtx, cancel := context.WithTimeout(ctx, h.dbTimeout)
 	defer cancel()
-	n, ev, err := h.repo.RedriveNotification(dbCtx, uuid.UUID(req.Id), newExpiresAt, h.minLead)
+	n, ev, err := h.repo.RedriveNotification(dbCtx, id, newExpiresAt, h.minLead)
 	if err != nil {
 		return nil, h.transitionProblem(err)
 	}

@@ -137,6 +137,7 @@ paths:
           schema:
             type: string
             format: uuid
+            x-go-type: string
         - name: created_from
           in: query
           required: false
@@ -200,6 +201,7 @@ paths:
           schema:
             type: string
             format: uuid
+            x-go-type: string
         - $ref: "#/components/parameters/XRequestID"
         - $ref: "#/components/parameters/TraceParent"
       responses:
@@ -400,6 +402,7 @@ paths:
           schema:
             type: string
             format: uuid
+            x-go-type: string
         - $ref: "#/components/parameters/XRequestID"
         - $ref: "#/components/parameters/TraceParent"
       responses:
@@ -865,6 +868,7 @@ components:
       schema:
         type: string
         format: uuid
+        x-go-type: string
     BatchID:
       name: id
       in: path
@@ -873,6 +877,7 @@ components:
       schema:
         type: string
         format: uuid
+        x-go-type: string
     TemplateName:
       name: name
       in: path

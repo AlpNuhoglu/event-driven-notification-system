@@ -47,9 +47,13 @@ func (h *handlers) ListNotifications(ctx context.Context, _ apigen.ListNotificat
 // ListNotificationAttempts returns the delivery attempts of a notification in
 // the order they were made, or 404 when no notification has the id.
 func (h *handlers) ListNotificationAttempts(ctx context.Context, req apigen.ListNotificationAttemptsRequestObject) (apigen.ListNotificationAttemptsResponseObject, error) {
+	id, p := pathID(req.Id)
+	if p != nil {
+		return nil, p
+	}
 	dbCtx, cancel := context.WithTimeout(ctx, h.dbTimeout)
 	defer cancel()
-	rows, err := h.repo.ListAttempts(dbCtx, uuid.UUID(req.Id))
+	rows, err := h.repo.ListAttempts(dbCtx, id)
 	if errors.Is(err, store.ErrNotFound) {
 		return nil, newProblem(kindNotFound, "No notification has this id.")
 	}

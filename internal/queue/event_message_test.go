@@ -110,6 +110,30 @@ func TestDecodeEvent_Refused(t *testing.T) {
 			}
 		})
 	}
+	// An id in a spelling the UUID library accepts but the canonical form
+	// does not.
+	const id, batch = "01a1f55e-0000-7000-8000-000000000001", "01a1f55e-0000-7000-8000-000000000002"
+	for name, spell := range map[string]func(string) string{
+		"urn prefix": func(s string) string { return "urn:uuid:" + s },
+		"braces":     func(s string) string { return "{" + s + "}" },
+		"32 digits":  func(s string) string { return strings.ReplaceAll(s, "-", "") },
+		"wrapped id": func(s string) string { return "x" + s + "y" },
+	} {
+		for member, body := range map[string]string{
+			"id":       replace(`"id":"`+id+`"`, `"id":"`+spell(id)+`"`),
+			"batch_id": replace(`"batch_id":"`+batch+`"`, `"batch_id":"`+spell(batch)+`"`),
+		} {
+			if e, err := DecodeEvent([]byte(body)); err == nil {
+				t.Errorf("%s in %s: decoded %+v, want an error", name, member, e)
+			}
+		}
+	}
+	// The canonical form in upper case is the same id.
+	upper := replace(`"id":"`+id+`"`, `"id":"`+strings.ToUpper(id)+`"`)
+	upper = strings.Replace(upper, `"batch_id":"`+batch+`"`, `"batch_id":"`+strings.ToUpper(batch)+`"`, 1)
+	if e, err := DecodeEvent([]byte(upper)); err != nil || e.ID.String() != id || e.BatchID == nil || e.BatchID.String() != batch {
+		t.Errorf("upper-case ids: %+v, %v", e, err)
+	}
 	// A member of a later version is ignored.
 	if _, err := DecodeEvent([]byte(replace(`{"id"`, `{"later":1,"id"`))); err != nil {
 		t.Errorf("an unknown member: %v", err)

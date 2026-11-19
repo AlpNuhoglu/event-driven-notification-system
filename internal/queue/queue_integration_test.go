@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log/slog"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -479,6 +480,37 @@ func TestConsumer_InvalidBodyGoesToPoisonQueue(t *testing.T) {
 	testutil.Eventually(t, func() bool { return ready(t, admin, PoisonQueue(domain.ChannelSMS)) == 1 }, waitTimeout)
 	if len(handled) != 0 {
 		t.Error("the handler received a delivery with an invalid body")
+	}
+}
+
+// A body that holds an id in a spelling other than the canonical one (which
+// the UUID library would accept) is as invalid as any other body; an upper
+// case id in the canonical form is still a notification id.
+func TestConsumer_IdInAnotherSpellingGoesToPoisonQueue(t *testing.T) {
+	url, c := setup(t)
+	admin := raw(t, url)
+	id := uuid.Must(uuid.NewV7())
+	s := id.String()
+	refused := []string{"urn:uuid:" + s, "{" + s + "}", strings.ReplaceAll(s, "-", ""), "x" + s + "y"}
+	for _, body := range append(refused, strings.ToUpper(s)) {
+		if err := admin.PublishWithContext(ctxT(t), DispatchExchange, "sms", true, false,
+			amqp.Publishing{Body: []byte(body)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cons := newConsumer(t, c)
+	handled := make(chan Delivery, len(refused)+1)
+	runConsumer(t, cons, func(d Delivery) {
+		handled <- d
+		_ = d.Ack()
+	})
+	d := recv(t, handled)
+	if d.ID != id {
+		t.Errorf("handled id %s, want %s", d.ID, id)
+	}
+	testutil.Eventually(t, func() bool { return ready(t, admin, PoisonQueue(domain.ChannelSMS)) == len(refused) }, waitTimeout)
+	if n := len(handled); n != 0 {
+		t.Errorf("the handler received %d more deliveries, want 0", n)
 	}
 }
 
