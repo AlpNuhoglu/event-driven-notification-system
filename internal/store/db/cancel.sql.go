@@ -40,15 +40,31 @@ func (q *Queries) BatchCancelCounts(ctx context.Context, batchID *uuid.UUID) (Ba
 }
 
 const cancelBatchNotifications = `-- name: CancelBatchNotifications :many
-UPDATE notifications
-SET status = 'cancelled', updated_at = now(), version = version + 1
-WHERE batch_id = $1 AND status IN ('pending', 'retrying', 'queued')
-RETURNING id, batch_id, dedupe_key, channel, priority, recipient, content, sms_encoding, sms_segments, template_name, template_version, template_vars, status, failure_reason, due_at, scheduled_at, expires_at, attempt_count, failures, max_failures, queued_at, lease_expires_at, provider, provider_message_id, correlation_id, trace_parent, version, created_at, updated_at, sent_at
+WITH locked AS (
+  SELECT c.id
+  FROM notifications AS c
+  WHERE c.batch_id = $1 AND c.status IN ('pending', 'retrying', 'queued')
+  ORDER BY c.id
+  FOR UPDATE
+)
+UPDATE notifications AS n
+SET status = 'cancelled', updated_at = now(), version = n.version + 1
+FROM locked
+WHERE n.id = locked.id AND n.status IN ('pending', 'retrying', 'queued')
+RETURNING n.id, n.batch_id, n.dedupe_key, n.channel, n.priority, n.recipient, n.content, n.sms_encoding, n.sms_segments, n.template_name, n.template_version, n.template_vars, n.status, n.failure_reason, n.due_at, n.scheduled_at, n.expires_at, n.attempt_count, n.failures, n.max_failures, n.queued_at, n.lease_expires_at, n.provider, n.provider_message_id, n.correlation_id, n.trace_parent, n.version, n.created_at, n.updated_at, n.sent_at
 `
 
 // Transition 9 for every cancellable notification of a batch, in one
 // statement (ADR-0006 section 7). Same guard and same SET as
 // CancelNotification.
+//
+// Lock order: the rows are locked in id order first (the locking clause runs
+// above the sort) and updated afterwards. A plain UPDATE locks rows in the
+// order its scan meets them, which nothing fixes, so two transactions that
+// each update several rows of one batch could wait for each other; with one
+// global order they cannot. A row that leaves the cancellable states while
+// the lock is waited for is dropped by the re-check of the SELECT, and the
+// UPDATE repeats the guard.
 func (q *Queries) CancelBatchNotifications(ctx context.Context, batchID *uuid.UUID) ([]Notification, error) {
 	rows, err := q.db.Query(ctx, cancelBatchNotifications, batchID)
 	if err != nil {

@@ -46,6 +46,10 @@ const (
 type RefusedError struct {
 	Refusal Refusal
 	Current domain.Status
+	// StoredExpiresAt is the notification's expires_at as read with Current.
+	// It is set only with RefusalExpiresAtNotAllowed (the stored value that
+	// is still in the future and is kept, D16), zero otherwise.
+	StoredExpiresAt time.Time
 }
 
 func (e *RefusedError) Error() string {
@@ -242,7 +246,11 @@ func (s *Store) RedriveNotification(ctx context.Context, id uuid.UUID, newExpire
 			}
 			last = domain.Status(st.Status)
 			if r, refused := redriveRefusal(st, newExpiresAt, minLead); refused {
-				return &RefusedError{Refusal: r, Current: last}
+				e := &RefusedError{Refusal: r, Current: last}
+				if r == RefusalExpiresAtNotAllowed {
+					e.StoredExpiresAt = st.ExpiresAt
+				}
+				return e
 			}
 		}
 		return &RefusedError{Refusal: RefusalStateChanged, Current: last}
