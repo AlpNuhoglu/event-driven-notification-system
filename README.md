@@ -1,6 +1,6 @@
 # Event-Driven Notification System
 
-> **Work in progress.** The core path is implemented: a notification created through the API is stored, published, rate-limited and sent to the provider, and notifications can be created in batches with two layers of duplicate prevention (`Idempotency-Key`, `dedupe_key`). Cancel, redrive, listing, templates, scheduling, the WebSocket gateway and the dashboards follow in the phases of the [implementation plan](docs/plan/implementation-plan.md); [progress](docs/progress.md) shows where the work stands. This README grows with it.
+> **Work in progress.** The core path is implemented: a notification created through the API is stored, published, rate-limited and sent to the provider, notifications can be created in batches with two layers of duplicate prevention (`Idempotency-Key`, `dedupe_key`), and they can be listed, cancelled and redriven. Per-channel content validation, templates, scheduling, the WebSocket gateway and the dashboards follow in the phases of the [implementation plan](docs/plan/implementation-plan.md); [progress](docs/progress.md) shows where the work stands. This README grows with it.
 
 A notification service written in Go that accepts SMS, Email and Push notifications through a REST API and delivers them asynchronously through an external provider. It is built around a Postgres outbox, a RabbitMQ dispatch broker with strict priority, a per-channel rate limit of at most 100 messages per second, retries classified by failure scope, and real-time status tracking.
 
@@ -94,6 +94,50 @@ curl -sS -X POST localhost:8080/v1/notifications \
 }
 ```
 
+**List notifications**, newest first, with single-valued filters (`status`, `channel`, `priority`, `batch_id`, `created_from`, `created_to`) and a cursor. `limit` is 1 to 200 (50 by default); pass `next_cursor` back as `cursor` until it is `null`. There is no total count. A parameter the API does not define, or an invalid value, is a `400`: a misspelled filter never returns an unfiltered list.
+
+```
+curl -sS 'localhost:8080/v1/notifications?status=sent&channel=sms&created_from=2026-11-19T00:00:00Z&limit=2'
+curl -sS 'localhost:8080/v1/notifications?status=sent&channel=sms&created_from=2026-11-19T00:00:00Z&limit=2&cursor=<next_cursor>'
+```
+
+```json
+{"data": [{"id": "...", "status": "sent", "...": "..."}, {"id": "...", "status": "sent", "...": "..."}], "next_cursor": "AAZgllqIilIBofE-Fqp437HYv1fJakgk"}
+```
+
+**Read the delivery attempts** of a notification (one entry per attempt, with its outcome and the provider's status code):
+
+```
+curl -sS localhost:8080/v1/notifications/<id>/attempts
+```
+
+**Cancel** a notification that no worker holds yet (`pending`, `queued`, `retrying`), or every such notification of a batch. Cancelling again answers `200` again. A notification that is `processing`, `sent` or `failed` answers `409` with `current_status`.
+
+```
+curl -sS -X POST localhost:8080/v1/notifications/<id>/cancel
+curl -sS -X POST localhost:8080/v1/batches/<batch_id>/cancel
+```
+
+```json
+{"notification": {"id": "...", "status": "cancelled", "...": "..."}, "may_have_been_sent": false}
+```
+
+```json
+{"cancelled": 580, "not_cancellable": 20, "may_have_been_sent": 0}
+```
+
+`may_have_been_sent` is `true` when an earlier attempt ended without a known result: the cancel stops further attempts, but one delivery may already have reached the recipient. **`cancelled` and `failed` are not strictly final:** if the provider's result arrives late and shows that the message was accepted, the notification becomes `sent`.
+
+**Redrive** a `failed` notification: it becomes `pending` with a new retry budget, and its attempt history continues. If its `expires_at` has passed, the request must give a new one, at least 30 seconds ahead; otherwise the stored one is kept and the request must not give one.
+
+```
+curl -sS -X POST localhost:8080/v1/notifications/<id>/redrive
+curl -sS -X POST localhost:8080/v1/notifications/<id>/redrive \
+  -H 'Content-Type: application/json' -d '{"expires_at":"2026-11-20T12:00:00Z"}'
+```
+
+To try cancel and redrive on the mock profile, make the mock provider fail first with `curl -X PUT localhost:8090/admin/config -H 'Content-Type: application/json' -d '{"status":500}'` (a notification then fails after its retries), and set it back with `{"status":202}`.
+
 ## Documentation
 
 | Document | Content |
@@ -109,7 +153,7 @@ curl -sS -X POST localhost:8080/v1/notifications \
 Added in the phases named in the implementation plan:
 
 - How to create and configure your own webhook.site URL
-- API examples for cancel, redrive, listing, templates and scheduling, and `make demo`
+- API examples for templates and scheduling, and `make demo`
 - Requirements map with evidence
 - Interpretations of the assessment and known limitations
 - Load-test results

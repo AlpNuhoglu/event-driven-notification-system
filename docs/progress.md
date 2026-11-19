@@ -4,9 +4,9 @@ The first file every session reads and the last one it updates. The phases and t
 
 ## Current phase
 
-**P2: API completeness** — in review (pull request 1 of 3, `p2/batch-and-idempotency`, [#7](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/7)). P1 is done: its three pull requests are merged.
+**P2: API completeness** — in review (pull request 2 of 3, `p2/cancel-redrive-listing`). `p2/batch-and-idempotency` is merged.
 
-**Next step:** the author merges the `p2/batch-and-idempotency` pull request. Then `p2/cancel-redrive-listing` from the updated `main`, then `p2/validation`. Open issue 7 belongs to P3.
+**Next step:** the author merges the `p2/cancel-redrive-listing` pull request. Then `p2/validation` from the updated `main`. Open issue 7 belongs to P3.
 
 **Rules of the phase (author):** the default webhook.site URL is not used in P2 at all (48 of its 50 requests are left); every manual check, test and example run goes through the mock profile (`make up-mock`). Request bodies stay strict: each endpoint accepts exactly the fields its schema names.
 
@@ -22,7 +22,7 @@ Status is one of: `not started`, `in progress`, `in review` (pull requests open)
 |---|---|---|---|---|
 | P0 | Repository skeleton and first-hour experiments | done | [#2](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/2) (`p0/skeleton`, merged), [#3](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/3) (`p0/experiments`, merged) | 2026-11-18 |
 | P1 | Core path | done | [#4](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/4) (`p1/schema-and-store`, merged), [#5](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/5) (`p1/relay-worker-provider`, merged), [#6](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/6) (`p1/compose-e2e`, merged) | 2026-11-19 |
-| P2 | API completeness | in review | [#7](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/7) (`p2/batch-and-idempotency`) | |
+| P2 | API completeness | in review | [#7](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/7) (`p2/batch-and-idempotency`, merged), PR2LINK (`p2/cancel-redrive-listing`) | |
 | P3 | Delivery robustness | not started | | |
 | P4 | Templates and scheduling | not started | | |
 | P5 | Real-time and observability | not started | | |
@@ -81,6 +81,53 @@ Newest entry first. One entry per session, in this form:
 - **Open issues:** new entries added to the table above.
 - **Next step:** the first thing the next session does.
 ```
+
+### 2026-11-19 — P2: cancel, redrive and listing (pull request 2 of 3)
+
+- **By the author, at the start:** the eleven decisions of the previous pull request are accepted. Open issue 8 is answered with **D78** (the relay deletes expired idempotency keys next to the expiry pass: batches of 1,000 ordered by `expires_at` with `FOR UPDATE SKIP LOCKED`, every `IDEMPOTENCY_CLEANUP_INTERVAL`, 1 minute by default, repeated at once while a batch comes back full; the reason is that the stored response holds the recipient, so the retention must be real). It is recorded in ledger section K, ADR-0005, ADR-0006 §11, the plan's P3 (task and tests), `.env.example` and the loader; the pass is built in P3. The design review log, section 6, records that the deadlock of two overlapping batches was found by the concurrency test, not by review.
+- **Done:**
+  - **Cancel** (`POST /v1/notifications/{id}/cancel`, transition 9), **batch cancel** (`POST /v1/batches/{id}/cancel`, one `UPDATE`, three counts) and **redrive** (`POST /v1/notifications/{id}/redrive`, transition 11), each returning its event, which the API publishes after the commit (to the no-op publisher until P5).
+  - **Listing** (`GET /v1/notifications`: six single-valued filters, keyset cursor, two `sqlc` queries) and **attempts** (`GET /v1/notifications/{id}/attempts`).
+  - **Documents:** ADR-0004 (transitions 9 and 11), ADR-0006 §7 to §9, ADR-0010 (the listing row), `docs/errors.md` (the `conflict` type, ten codes), the README's examples.
+- **How a cancelled row with an attempt of unknown outcome is represented** (ADR-0004 §3): `status = 'cancelled'`, `attempt_count >= 1`, `failure_reason` and `sent_at` `NULL`; its attempt row keeps `outcome = 'unknown'` with `finished_at` set. **Cancel sets only `status`, `version` and `updated_at`.** `may_have_been_sent` is not stored: it is read from the attempt row at each cancel. Transition 12 (P3) therefore has nothing cancel-specific to undo: the late write overwrites the attempt's `unknown`, the row becomes `sent`, and the `dedupe_key` was never released, because `attempt_count > 0`. The invariants test checks that cancel changes no other column.
+- **Tests:**
+  - **Cancel:** `TestCancel_Idempotent`; `TestCancel_RacesWithClaim` (a deterministic case for each order, two cases with both statements seen waiting on a held row lock, and 200 concurrent rounds that must contain both winners: between 76 and 108 claim wins per run; in every round exactly one side wins and the row agrees with the winner); `TestCancel_DuringRelayPublish` (real Postgres, RabbitMQ, Redis and roles: the relay's transaction is held open, the cancel is seen waiting on the row lock, the relay commits, the cancel applies to the `queued` row, the worker's claim matches zero rows, the provider receives nothing, the queue drains); `TestCancel_WhileProcessingReturns409` and the same from `sent` and `failed`; `may_have_been_sent` after a real lease sweep, with the `dedupe_key` still held, and the key released by a cancel before any attempt; batch cancel on a mixed batch.
+  - **Redrive:** `TestRedrive_VersusExpiry` (against the claim's expiry branch; the relay's expiry pass is P3): expired → `409 expires_at_required`, too close → `422 too_soon`, valid → `pending` with the new expiry, `failures = 0` and `attempt_count` unchanged; a future stored expiry is kept; the next claim gets attempt number `attempt_count + 1`.
+  - **Listing:** the pagination walk (500 rows in the same second, at least 100 of them with the identical `created_at`, `limit = 7`: 72 pages, every row exactly once, in order; again per status; and with rows inserted between two pages); the `EXPLAIN` check for both queries (below); filters, the half-open date range at microsecond boundaries, every `400` of the query.
+  - Every answer of the five operations is validated against the contract.
+- **`EXPLAIN` check, both listing queries** (30,000 rows, analysed, the exact SQL text the code runs, prepared and explained with `plan_cache_mode = force_custom_plan`), first page and page after a cursor:
+  - plain query: `Index Scan` on `notifications_created_idx`, the row comparison on `(created_at, id)` in the index condition;
+  - status query, rare status (1 % of the rows): `Index Scan` on `notifications_status_created_idx`, `status` and the row comparison in the index condition;
+  - status query, frequent status (22 %): the same on the first page, and after a cursor an `Index Scan` on `notifications_created_idx` with `status` as a filter (the test accepts either listing index for a frequent status);
+  - no `Sort`, no sequential scan and no bitmap node in any of them.
+  - **Finding:** under a **generic** plan the status query is a bitmap scan of the whole status followed by a sort. Both listing statements therefore always run with a custom plan; `TestList_RunsWithCustomPlans` checks that they never enter the prepared-statement cache (with `GetNotification` as the control that the check can see cached statements). Recorded in the design review log, section 6.
+- **Pull requests opened:** PR2LINK from `p2/cancel-redrive-listing`.
+- **Exit criteria** (the ones that apply): `make test` green with the contract tests; `make generate` twice without a change; `make lint` with 0 issues; the three named race tests green with `-count=20` (the delegate's run) and again here with `-count=5` and `-count=3` around the mutations. `make fuzz` and the Swagger UI check belong to `p2/validation`.
+- **Mutation checks** (each restored byte-identically, checksums of the SQL and the generated files compared; the tests pass again afterwards):
+  - **`TestCancel_RacesWithClaim`:** the guard `status IN ('pending', 'retrying', 'queued')` removed from `CancelNotification`. The test failed 5 of 5, in "claim first", "both waiting, claim queued first" and "concurrent" (both sides won). `TestCancel_WhileProcessingReturns409` failed as well.
+  - **`TestCancel_DuringRelayPublish`:** `'cancelled'` added to the claim's guard, so the claim takes a cancelled row. The test failed 3 of 3: the provider received one request and the row ended `sent`.
+- **Reviewed line by line by the main loop:** the statements of transitions 9 and 11, which the main loop wrote (`internal/store/queries/cancel.sql`), and their transactions (`internal/store/cancel.go`): the decision is the guard of each `UPDATE`, never a status read before it.
+- **Manual check, through the mock profile only** (`make up-mock`; the worker's `PROVIDER_URL` was `http://mockprovider:8090/`): with the mock answering `500`, a `high` notification failed after five attempts (`max_failures`); its five attempts were listed; cancel answered `409` with `current_status: failed`; redrive with an `expires_at` answered `409 expires_at_not_allowed`; a redrive body with a bad value and an unknown field answered `422`; with the mock back at `202` the redrive gave `pending` with `attempt_count` 5, then `sent` with `attempt_count` 6. A batch of 600 SMS cancelled at once: 580 cancelled, 20 not cancellable; the listing by status, channel and batch with `limit=2` returned two rows and a cursor; a misspelled and an invalid parameter answered `400` with both errors. The api's log held no recipient. **The default webhook.site URL received nothing; 48 of its 50 requests are left.**
+- **Decisions taken** (within the latitude of the ledger and the ADRs; the ADRs are updated):
+  1. **Redrive refuses an `expires_at` that is not needed** (`409 expires_at_not_allowed`) while the stored one is still in the future. D16 says the stored value is kept; ignoring a field the client sent would contradict the strict bodies. A new `expires_at` that is too close is `422 too_soon`; a missing one is `409 expires_at_required`.
+  2. **The cancel answer is `{"notification": {...}, "may_have_been_sent": bool}`**, the flag always present.
+  3. **The counts of a batch cancel describe the batch after the call:** `cancelled` includes notifications cancelled earlier, `not_cancellable` is every other notification. The call can be repeated; it publishes events only for what it cancels itself.
+  4. **Problem type `conflict`** (`409`) with `current_status`, for cancel and redrive.
+  5. **Cancel takes no body** (`400 unexpected_body`); the redrive body is optional and strict (its only field is `expires_at`).
+  6. **Query parameters are as strict as bodies:** unknown, repeated and invalid parameters are `400`, nothing is clamped; every operation under `/v1/` except the listing rejects any query parameter. `created_from` after `created_to` is an empty page, not an error.
+  7. **The listing always runs with a custom plan** (the finding above). The cursor and the date bounds are `COALESCE` expressions, so the keyset comparison is always an index condition.
+  8. The cursor is 24 bytes (microseconds and id) in URL-safe base64. The attempts answer is `{"data": [...]}`, not paginated.
+  9. Redrive clears `queued_at`, like every transition to a state from which the row is published again.
+  10. A cancel or redrive whose statement matches no row reads the state and, if the row moved in between, tries again, at most three rounds; after that the answer is a `409` without `errors` that says the request can be repeated.
+  11. Events of a batch cancel are handed to the publisher one by one after the commit; the publisher never blocks by contract, so "asynchronously" (ADR-0006 §7) is the P5 publisher's part.
+  12. `internal/store/db/export.go` is a hand-written file in the generated package: it exports the two listing SQL texts, so the `EXPLAIN` test explains the text the code runs.
+- **Observed:**
+  - **A repeated batch cancel can cancel more.** In the manual run against the failing mock, the second call reported 582 cancelled: two notifications a worker held had returned to `retrying`. The documents say so.
+  - **Two simultaneous cancels of the same batch** could in principle deadlock, because an `UPDATE` has no lock order; Postgres would end one of them and that request would get a `500`. The relay, the claim and the lease sweeper cannot deadlock with a batch cancel (they skip locked rows or lock one row). Not reproduced, not changed.
+- **Not verified:** the retry rounds of cancel and redrive against a real concurrent move (only the decision function is unit-tested); two simultaneous batch cancels; the listing plans on a large table (30,000 rows here; the phase-1 dataset is P6); the tests with Go 1.27.4 locally.
+- **Delegation:** Opus for cancel, batch cancel and redrive with the race tests, in the main tree; Sonnet, in a separate worktree, for the listing, the cursor and the attempts read, with a second round after its `EXPLAIN` finding. The main loop wrote the contract of the five operations, the SQL of transitions 9 and 11, the briefs and the decision on the custom plans; read the transition code and the listing code; changed the exhausted-rounds answer of cancel; added the query rule for every `/v1/` operation with its tests; ran the full suite, both mutation checks and the manual check itself; and wrote the documents.
+- **Open issues:** none new. Issue 8 is closed by D78.
+- **Next step:** after the merge, `p2/validation` from the updated `main`.
 
 ### 2026-11-19 — P2: batch and idempotency (pull request 1 of 3)
 
