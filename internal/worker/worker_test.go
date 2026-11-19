@@ -584,6 +584,102 @@ func TestRetryAfterHint(t *testing.T) {
 	}
 }
 
+// The attempt result carries what the provider call produced: the HTTP
+// status, the exact error text, the latency and the hint, and nothing it did
+// not produce. TestOutcomes checks the outcomes; this checks the values.
+func TestAttemptResultValues(t *testing.T) {
+	ptr := func(s string) *string { return &s }
+	tests := []struct {
+		name    string
+		res     Response
+		panics  bool
+		outcome domain.Outcome
+		status  int // 0: no status recorded
+		errText *string
+		hint    time.Duration
+	}{
+		{
+			name:    "no response, not written: unreachable with the transport error",
+			res:     Response{Err: errors.New("dial tcp 127.0.0.1:1: connect: connection refused"), Latency: 3 * ms},
+			outcome: domain.OutcomeUnreachable, errText: ptr("dial tcp 127.0.0.1:1: connect: connection refused"),
+		},
+		{
+			name:    "no response, written: unknown with the transport error",
+			res:     Response{Err: errors.New("EOF"), WroteRequest: true, Latency: 9 * ms},
+			outcome: domain.OutcomeUnknown, errText: ptr("EOF"),
+		},
+		{
+			name:    "a status wins over WroteRequest false",
+			res:     Response{StatusCode: 500, Latency: 4 * ms},
+			outcome: domain.OutcomeRetryable, status: 500,
+		},
+		{
+			name:    "503 with an HTTP-date",
+			res:     Response{StatusCode: 503, WroteRequest: true, RetryAfter: "Thu, 01 Jan 2026 12:00:30 GMT", Latency: 5 * ms},
+			outcome: domain.OutcomeRetryable, status: 503, hint: 30 * time.Second,
+		},
+		{
+			name:    "429 with a header padded by spaces",
+			res:     Response{StatusCode: 429, WroteRequest: true, RetryAfter: " 12 ", Latency: 6 * ms},
+			outcome: domain.OutcomeThrottled, status: 429, hint: 12 * time.Second,
+		},
+		{
+			name:    "429 with a negative delta",
+			res:     Response{StatusCode: 429, WroteRequest: true, RetryAfter: "-5", Latency: 6 * ms},
+			outcome: domain.OutcomeThrottled, status: 429,
+		},
+		{
+			name:    "301 carrying Retry-After: no hint",
+			res:     Response{StatusCode: 301, WroteRequest: true, RetryAfter: "Thu, 01 Jan 2026 12:00:30 GMT", Latency: 2 * ms},
+			outcome: domain.OutcomeProviderFatal, status: 301,
+		},
+		{
+			name:   "panic: internal_error with the panic's type only",
+			panics: true, outcome: domain.OutcomeInternalError, errText: ptr("panic: string"),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newHarness(t)
+			// The fake clock reads t0 = 12:00:00 UTC at the send.
+			h.prov.respond = func(Request) Response {
+				if tt.panics {
+					panic("provider client bug")
+				}
+				return tt.res
+			}
+			h.push(prioNormal)
+			h.start()
+			h.eventually(func() bool { return h.st.finals() == 1 })
+			h.stop()
+
+			_, _, failures, _ := h.st.snapshot()
+			if len(failures) != 1 {
+				t.Fatalf("%d failures recorded, want 1", len(failures))
+			}
+			r := failures[0].result
+			if r.Outcome != tt.outcome {
+				t.Errorf("outcome %q, want %q", r.Outcome, tt.outcome)
+			}
+			if (r.HTTPStatus == nil) != (tt.status == 0) || (r.HTTPStatus != nil && *r.HTTPStatus != tt.status) {
+				t.Errorf("HTTP status %v, want %d", r.HTTPStatus, tt.status)
+			}
+			if (r.Error == nil) != (tt.errText == nil) || (r.Error != nil && *r.Error != *tt.errText) {
+				t.Errorf("error %v, want %v", r.Error, tt.errText)
+			}
+			if r.RetryAfter != tt.hint {
+				t.Errorf("retry hint %s, want %s", r.RetryAfter, tt.hint)
+			}
+			if r.Latency != tt.res.Latency {
+				t.Errorf("latency %s, want %s", r.Latency, tt.res.Latency)
+			}
+			if r.ProviderMessageID != nil {
+				t.Errorf("provider message id %q on a failure", *r.ProviderMessageID)
+			}
+		})
+	}
+}
+
 // Test 11: shutdown.
 func TestShutdown(t *testing.T) {
 	t.Run("buffered messages are nacked, a claimed dispatch sends", func(t *testing.T) {
