@@ -142,6 +142,33 @@ func TestSend_Headers(t *testing.T) {
 	}
 }
 
+// The Retry-After header is handed on verbatim, whatever the status; the
+// caller decides whether to use it.
+func TestSend_RetryAfterCarried(t *testing.T) {
+	for _, tc := range []struct {
+		status int
+		header string
+	}{
+		{429, "7"},
+		{503, "Wed, 21 Oct 2026 07:28:00 GMT"},
+		{500, "soon"},
+		{429, ""},
+	} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			if tc.header != "" {
+				w.Header().Set("Retry-After", tc.header)
+			}
+			w.WriteHeader(tc.status)
+		}))
+		c, _ := newClient(t, srv.URL, nil)
+		r := c.Send(context.Background(), req(phone))
+		srv.Close()
+		if r.StatusCode != tc.status || r.RetryAfter != tc.header || r.Err != nil {
+			t.Errorf("status %d, header %q: response = %+v", tc.status, tc.header, r)
+		}
+	}
+}
+
 func TestSend_AcceptedParsed(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(accept))
 	defer srv.Close()

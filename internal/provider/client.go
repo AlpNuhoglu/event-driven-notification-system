@@ -66,6 +66,9 @@ type Response struct {
 	Err error
 	// WroteRequest reports that the request was fully written without error.
 	WroteRequest bool
+	// RetryAfter is the response's Retry-After header, verbatim; empty when
+	// the response has none. The caller decides whether to use it.
+	RetryAfter string
 }
 
 // Client sends notifications to one provider.
@@ -190,7 +193,11 @@ func (c *Client) Send(ctx context.Context, r Request) Response {
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	out := Response{StatusCode: resp.StatusCode, WroteRequest: wrote.Load()}
+	out := Response{
+		StatusCode:   resp.StatusCode,
+		WroteRequest: wrote.Load(),
+		RetryAfter:   resp.Header.Get("Retry-After"),
+	}
 	switch {
 	case resp.StatusCode == http.StatusAccepted:
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, maxBody))

@@ -10,7 +10,10 @@ import (
 // it.
 func ProfilesFrom(c config.RetryConfig) Profiles {
 	p := func(r config.Retry) domain.Profile {
-		return domain.Profile{Base: r.Base, Cap: r.Cap, MinDelay: c.MinDelay}
+		return domain.Profile{
+			Base: r.Base, Cap: r.Cap, MinDelay: c.MinDelay,
+			RetryAfterCap: c.AfterCap, ThrottleDefault: c.ThrottleDefaultDelay,
+		}
 	}
 	return Profiles{
 		domain.PriorityHigh:   p(c.High),

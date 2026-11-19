@@ -300,7 +300,14 @@ func (p providerClient) Send(ctx context.Context, r Request) Response {
 		Content:        r.Content,
 		TraceParent:    r.TraceParent,
 	})
-	return Response{StatusCode: res.StatusCode, Err: res.Err, MessageID: res.MessageID, Latency: res.Latency}
+	return Response{
+		StatusCode:   res.StatusCode,
+		Err:          res.Err,
+		MessageID:    res.MessageID,
+		Latency:      res.Latency,
+		WroteRequest: res.WroteRequest,
+		RetryAfter:   res.RetryAfter,
+	}
 }
 
 // jitter is the random factor of the retry back-off. It needs no

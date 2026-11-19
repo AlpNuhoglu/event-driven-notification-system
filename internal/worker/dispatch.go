@@ -162,11 +162,18 @@ func (w *Worker) call(ctx context.Context, n store.Notification) (r store.Attemp
 		Content:        n.Content,
 		TraceParent:    n.TraceParent,
 	})
-	return attemptResult(res)
+	return w.attemptResult(res)
 }
 
-func attemptResult(res Response) store.AttemptResult {
-	r := store.AttemptResult{Outcome: domain.ClassifyResponse(res.StatusCode), Latency: res.Latency}
+// attemptResult classifies a provider result (ADR-0007 section 2). Without a
+// response, WroteRequest decides between unreachable (nothing was sent) and
+// unknown. A Retry-After header becomes the retry hint only on the statuses
+// that honour it (429 and 503) and only when it is usable.
+func (w *Worker) attemptResult(res Response) store.AttemptResult {
+	r := store.AttemptResult{
+		Outcome: domain.Classify(domain.ProviderResult{StatusCode: res.StatusCode, WroteRequest: res.WroteRequest}),
+		Latency: res.Latency,
+	}
 	if res.StatusCode != 0 {
 		r.HTTPStatus = &res.StatusCode
 	}
@@ -176,6 +183,13 @@ func attemptResult(res Response) store.AttemptResult {
 	}
 	if res.MessageID != "" {
 		r.ProviderMessageID = &res.MessageID
+	}
+	if domain.HonoursRetryAfter(res.StatusCode) {
+		// An HTTP-date is compared with the worker's wall clock; the cap of
+		// the retry decision bounds what a skewed clock can do.
+		if d, ok := domain.ParseRetryAfter(res.RetryAfter, w.clock.Now()); ok {
+			r.RetryAfter = d
+		}
 	}
 	return r
 }

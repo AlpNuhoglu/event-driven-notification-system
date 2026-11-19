@@ -28,8 +28,10 @@ const (
 	testProvider = "mock"
 )
 
+// profilesWith returns profiles whose retry delay is exactly base for every
+// jitter value: the floor equals the cap.
 func profilesWith(base time.Duration) Profiles {
-	p := domain.Profile{Base: base, Cap: base, MinDelay: 0}
+	p := domain.Profile{Base: base, Cap: base, MinDelay: base}
 	return Profiles{domain.PriorityHigh: p, domain.PriorityNormal: p, domain.PriorityLow: p}
 }
 
