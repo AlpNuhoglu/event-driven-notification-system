@@ -57,10 +57,12 @@ func (b *buffer) wait(ctx context.Context) error {
 }
 
 // take removes and returns the highest-priority message, the earliest
-// arrival among equals, or nil when the buffer is empty.
+// arrival among equals, or nil when the buffer is empty. Messages from an
+// older connection epoch are removed first and never returned (D76).
 func (b *buffer) take() Message {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	b.removeStale()
 	best := -1
 	for i, m := range b.items {
 		if best < 0 || m.Priority() > b.items[best].Priority() {
@@ -73,6 +75,21 @@ func (b *buffer) take() Message {
 	m := b.items[best]
 	b.items = slices.Delete(b.items, best, best+1)
 	return m
+}
+
+// dropStale removes the messages from an older connection epoch, without an
+// answer, and returns how many it removed.
+func (b *buffer) dropStale() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.removeStale()
+}
+
+// removeStale removes the stale messages; the caller holds b.mu.
+func (b *buffer) removeStale() int {
+	n := len(b.items)
+	b.items = slices.DeleteFunc(b.items, Message.Stale)
+	return n - len(b.items)
 }
 
 // close refuses further pushes and returns the messages still buffered.

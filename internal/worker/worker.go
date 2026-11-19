@@ -134,10 +134,26 @@ func New(cfg Config, d Deps) (*Worker, error) {
 }
 
 // Push hands a delivery from the consumer to the buffer. Once shutdown has
-// begun, the delivery is requeued at once.
+// begun, the delivery is requeued at once. A delivery from an older
+// connection epoch is forgotten: the broker has requeued it (D76).
 func (w *Worker) Push(m Message) {
+	if m.Stale() {
+		w.log.Debug("worker: delivery from an older connection epoch dropped",
+			slog.String("notification_id", m.NotificationID().String()))
+		return
+	}
 	if !w.buf.push(m) {
 		w.nack(m)
+	}
+}
+
+// DropStale removes the deliveries from an older connection epoch from the
+// buffer, without an ack or a nack: the broker has requeued them and
+// delivers them again (D76). The consumer calls it after every new
+// subscription that replaced an older one.
+func (w *Worker) DropStale() {
+	if n := w.buf.dropStale(); n > 0 {
+		w.log.Info("worker: deliveries from an older connection epoch dropped from the buffer", slog.Int("count", n))
 	}
 }
 
@@ -252,16 +268,26 @@ func (w *Worker) reserve(ctx context.Context) (time.Time, bool) {
 	return w.clock.Now().Add(wait), true
 }
 
+// ack acknowledges m, unless m is from an older connection epoch (D76): then
+// nothing is sent and m is forgotten.
 func (w *Worker) ack(m Message) {
-	if err := m.Ack(); err != nil {
-		w.log.Error("worker: ack failed",
-			slog.String("notification_id", m.NotificationID().String()), slog.Any("error", err))
-	}
+	w.answered("ack", m, m.Ack())
 }
 
+// nack requeues m, unless m is from an older connection epoch (D76): then
+// nothing is sent and m is forgotten.
 func (w *Worker) nack(m Message) {
-	if err := m.Nack(); err != nil {
-		w.log.Error("worker: nack failed",
+	w.answered("nack", m, m.Nack())
+}
+
+func (w *Worker) answered(op string, m Message, err error) {
+	switch {
+	case err == nil:
+	case errors.Is(err, ErrStale):
+		w.log.Info("worker: "+op+" not sent: the delivery is from an older connection epoch",
+			slog.String("notification_id", m.NotificationID().String()))
+	default:
+		w.log.Error("worker: "+op+" failed",
 			slog.String("notification_id", m.NotificationID().String()), slog.Any("error", err))
 	}
 }

@@ -1,6 +1,7 @@
 package queue
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -47,27 +48,40 @@ func dispatchQueueArgs(consumerTimeout time.Duration) amqp.Table {
 // both with the channel name as the routing key. consumerTimeout is the
 // x-consumer-timeout of the dispatch queues (CONSUMER_TIMEOUT).
 //
-// The channel the declarations are made on stays open: the library records
-// declarations per channel and redeclares them on a recovered connection, but
-// forgets them when that channel is closed (experiment E4).
+// From the first call on, the connection declares the same topology again on
+// every reconnection, before it reports open and before IsOpen is true again
+// (D2): a broker that comes back empty has its exchanges, queues and bindings
+// again before the first publish and before the consumers subscribe. The
+// declarations are made explicitly, on a short-lived channel; the library's
+// replay of recorded declarations is not used (see Connection).
 func (c *Connection) DeclareTopology(consumerTimeout time.Duration) error {
 	if consumerTimeout.Milliseconds() <= 0 {
 		return fmt.Errorf("declare topology: consumer timeout must be at least 1ms, got %s", consumerTimeout)
 	}
-	ch, err := c.channel()
-	if err != nil {
+	c.mu.Lock()
+	c.consumerTimeout = consumerTimeout
+	gen := c.dials
+	c.mu.Unlock()
+	if err := declareOn(c.conn, consumerTimeout); err != nil {
 		return fmt.Errorf("declare topology: %w", err)
+	}
+	c.markUsable(gen)
+	return nil
+}
+
+// declareOn declares the topology on a new channel of conn and closes that
+// channel again.
+func declareOn(conn *amqp.Connection, consumerTimeout time.Duration) error {
+	ch, err := conn.Channel()
+	if err != nil {
+		return fmt.Errorf("open channel: %w", err)
 	}
 	if err := declare(ch, consumerTimeout); err != nil {
 		_ = ch.Close()
-		return fmt.Errorf("declare topology: %w", err)
+		return err
 	}
-	c.mu.Lock()
-	old := c.topo
-	c.topo = ch
-	c.mu.Unlock()
-	if old != nil {
-		_ = old.Close()
+	if err := ch.Close(); err != nil && !errors.Is(err, amqp.ErrClosed) {
+		return fmt.Errorf("close channel: %w", err)
 	}
 	return nil
 }

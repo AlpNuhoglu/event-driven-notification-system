@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -12,6 +13,11 @@ import (
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/store"
 )
 
+// ErrStale is returned by Message.Ack and Message.Nack for a delivery from
+// an older connection epoch (D76): nothing was sent to the broker, which has
+// requeued the delivery. The worker forgets such a delivery.
+var ErrStale = errors.New("delivery from an older connection epoch")
+
 // Message is one delivery from the broker (implemented by internal/queue).
 type Message interface {
 	// NotificationID is the notification the delivery carries.
@@ -20,9 +26,16 @@ type Message interface {
 	Priority() uint8
 	// Epoch is the connection epoch the delivery arrived on (D76).
 	Epoch() uint64
-	// Ack acknowledges the delivery.
+	// Stale reports whether the delivery is from an older connection epoch
+	// now. Once true it stays true.
+	Stale() bool
+	// Ack acknowledges the delivery. For a delivery from an older epoch it
+	// sends nothing and returns ErrStale; the epoch check and the ack are
+	// one step.
 	Ack() error
-	// Nack rejects the delivery and asks the broker to requeue it.
+	// Nack rejects the delivery and asks the broker to requeue it. For a
+	// delivery from an older epoch it sends nothing and returns ErrStale,
+	// like Ack.
 	Nack() error
 }
 

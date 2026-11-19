@@ -1,5 +1,6 @@
-// Package testutil holds test helpers: Eventually, the only waiting primitive
-// the tests use, and a Postgres helper that gives each test its own migrated
+// Package testutil holds test helpers: Eventually (with Within, its form that
+// does not fail the test), the only waiting primitive the tests use, and a
+// Postgres helper that gives each test its own migrated
 // database in a container started lazily once per test binary.
 package testutil
 
@@ -19,6 +20,13 @@ func Eventually(t testing.TB, condition func() bool, timeout time.Duration) {
 	if !poll(condition, timeout) {
 		t.Fatalf("condition not met within %s", timeout)
 	}
+}
+
+// Within polls condition like Eventually but does not fail the test: it
+// reports whether the condition was met within timeout. A test uses it where
+// it must go on to its own diagnosis after a timeout.
+func Within(condition func() bool, timeout time.Duration) bool {
+	return poll(condition, timeout)
 }
 
 func poll(condition func() bool, timeout time.Duration) bool {
