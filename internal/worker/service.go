@@ -18,6 +18,7 @@ import (
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/domain"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/events"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/platform/config"
+	"github.com/AlpNuhoglu/event-driven-notification-system/internal/platform/health"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/provider"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/queue"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/ratelimit"
@@ -34,6 +35,7 @@ import (
 // the rate limit then uses the in-process fallback (D25). The connections are
 // closed after the role has stopped.
 func Service(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
+	ready := registerReadiness(health.ReadinessFrom(ctx))
 	pool, err := openPool(ctx, cfg)
 	if err != nil {
 		return fmt.Errorf("postgres: %w", err)
@@ -42,6 +44,7 @@ func Service(ctx context.Context, cfg config.Config, logger *slog.Logger) error 
 	if err := pool.Ping(ctx); err != nil {
 		return fmt.Errorf("postgres: %w", err)
 	}
+	ready.pool.Store(pool)
 
 	conn, err := queue.Dial(cfg.Connections.RabbitMQURL, cfg.Connections.AMQPRecoveryRetryInterval,
 		cfg.Connections.AMQPRecoveryMaxRetries, logger)
@@ -53,6 +56,7 @@ func Service(ctx context.Context, cfg config.Config, logger *slog.Logger) error 
 			logger.Warn("worker: close rabbitmq connection", "error", err)
 		}
 	}()
+	ready.conn.Store(conn)
 
 	opts, err := ratelimit.RedisOptions(cfg.Connections.RedisURL)
 	if err != nil {
@@ -84,6 +88,7 @@ func Service(ctx context.Context, cfg config.Config, logger *slog.Logger) error 
 	if err != nil {
 		return err
 	}
+	ready.role.Store(role)
 	return role.Run(ctx)
 }
 

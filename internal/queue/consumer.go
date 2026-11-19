@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 
 	"github.com/google/uuid"
 	amqp "github.com/rabbitmq/amqp091-go"
@@ -110,6 +111,12 @@ type Consumer struct {
 	answering sync.RWMutex
 	epoch     uint64
 
+	// active is true while Run consumes from a subscription of the current
+	// epoch. It is set inside the read lock of subscribe and cleared inside
+	// the write lock of advance, so a subscription made before an advance
+	// cannot set it after.
+	active atomic.Bool
+
 	mu      sync.Mutex // serializes subscriptions; guards the fields below
 	running bool       // between the start of Run and the start of its stop
 	sub     *subscription
@@ -147,6 +154,14 @@ func NewConsumer(conn *Connection, c domain.Channel, prefetch int, logger *slog.
 	}
 	conn.addConsumer(k)
 	return k, nil
+}
+
+// Active reports whether Run is consuming from a subscription that is
+// usable now: false before Run, after it returned, and from the loss of the
+// connection or the broker's cancellation until the consumer is subscribed
+// again.
+func (k *Consumer) Active() bool {
+	return k.active.Load()
 }
 
 // Epoch returns the current epoch of the consumer's channel.
@@ -237,6 +252,7 @@ func (k *Consumer) Run(ctx context.Context, handle Handler, resubscribed func())
 func (k *Consumer) end(ctx context.Context) error {
 	k.mu.Lock()
 	k.running = false
+	k.active.Store(false)
 	k.mu.Unlock()
 	if ctx.Err() != nil {
 		return nil
@@ -289,6 +305,7 @@ func (k *Consumer) subscribe() (bool, error) {
 		return false, nil
 	}
 	deliveries, err := k.ch.Consume(k.queue, tag, false, false, false, false, nil)
+	k.active.Store(err == nil)
 	k.answering.RUnlock()
 	if err != nil {
 		return false, fmt.Errorf("consume %s: %w", k.queue, err)
@@ -333,6 +350,7 @@ func (k *Consumer) dropCancelled(s *subscription) {
 	}
 	k.answering.Unlock()
 	k.sub = nil
+	k.active.Store(false)
 	k.signal()
 }
 
@@ -347,6 +365,7 @@ func (k *Consumer) advance(onlyIfClosed bool) {
 		return
 	}
 	k.epoch++
+	k.active.Store(false)
 }
 
 // answer sends a delivery's answer with send, unless epoch is not the
@@ -390,6 +409,7 @@ func (k *Consumer) dispatch(d amqp.Delivery, epoch uint64, handle Handler) {
 func (k *Consumer) stop() error {
 	k.mu.Lock()
 	k.running = false
+	k.active.Store(false)
 	s := k.sub
 	k.mu.Unlock()
 	if s == nil {
