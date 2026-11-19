@@ -107,7 +107,7 @@ func TestProblemTypesDocumented(t *testing.T) {
 	for _, k := range []kind{
 		kindMalformed, kindNotFound, kindMethodNotAllowed, kindTooLarge,
 		kindUnsupportedMediaType, kindValidation, kindInternal, kindUnavailable,
-		kindDuplicate, kindIdempotencyKeyReused,
+		kindDuplicate, kindIdempotencyKeyReused, kindConflict,
 	} {
 		if !strings.Contains(doc, "\n## `"+k.anchor+"`\n") {
 			t.Errorf("docs/errors.md has no section for %s", k.anchor)
@@ -117,6 +117,8 @@ func TestProblemTypesDocumented(t *testing.T) {
 		codeEmptyBody, codeMalformedJSON, codeNotAnObject, codeInvalidUUID, codeRequired, codeInvalidType,
 		codeInvalidValue, codeEmpty, codeTooLong, codeInvalidCharacter, codeUnknownField, codeDuplicateField,
 		codeTooManyItems, codeDuplicate, codeDuplicateInBatch, codeInvalidIdempotencyKey, codeIdempotencyKeyReused,
+		codeUnexpectedBody, codeNotCancellable, codeNotFailed, codeExpiresAtRequired, codeExpiresAtNotAllowed, codeTooSoon,
+		codeUnknownParameter, codeDuplicateParameter, codeInvalidParameter, codeInvalidCursor,
 	} {
 		if !strings.Contains(doc, "`"+code+"`") {
 			t.Errorf("docs/errors.md does not list code %s", code)

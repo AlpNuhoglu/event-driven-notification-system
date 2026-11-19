@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/AlpNuhoglu/event-driven-notification-system/internal/events"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/platform/config"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/store"
 )
@@ -48,6 +49,8 @@ func Service(ctx context.Context, cfg config.Config, logger *slog.Logger) error 
 		Retry:             cfg.Retry,
 		MaxBodyBytes:      cfg.API.MaxBodyBytes,
 		IdempotencyKeyTTL: cfg.API.IdempotencyKeyTTL,
+		ExpiresAtMinLead:  cfg.API.ExpiresAtMinLead,
+		Events:            events.Nop{},
 	})
 	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", cfg.Ports.APIAddr)
 	if err != nil {

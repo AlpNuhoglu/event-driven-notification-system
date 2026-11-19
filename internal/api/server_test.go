@@ -140,7 +140,7 @@ func TestRouter_UnknownPathAndMethod(t *testing.T) {
 		{http.MethodGet, "/v1/../healthz", 404, ""},
 		{http.MethodDelete, "/v1/notifications/" + id, 405, "GET, HEAD"},
 		{http.MethodPut, "/healthz", 405, "GET, HEAD"},
-		{http.MethodGet, "/v1/notifications", 405, "POST"},
+		{http.MethodPut, "/v1/notifications", 405, "GET, HEAD, POST"},
 	}
 	for _, tt := range tests {
 		res := c.do(tt.method, tt.path, "", nil)

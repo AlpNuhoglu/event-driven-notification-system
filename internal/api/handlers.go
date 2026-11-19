@@ -15,6 +15,7 @@ import (
 
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/api/apigen"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/domain"
+	"github.com/AlpNuhoglu/event-driven-notification-system/internal/events"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/platform/config"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/store"
 )
@@ -42,6 +43,11 @@ type handlers struct {
 	limits    map[domain.Priority]limit
 	dbTimeout time.Duration
 	spec      []byte
+	// events receives the event of every transition the API makes, after
+	// its transaction has committed.
+	events events.Publisher
+	// minLead is how far ahead a new expires_at must be.
+	minLead time.Duration
 }
 
 var _ apigen.StrictServerInterface = (*handlers)(nil)

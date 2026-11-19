@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -99,6 +100,48 @@ func (e HealthStatus) Valid() bool {
 	}
 }
 
+// Defines values for Outcome.
+const (
+	OutcomeAborted       Outcome = "aborted"
+	OutcomeInFlight      Outcome = "in_flight"
+	OutcomeInternalError Outcome = "internal_error"
+	OutcomePermanent     Outcome = "permanent"
+	OutcomeProviderFatal Outcome = "provider_fatal"
+	OutcomeRetryable     Outcome = "retryable"
+	OutcomeSuccess       Outcome = "success"
+	OutcomeThrottled     Outcome = "throttled"
+	OutcomeUnknown       Outcome = "unknown"
+	OutcomeUnreachable   Outcome = "unreachable"
+)
+
+// Valid indicates whether the value is a known member of the Outcome enum.
+func (e Outcome) Valid() bool {
+	switch e {
+	case OutcomeAborted:
+		return true
+	case OutcomeInFlight:
+		return true
+	case OutcomeInternalError:
+		return true
+	case OutcomePermanent:
+		return true
+	case OutcomeProviderFatal:
+		return true
+	case OutcomeRetryable:
+		return true
+	case OutcomeSuccess:
+		return true
+	case OutcomeThrottled:
+		return true
+	case OutcomeUnknown:
+		return true
+	case OutcomeUnreachable:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for Priority.
 const (
 	High   Priority = "high"
@@ -168,6 +211,32 @@ func (e Status) Valid() bool {
 	}
 }
 
+// Attempt defines model for Attempt.
+type Attempt struct {
+	AttemptNo int32 `json:"attempt_no"`
+
+	// Error What the provider answered, shortened; never the recipient or the content.
+	Error *string `json:"error"`
+
+	// FinishedAt `null` only while the attempt is `in_flight`.
+	FinishedAt *time.Time `json:"finished_at"`
+	HttpStatus *int32     `json:"http_status"`
+	LatencyMs  *int32     `json:"latency_ms"`
+
+	// Outcome The result of one delivery attempt. `in_flight`: not finished.
+	// `unknown`: the attempt ended without a known result, so the message
+	// may have been delivered.
+	Outcome           Outcome   `json:"outcome"`
+	Provider          string    `json:"provider"`
+	ProviderMessageId *string   `json:"provider_message_id"`
+	StartedAt         time.Time `json:"started_at"`
+}
+
+// AttemptList defines model for AttemptList.
+type AttemptList struct {
+	Data []Attempt `json:"data"`
+}
+
 // Batch defines model for Batch.
 type Batch struct {
 	// Accepted The number of items stored.
@@ -195,6 +264,18 @@ type BatchAccepted struct {
 	Rejected []RejectedItem     `json:"rejected"`
 }
 
+// BatchCancelResult defines model for BatchCancelResult.
+type BatchCancelResult struct {
+	// Cancelled Notifications of the batch that are `cancelled` after the call, by this call or an earlier one.
+	Cancelled int32 `json:"cancelled"`
+
+	// MayHaveBeenSent Cancelled notifications that have an attempt whose outcome is `unknown`.
+	MayHaveBeenSent int32 `json:"may_have_been_sent"`
+
+	// NotCancellable Notifications of the batch that are not cancelled after the call, because a worker holds them (`processing`) or they are finished (`sent`, `failed`).
+	NotCancellable int32 `json:"not_cancellable"`
+}
+
 // BatchStatusCounts defines model for BatchStatusCounts.
 type BatchStatusCounts struct {
 	Cancelled  int32 `json:"cancelled"`
@@ -204,6 +285,14 @@ type BatchStatusCounts struct {
 	Queued     int32 `json:"queued"`
 	Retrying   int32 `json:"retrying"`
 	Sent       int32 `json:"sent"`
+}
+
+// CancelResult defines model for CancelResult.
+type CancelResult struct {
+	// MayHaveBeenSent `true` when the notification has an attempt whose outcome is
+	// `unknown`: one delivery may already have reached the recipient.
+	MayHaveBeenSent bool         `json:"may_have_been_sent"`
+	Notification    Notification `json:"notification"`
 }
 
 // Channel defines model for Channel.
@@ -294,6 +383,19 @@ type Notification struct {
 	Version int64 `json:"version"`
 }
 
+// NotificationList defines model for NotificationList.
+type NotificationList struct {
+	Data []Notification `json:"data"`
+
+	// NextCursor Pass it as `cursor` to read the next page; `null` on the last page.
+	NextCursor *string `json:"next_cursor"`
+}
+
+// Outcome The result of one delivery attempt. `in_flight`: not finished.
+// `unknown`: the attempt ended without a known result, so the message
+// may have been delivered.
+type Outcome string
+
 // Priority defines model for Priority.
 type Priority string
 
@@ -303,6 +405,9 @@ type Problem struct {
 	// status and duration.
 	Checks        *[]Check `json:"checks,omitempty"`
 	CorrelationId string   `json:"correlation_id"`
+
+	// CurrentStatus Only on a `409` of cancel and redrive, the state the notification is in.
+	CurrentStatus *Status `json:"current_status,omitempty"`
 
 	// Detail Never contains a recipient, message content or an internal cause.
 	Detail string `json:"detail"`
@@ -330,6 +435,13 @@ type Readiness struct {
 // ReadinessStatus defines model for Readiness.Status.
 type ReadinessStatus string
 
+// RedriveRequest defines model for RedriveRequest.
+type RedriveRequest struct {
+	// ExpiresAt Required when the stored `expires_at` has passed, and not allowed
+	// otherwise. RFC 3339 with an offset, at least 30 seconds ahead.
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+}
+
 // RejectedItem defines model for RejectedItem.
 type RejectedItem struct {
 	Errors []FieldError `json:"errors"`
@@ -342,8 +454,14 @@ type RejectedItem struct {
 // a late provider result proves that the message was delivered.
 type Status string
 
+// BatchID defines model for BatchID.
+type BatchID = openapi_types.UUID
+
 // IdempotencyKey defines model for IdempotencyKey.
 type IdempotencyKey = string
+
+// NotificationID defines model for NotificationID.
+type NotificationID = openapi_types.UUID
 
 // TraceParent defines model for TraceParent.
 type TraceParent = string
@@ -353,6 +471,9 @@ type XRequestID = string
 
 // BadRequest RFC 9457 Problem Details.
 type BadRequest = Problem
+
+// Conflict RFC 9457 Problem Details.
+type Conflict = Problem
 
 // Duplicate RFC 9457 Problem Details.
 type Duplicate = Problem
@@ -377,6 +498,47 @@ type ValidationFailed = Problem
 
 // GetBatchParams defines parameters for GetBatch.
 type GetBatchParams struct {
+	// XRequestID Correlation id. Accepted when it is at most 128 characters of
+	// `[A-Za-z0-9._-]`; otherwise it is ignored and a new id is generated.
+	// An invalid value is not an error.
+	XRequestID *XRequestID `json:"X-Request-ID,omitempty"`
+
+	// Traceparent W3C Trace Context. Stored with the notification when it is well
+	// formed; otherwise ignored. An invalid value is not an error.
+	Traceparent *TraceParent `json:"traceparent,omitempty"`
+}
+
+// CancelBatchParams defines parameters for CancelBatch.
+type CancelBatchParams struct {
+	// XRequestID Correlation id. Accepted when it is at most 128 characters of
+	// `[A-Za-z0-9._-]`; otherwise it is ignored and a new id is generated.
+	// An invalid value is not an error.
+	XRequestID *XRequestID `json:"X-Request-ID,omitempty"`
+
+	// Traceparent W3C Trace Context. Stored with the notification when it is well
+	// formed; otherwise ignored. An invalid value is not an error.
+	Traceparent *TraceParent `json:"traceparent,omitempty"`
+}
+
+// ListNotificationsParams defines parameters for ListNotifications.
+type ListNotificationsParams struct {
+	Status   *Status             `form:"status,omitempty" json:"status,omitempty"`
+	Channel  *Channel            `form:"channel,omitempty" json:"channel,omitempty"`
+	Priority *Priority           `form:"priority,omitempty" json:"priority,omitempty"`
+	BatchId  *openapi_types.UUID `form:"batch_id,omitempty" json:"batch_id,omitempty"`
+
+	// CreatedFrom Inclusive lower bound of `created_at` (RFC 3339 with an offset).
+	CreatedFrom *time.Time `form:"created_from,omitempty" json:"created_from,omitempty"`
+
+	// CreatedTo Exclusive upper bound of `created_at` (RFC 3339 with an offset).
+	CreatedTo *time.Time `form:"created_to,omitempty" json:"created_to,omitempty"`
+
+	// Limit Page size.
+	Limit *int32 `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// Cursor The `next_cursor` of the previous page, unchanged. Opaque.
+	Cursor *string `form:"cursor,omitempty" json:"cursor,omitempty"`
+
 	// XRequestID Correlation id. Accepted when it is at most 128 characters of
 	// `[A-Za-z0-9._-]`; otherwise it is ignored and a new id is generated.
 	// An invalid value is not an error.
@@ -433,11 +595,50 @@ type GetNotificationParams struct {
 	Traceparent *TraceParent `json:"traceparent,omitempty"`
 }
 
+// ListNotificationAttemptsParams defines parameters for ListNotificationAttempts.
+type ListNotificationAttemptsParams struct {
+	// XRequestID Correlation id. Accepted when it is at most 128 characters of
+	// `[A-Za-z0-9._-]`; otherwise it is ignored and a new id is generated.
+	// An invalid value is not an error.
+	XRequestID *XRequestID `json:"X-Request-ID,omitempty"`
+
+	// Traceparent W3C Trace Context. Stored with the notification when it is well
+	// formed; otherwise ignored. An invalid value is not an error.
+	Traceparent *TraceParent `json:"traceparent,omitempty"`
+}
+
+// CancelNotificationParams defines parameters for CancelNotification.
+type CancelNotificationParams struct {
+	// XRequestID Correlation id. Accepted when it is at most 128 characters of
+	// `[A-Za-z0-9._-]`; otherwise it is ignored and a new id is generated.
+	// An invalid value is not an error.
+	XRequestID *XRequestID `json:"X-Request-ID,omitempty"`
+
+	// Traceparent W3C Trace Context. Stored with the notification when it is well
+	// formed; otherwise ignored. An invalid value is not an error.
+	Traceparent *TraceParent `json:"traceparent,omitempty"`
+}
+
+// RedriveNotificationParams defines parameters for RedriveNotification.
+type RedriveNotificationParams struct {
+	// XRequestID Correlation id. Accepted when it is at most 128 characters of
+	// `[A-Za-z0-9._-]`; otherwise it is ignored and a new id is generated.
+	// An invalid value is not an error.
+	XRequestID *XRequestID `json:"X-Request-ID,omitempty"`
+
+	// Traceparent W3C Trace Context. Stored with the notification when it is well
+	// formed; otherwise ignored. An invalid value is not an error.
+	Traceparent *TraceParent `json:"traceparent,omitempty"`
+}
+
 // CreateNotificationJSONRequestBody defines body for CreateNotification for application/json ContentType.
 type CreateNotificationJSONRequestBody = CreateNotificationRequest
 
 // CreateNotificationBatchJSONRequestBody defines body for CreateNotificationBatch for application/json ContentType.
 type CreateNotificationBatchJSONRequestBody = CreateBatchRequest
+
+// RedriveNotificationJSONRequestBody defines body for RedriveNotification for application/json ContentType.
+type RedriveNotificationJSONRequestBody = RedriveRequest
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
@@ -453,6 +654,12 @@ type ServerInterface interface {
 	// GetBatch Read a batch
 	// (GET /v1/batches/{id})
 	GetBatch(w http.ResponseWriter, r *http.Request, id openapi_types.UUID, params GetBatchParams)
+	// CancelBatch Cancel the notifications of a batch
+	// (POST /v1/batches/{id}/cancel)
+	CancelBatch(w http.ResponseWriter, r *http.Request, id BatchID, params CancelBatchParams)
+	// ListNotifications List notifications
+	// (GET /v1/notifications)
+	ListNotifications(w http.ResponseWriter, r *http.Request, params ListNotificationsParams)
 	// CreateNotification Create a notification
 	// (POST /v1/notifications)
 	CreateNotification(w http.ResponseWriter, r *http.Request, params CreateNotificationParams)
@@ -462,6 +669,15 @@ type ServerInterface interface {
 	// GetNotification Read a notification
 	// (GET /v1/notifications/{id})
 	GetNotification(w http.ResponseWriter, r *http.Request, id openapi_types.UUID, params GetNotificationParams)
+	// ListNotificationAttempts Read the delivery attempts of a notification
+	// (GET /v1/notifications/{id}/attempts)
+	ListNotificationAttempts(w http.ResponseWriter, r *http.Request, id NotificationID, params ListNotificationAttemptsParams)
+	// CancelNotification Cancel a notification
+	// (POST /v1/notifications/{id}/cancel)
+	CancelNotification(w http.ResponseWriter, r *http.Request, id NotificationID, params CancelNotificationParams)
+	// RedriveNotification Send a failed notification again
+	// (POST /v1/notifications/{id}/redrive)
+	RedriveNotification(w http.ResponseWriter, r *http.Request, id NotificationID, params RedriveNotificationParams)
 }
 
 // ServerInterfaceWrapper converts contexts to parameters.
@@ -575,6 +791,239 @@ func (siw *ServerInterfaceWrapper) GetBatch(w http.ResponseWriter, r *http.Reque
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetBatch(w, r, id, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CancelBatch operation middleware
+func (siw *ServerInterfaceWrapper) CancelBatch(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id BatchID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params CancelBatchParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Request-ID" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Request-ID")]; found {
+		var XRequestID XRequestID
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Request-ID", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Request-ID", valueList[0], &XRequestID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Request-ID", Err: err})
+			return
+		}
+
+		params.XRequestID = &XRequestID
+
+	}
+
+	// ------------- Optional header parameter "traceparent" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("traceparent")]; found {
+		var Traceparent TraceParent
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "traceparent", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "traceparent", valueList[0], &Traceparent, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "traceparent", Err: err})
+			return
+		}
+
+		params.Traceparent = &Traceparent
+
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CancelBatch(w, r, id, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListNotifications operation middleware
+func (siw *ServerInterfaceWrapper) ListNotifications(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListNotificationsParams
+
+	// ------------- Optional query parameter "status" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "status", r.URL.Query(), &params.Status, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "status"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "status", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "channel" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "channel", r.URL.Query(), &params.Channel, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "channel"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "channel", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "priority" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "priority", r.URL.Query(), &params.Priority, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "priority"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "priority", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "batch_id" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "batch_id", r.URL.Query(), &params.BatchId, runtime.BindQueryParameterOptions{Type: "string", Format: "uuid"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "batch_id"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "batch_id", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "created_from" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "created_from", r.URL.Query(), &params.CreatedFrom, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "created_from"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "created_from", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "created_to" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "created_to", r.URL.Query(), &params.CreatedTo, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "created_to"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "created_to", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "limit", r.URL.Query(), &params.Limit, runtime.BindQueryParameterOptions{Type: "integer", Format: "int32"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "limit"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "cursor" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "cursor", r.URL.Query(), &params.Cursor, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "cursor"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "cursor", Err: err})
+		}
+		return
+	}
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Request-ID" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Request-ID")]; found {
+		var XRequestID XRequestID
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Request-ID", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Request-ID", valueList[0], &XRequestID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Request-ID", Err: err})
+			return
+		}
+
+		params.XRequestID = &XRequestID
+
+	}
+
+	// ------------- Optional header parameter "traceparent" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("traceparent")]; found {
+		var Traceparent TraceParent
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "traceparent", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "traceparent", valueList[0], &Traceparent, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "traceparent", Err: err})
+			return
+		}
+
+		params.Traceparent = &Traceparent
+
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListNotifications(w, r, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -811,6 +1260,213 @@ func (siw *ServerInterfaceWrapper) GetNotification(w http.ResponseWriter, r *htt
 	handler.ServeHTTP(w, r)
 }
 
+// ListNotificationAttempts operation middleware
+func (siw *ServerInterfaceWrapper) ListNotificationAttempts(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id NotificationID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListNotificationAttemptsParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Request-ID" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Request-ID")]; found {
+		var XRequestID XRequestID
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Request-ID", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Request-ID", valueList[0], &XRequestID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Request-ID", Err: err})
+			return
+		}
+
+		params.XRequestID = &XRequestID
+
+	}
+
+	// ------------- Optional header parameter "traceparent" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("traceparent")]; found {
+		var Traceparent TraceParent
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "traceparent", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "traceparent", valueList[0], &Traceparent, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "traceparent", Err: err})
+			return
+		}
+
+		params.Traceparent = &Traceparent
+
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListNotificationAttempts(w, r, id, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CancelNotification operation middleware
+func (siw *ServerInterfaceWrapper) CancelNotification(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id NotificationID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params CancelNotificationParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Request-ID" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Request-ID")]; found {
+		var XRequestID XRequestID
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Request-ID", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Request-ID", valueList[0], &XRequestID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Request-ID", Err: err})
+			return
+		}
+
+		params.XRequestID = &XRequestID
+
+	}
+
+	// ------------- Optional header parameter "traceparent" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("traceparent")]; found {
+		var Traceparent TraceParent
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "traceparent", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "traceparent", valueList[0], &Traceparent, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "traceparent", Err: err})
+			return
+		}
+
+		params.Traceparent = &Traceparent
+
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CancelNotification(w, r, id, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// RedriveNotification operation middleware
+func (siw *ServerInterfaceWrapper) RedriveNotification(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id NotificationID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid", ValueIsUnescaped: true})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params RedriveNotificationParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Request-ID" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Request-ID")]; found {
+		var XRequestID XRequestID
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Request-ID", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Request-ID", valueList[0], &XRequestID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Request-ID", Err: err})
+			return
+		}
+
+		params.XRequestID = &XRequestID
+
+	}
+
+	// ------------- Optional header parameter "traceparent" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("traceparent")]; found {
+		var Traceparent TraceParent
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "traceparent", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "traceparent", valueList[0], &Traceparent, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "traceparent", Err: err})
+			return
+		}
+
+		params.Traceparent = &Traceparent
+
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RedriveNotification(w, r, id, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 type UnescapedCookieParamError struct {
 	ParamName string
 	Err       error
@@ -931,10 +1587,15 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 		ErrorHandlerFunc:   options.ErrorHandlerFunc,
 	}
 
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/notifications", wrapper.ListNotifications)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/notifications", wrapper.CreateNotification)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/notifications/{id}", wrapper.GetNotification)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/notifications/{id}/attempts", wrapper.ListNotificationAttempts)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/notifications/{id}/cancel", wrapper.CancelNotification)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/notifications/{id}/redrive", wrapper.RedriveNotification)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/notifications/batch", wrapper.CreateNotificationBatch)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/batches/{id}", wrapper.GetBatch)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/batches/{id}/cancel", wrapper.CancelBatch)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/healthz", wrapper.GetHealthz)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/readyz", wrapper.GetReadyz)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/openapi.yaml", wrapper.GetOpenAPISpec)
@@ -943,6 +1604,8 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 }
 
 type BadRequestApplicationProblemPlusJSONResponse Problem
+
+type ConflictApplicationProblemPlusJSONResponse Problem
 
 type DuplicateApplicationProblemPlusJSONResponse Problem
 
@@ -1197,6 +1860,195 @@ type GetBatch503ApplicationProblemPlusJSONResponse struct {
 }
 
 func (response GetBatch503ApplicationProblemPlusJSONResponse) VisitGetBatchResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(503)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CancelBatchRequestObject struct {
+	Id     BatchID `json:"id"`
+	Params CancelBatchParams
+}
+
+type CancelBatchResponseObject interface {
+	VisitCancelBatchResponse(w http.ResponseWriter) error
+}
+
+type CancelBatch200ResponseHeaders struct {
+	XRequestID string
+}
+
+type CancelBatch200JSONResponse struct {
+	Body    BatchCancelResult
+	Headers CancelBatch200ResponseHeaders
+}
+
+func (response CancelBatch200JSONResponse) VisitCancelBatchResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-ID", fmt.Sprint(response.Headers.XRequestID))
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CancelBatch400ApplicationProblemPlusJSONResponse struct {
+	BadRequestApplicationProblemPlusJSONResponse
+}
+
+func (response CancelBatch400ApplicationProblemPlusJSONResponse) VisitCancelBatchResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CancelBatch404ApplicationProblemPlusJSONResponse struct {
+	NotFoundApplicationProblemPlusJSONResponse
+}
+
+func (response CancelBatch404ApplicationProblemPlusJSONResponse) VisitCancelBatchResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CancelBatch413ApplicationProblemPlusJSONResponse struct {
+	PayloadTooLargeApplicationProblemPlusJSONResponse
+}
+
+func (response CancelBatch413ApplicationProblemPlusJSONResponse) VisitCancelBatchResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(413)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CancelBatch500ApplicationProblemPlusJSONResponse struct {
+	InternalErrorApplicationProblemPlusJSONResponse
+}
+
+func (response CancelBatch500ApplicationProblemPlusJSONResponse) VisitCancelBatchResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CancelBatch503ApplicationProblemPlusJSONResponse struct {
+	UnavailableApplicationProblemPlusJSONResponse
+}
+
+func (response CancelBatch503ApplicationProblemPlusJSONResponse) VisitCancelBatchResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(503)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListNotificationsRequestObject struct {
+	Params ListNotificationsParams
+}
+
+type ListNotificationsResponseObject interface {
+	VisitListNotificationsResponse(w http.ResponseWriter) error
+}
+
+type ListNotifications200ResponseHeaders struct {
+	XRequestID string
+}
+
+type ListNotifications200JSONResponse struct {
+	Body    NotificationList
+	Headers ListNotifications200ResponseHeaders
+}
+
+func (response ListNotifications200JSONResponse) VisitListNotificationsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-ID", fmt.Sprint(response.Headers.XRequestID))
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListNotifications400ApplicationProblemPlusJSONResponse struct {
+	BadRequestApplicationProblemPlusJSONResponse
+}
+
+func (response ListNotifications400ApplicationProblemPlusJSONResponse) VisitListNotificationsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListNotifications500ApplicationProblemPlusJSONResponse struct {
+	InternalErrorApplicationProblemPlusJSONResponse
+}
+
+func (response ListNotifications500ApplicationProblemPlusJSONResponse) VisitListNotificationsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListNotifications503ApplicationProblemPlusJSONResponse struct {
+	UnavailableApplicationProblemPlusJSONResponse
+}
+
+func (response ListNotifications503ApplicationProblemPlusJSONResponse) VisitListNotificationsResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response); err != nil {
@@ -1585,6 +2437,388 @@ func (response GetNotification503ApplicationProblemPlusJSONResponse) VisitGetNot
 	return err
 }
 
+type ListNotificationAttemptsRequestObject struct {
+	Id     NotificationID `json:"id"`
+	Params ListNotificationAttemptsParams
+}
+
+type ListNotificationAttemptsResponseObject interface {
+	VisitListNotificationAttemptsResponse(w http.ResponseWriter) error
+}
+
+type ListNotificationAttempts200ResponseHeaders struct {
+	XRequestID string
+}
+
+type ListNotificationAttempts200JSONResponse struct {
+	Body    AttemptList
+	Headers ListNotificationAttempts200ResponseHeaders
+}
+
+func (response ListNotificationAttempts200JSONResponse) VisitListNotificationAttemptsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-ID", fmt.Sprint(response.Headers.XRequestID))
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListNotificationAttempts400ApplicationProblemPlusJSONResponse struct {
+	BadRequestApplicationProblemPlusJSONResponse
+}
+
+func (response ListNotificationAttempts400ApplicationProblemPlusJSONResponse) VisitListNotificationAttemptsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListNotificationAttempts404ApplicationProblemPlusJSONResponse struct {
+	NotFoundApplicationProblemPlusJSONResponse
+}
+
+func (response ListNotificationAttempts404ApplicationProblemPlusJSONResponse) VisitListNotificationAttemptsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListNotificationAttempts500ApplicationProblemPlusJSONResponse struct {
+	InternalErrorApplicationProblemPlusJSONResponse
+}
+
+func (response ListNotificationAttempts500ApplicationProblemPlusJSONResponse) VisitListNotificationAttemptsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListNotificationAttempts503ApplicationProblemPlusJSONResponse struct {
+	UnavailableApplicationProblemPlusJSONResponse
+}
+
+func (response ListNotificationAttempts503ApplicationProblemPlusJSONResponse) VisitListNotificationAttemptsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(503)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CancelNotificationRequestObject struct {
+	Id     NotificationID `json:"id"`
+	Params CancelNotificationParams
+}
+
+type CancelNotificationResponseObject interface {
+	VisitCancelNotificationResponse(w http.ResponseWriter) error
+}
+
+type CancelNotification200ResponseHeaders struct {
+	XRequestID string
+}
+
+type CancelNotification200JSONResponse struct {
+	Body    CancelResult
+	Headers CancelNotification200ResponseHeaders
+}
+
+func (response CancelNotification200JSONResponse) VisitCancelNotificationResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-ID", fmt.Sprint(response.Headers.XRequestID))
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CancelNotification400ApplicationProblemPlusJSONResponse struct {
+	BadRequestApplicationProblemPlusJSONResponse
+}
+
+func (response CancelNotification400ApplicationProblemPlusJSONResponse) VisitCancelNotificationResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CancelNotification404ApplicationProblemPlusJSONResponse struct {
+	NotFoundApplicationProblemPlusJSONResponse
+}
+
+func (response CancelNotification404ApplicationProblemPlusJSONResponse) VisitCancelNotificationResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CancelNotification409ApplicationProblemPlusJSONResponse struct {
+	ConflictApplicationProblemPlusJSONResponse
+}
+
+func (response CancelNotification409ApplicationProblemPlusJSONResponse) VisitCancelNotificationResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CancelNotification413ApplicationProblemPlusJSONResponse struct {
+	PayloadTooLargeApplicationProblemPlusJSONResponse
+}
+
+func (response CancelNotification413ApplicationProblemPlusJSONResponse) VisitCancelNotificationResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(413)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CancelNotification500ApplicationProblemPlusJSONResponse struct {
+	InternalErrorApplicationProblemPlusJSONResponse
+}
+
+func (response CancelNotification500ApplicationProblemPlusJSONResponse) VisitCancelNotificationResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CancelNotification503ApplicationProblemPlusJSONResponse struct {
+	UnavailableApplicationProblemPlusJSONResponse
+}
+
+func (response CancelNotification503ApplicationProblemPlusJSONResponse) VisitCancelNotificationResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(503)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RedriveNotificationRequestObject struct {
+	Id     NotificationID `json:"id"`
+	Params RedriveNotificationParams
+	Body   *RedriveNotificationJSONRequestBody
+}
+
+type RedriveNotificationResponseObject interface {
+	VisitRedriveNotificationResponse(w http.ResponseWriter) error
+}
+
+type RedriveNotification200ResponseHeaders struct {
+	XRequestID string
+}
+
+type RedriveNotification200JSONResponse struct {
+	Body    Notification
+	Headers RedriveNotification200ResponseHeaders
+}
+
+func (response RedriveNotification200JSONResponse) VisitRedriveNotificationResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-ID", fmt.Sprint(response.Headers.XRequestID))
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RedriveNotification400ApplicationProblemPlusJSONResponse struct {
+	BadRequestApplicationProblemPlusJSONResponse
+}
+
+func (response RedriveNotification400ApplicationProblemPlusJSONResponse) VisitRedriveNotificationResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RedriveNotification404ApplicationProblemPlusJSONResponse struct {
+	NotFoundApplicationProblemPlusJSONResponse
+}
+
+func (response RedriveNotification404ApplicationProblemPlusJSONResponse) VisitRedriveNotificationResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RedriveNotification409ApplicationProblemPlusJSONResponse struct {
+	ConflictApplicationProblemPlusJSONResponse
+}
+
+func (response RedriveNotification409ApplicationProblemPlusJSONResponse) VisitRedriveNotificationResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RedriveNotification413ApplicationProblemPlusJSONResponse struct {
+	PayloadTooLargeApplicationProblemPlusJSONResponse
+}
+
+func (response RedriveNotification413ApplicationProblemPlusJSONResponse) VisitRedriveNotificationResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(413)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RedriveNotification415ApplicationProblemPlusJSONResponse struct {
+	UnsupportedMediaTypeApplicationProblemPlusJSONResponse
+}
+
+func (response RedriveNotification415ApplicationProblemPlusJSONResponse) VisitRedriveNotificationResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(415)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RedriveNotification422ApplicationProblemPlusJSONResponse struct {
+	ValidationFailedApplicationProblemPlusJSONResponse
+}
+
+func (response RedriveNotification422ApplicationProblemPlusJSONResponse) VisitRedriveNotificationResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(422)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RedriveNotification500ApplicationProblemPlusJSONResponse struct {
+	InternalErrorApplicationProblemPlusJSONResponse
+}
+
+func (response RedriveNotification500ApplicationProblemPlusJSONResponse) VisitRedriveNotificationResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RedriveNotification503ApplicationProblemPlusJSONResponse struct {
+	UnavailableApplicationProblemPlusJSONResponse
+}
+
+func (response RedriveNotification503ApplicationProblemPlusJSONResponse) VisitRedriveNotificationResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(503)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 // StrictServerInterface represents all server handlers.
 type StrictServerInterface interface {
 	// GetHealthz Liveness
@@ -1599,6 +2833,12 @@ type StrictServerInterface interface {
 	// GetBatch Read a batch
 	// (GET /v1/batches/{id})
 	GetBatch(ctx context.Context, request GetBatchRequestObject) (GetBatchResponseObject, error)
+	// CancelBatch Cancel the notifications of a batch
+	// (POST /v1/batches/{id}/cancel)
+	CancelBatch(ctx context.Context, request CancelBatchRequestObject) (CancelBatchResponseObject, error)
+	// ListNotifications List notifications
+	// (GET /v1/notifications)
+	ListNotifications(ctx context.Context, request ListNotificationsRequestObject) (ListNotificationsResponseObject, error)
 	// CreateNotification Create a notification
 	// (POST /v1/notifications)
 	CreateNotification(ctx context.Context, request CreateNotificationRequestObject) (CreateNotificationResponseObject, error)
@@ -1608,6 +2848,15 @@ type StrictServerInterface interface {
 	// GetNotification Read a notification
 	// (GET /v1/notifications/{id})
 	GetNotification(ctx context.Context, request GetNotificationRequestObject) (GetNotificationResponseObject, error)
+	// ListNotificationAttempts Read the delivery attempts of a notification
+	// (GET /v1/notifications/{id}/attempts)
+	ListNotificationAttempts(ctx context.Context, request ListNotificationAttemptsRequestObject) (ListNotificationAttemptsResponseObject, error)
+	// CancelNotification Cancel a notification
+	// (POST /v1/notifications/{id}/cancel)
+	CancelNotification(ctx context.Context, request CancelNotificationRequestObject) (CancelNotificationResponseObject, error)
+	// RedriveNotification Send a failed notification again
+	// (POST /v1/notifications/{id}/redrive)
+	RedriveNotification(ctx context.Context, request RedriveNotificationRequestObject) (RedriveNotificationResponseObject, error)
 }
 
 type StrictHandlerFunc func(ctx context.Context, w http.ResponseWriter, r *http.Request, request any) (any, error)
@@ -1748,6 +2997,59 @@ func (sh *strictHandler) GetBatch(w http.ResponseWriter, r *http.Request, id ope
 	}
 }
 
+// CancelBatch operation middleware
+func (sh *strictHandler) CancelBatch(w http.ResponseWriter, r *http.Request, id BatchID, params CancelBatchParams) {
+	var request CancelBatchRequestObject
+
+	request.Id = id
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.CancelBatch(ctx, request.(CancelBatchRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "CancelBatch")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(CancelBatchResponseObject); ok {
+		if err := validResponse.VisitCancelBatchResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListNotifications operation middleware
+func (sh *strictHandler) ListNotifications(w http.ResponseWriter, r *http.Request, params ListNotificationsParams) {
+	var request ListNotificationsRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListNotifications(ctx, request.(ListNotificationsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListNotifications")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListNotificationsResponseObject); ok {
+		if err := validResponse.VisitListNotificationsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // CreateNotification operation middleware
 func (sh *strictHandler) CreateNotification(w http.ResponseWriter, r *http.Request, params CreateNotificationParams) {
 	var request CreateNotificationRequestObject
@@ -1834,6 +3136,97 @@ func (sh *strictHandler) GetNotification(w http.ResponseWriter, r *http.Request,
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(GetNotificationResponseObject); ok {
 		if err := validResponse.VisitGetNotificationResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListNotificationAttempts operation middleware
+func (sh *strictHandler) ListNotificationAttempts(w http.ResponseWriter, r *http.Request, id NotificationID, params ListNotificationAttemptsParams) {
+	var request ListNotificationAttemptsRequestObject
+
+	request.Id = id
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListNotificationAttempts(ctx, request.(ListNotificationAttemptsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListNotificationAttempts")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListNotificationAttemptsResponseObject); ok {
+		if err := validResponse.VisitListNotificationAttemptsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// CancelNotification operation middleware
+func (sh *strictHandler) CancelNotification(w http.ResponseWriter, r *http.Request, id NotificationID, params CancelNotificationParams) {
+	var request CancelNotificationRequestObject
+
+	request.Id = id
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.CancelNotification(ctx, request.(CancelNotificationRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "CancelNotification")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(CancelNotificationResponseObject); ok {
+		if err := validResponse.VisitCancelNotificationResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// RedriveNotification operation middleware
+func (sh *strictHandler) RedriveNotification(w http.ResponseWriter, r *http.Request, id NotificationID, params RedriveNotificationParams) {
+	var request RedriveNotificationRequestObject
+
+	request.Id = id
+	request.Params = params
+
+	var body RedriveNotificationJSONRequestBody
+	if err := runtime.BindJSONBody(r, &body); err != nil {
+		if !errors.Is(err, io.EOF) {
+			sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+			return
+		}
+	} else {
+		request.Body = &body
+	}
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.RedriveNotification(ctx, request.(RedriveNotificationRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "RedriveNotification")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(RedriveNotificationResponseObject); ok {
+		if err := validResponse.VisitRedriveNotificationResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
