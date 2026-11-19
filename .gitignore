@@ -41,3 +41,6 @@ k6-results/
 # --- Operating systems ---
 .DS_Store
 Thumbs.db
+
+# --- Agent worktrees of the development sessions ---
+.claude/worktrees/
