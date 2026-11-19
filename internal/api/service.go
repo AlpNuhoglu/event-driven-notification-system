@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/domain"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/platform/config"
@@ -56,6 +57,10 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger, ev *queue.
 	if err := pool.Ping(ctx); err != nil {
 		return fmt.Errorf("postgres: %w", err)
 	}
+	m, err := registerMetrics(prometheus.DefaultRegisterer, ev)
+	if err != nil {
+		return err
+	}
 
 	handler := NewHandler(Options{
 		Repository:           store.New(pool, store.ProfilesFrom(cfg.Retry)),
@@ -77,6 +82,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger, ev *queue.
 			domain.PriorityNormal: cfg.Relay.LaneHWMNormal,
 			domain.PriorityLow:    cfg.Relay.LaneHWMLow,
 		},
+		Metrics: m,
 	})
 	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", cfg.Ports.APIAddr)
 	if err != nil {

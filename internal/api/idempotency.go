@@ -13,6 +13,8 @@ import (
 const (
 	headerIdempotencyKey = "Idempotency-Key"
 	maxIdempotencyKey    = 255
+	// headerIdempotentReplayed marks a replayed response.
+	headerIdempotentReplayed = "Idempotent-Replayed"
 )
 
 // idempotencyKey reads the Idempotency-Key header. An absent header is not an

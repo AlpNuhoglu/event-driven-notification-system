@@ -54,6 +54,7 @@ type handlers struct {
 	now      func() time.Time
 	// summary computes and caches the metrics summary.
 	summary *summaryService
+	metrics *Metrics
 }
 
 // createRules returns the rules a create request is validated by, with the
@@ -114,6 +115,7 @@ func (h *handlers) CreateNotification(ctx context.Context, _ apigen.CreateNotifi
 	}
 	switch res.Outcome {
 	case store.OutcomeCreated:
+		h.metrics.createdOne(n.Channel, n.Priority, sourceSingle)
 		return apigen.CreateNotification202JSONResponse{
 			Body: created,
 			Headers: apigen.CreateNotification202ResponseHeaders{
@@ -202,6 +204,14 @@ func (h *handlers) CreateNotificationBatch(ctx context.Context, _ apigen.CreateN
 	}
 	switch res.Outcome {
 	case store.OutcomeCreated:
+		for i, it := range res.Items {
+			if it.Inserted {
+				h.metrics.createdOne(items[i].Channel, items[i].Priority, sourceBatch)
+			}
+		}
+		if in.answer != nil {
+			in.answer.rejected = accepted.Rejected
+		}
 		return apigen.CreateNotificationBatch202JSONResponse{
 			Body: accepted,
 			Headers: apigen.CreateNotificationBatch202ResponseHeaders{
@@ -458,7 +468,7 @@ func (r replayedResponse) VisitCreateNotificationBatchResponse(w http.ResponseWr
 func (r replayedResponse) write(w http.ResponseWriter) error {
 	h := w.Header()
 	h.Set("Content-Type", "application/json")
-	h.Set("Idempotent-Replayed", "true")
+	h.Set(headerIdempotentReplayed, "true")
 	h.Set("Location", r.location)
 	h.Set(headerRequestID, r.requestID)
 	w.WriteHeader(r.status)
