@@ -35,3 +35,8 @@ func (f *fakeRepo) templateErr() error {
 	}
 	return store.ErrTemplateNotFound
 }
+
+// LookupIdempotencyKey finds no live key unless an error is configured.
+func (f *fakeRepo) LookupIdempotencyKey(context.Context, *store.IdempotencyKey) (*store.StoredResponse, error) {
+	return nil, f.err
+}

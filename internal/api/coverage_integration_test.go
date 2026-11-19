@@ -241,6 +241,18 @@ func coverageCases() []coverageCase {
 		c("getTemplateVersion", 500, get(fail, "/v1/templates/cov/versions/1")),
 		c("getTemplateVersion", 503, get(dead, "/v1/templates/cov/versions/1")),
 
+		c("previewTemplate", 200, func(_ *testing.T, e *coverageEnv) response {
+			e.send(e.real.apiClient, http.MethodPost, "/v1/templates", tplBody("cov-prev", "sms", "hello {{ .n }}", "n"), nil)
+			return e.send(e.real.apiClient, http.MethodPost, "/v1/templates/cov-prev/preview", `{"variables":{"n":1}}`, nil)
+		}),
+		c("previewTemplate", 400, post(live, "/v1/templates/cov/preview", `{`, nil)),
+		c("previewTemplate", 404, post(live, "/v1/templates/cov-unknown/preview", "", nil)),
+		c("previewTemplate", 413, post(live, "/v1/templates/cov/preview", overLimit, nil)),
+		c("previewTemplate", 415, post(live, "/v1/templates/cov/preview", `{}`, textPlain)),
+		c("previewTemplate", 422, post(live, "/v1/templates/cov/preview", `{"version":0}`, nil)),
+		c("previewTemplate", 500, post(fail, "/v1/templates/cov/preview", "", nil)),
+		c("previewTemplate", 503, post(dead, "/v1/templates/cov/preview", "", nil)),
+
 		c("deactivateTemplate", 200, func(_ *testing.T, e *coverageEnv) response {
 			e.send(e.real.apiClient, http.MethodPost, "/v1/templates", tplBody("cov-off", "sms", "hello"), nil)
 			return e.send(e.real.apiClient, http.MethodPost, "/v1/templates/cov-off/deactivate", "", nil)
@@ -359,6 +371,7 @@ var bodyEndpoints = []struct{ op, path string }{
 	{"cancelBatch", "/v1/batches/" + someID + "/cancel"},
 	{"createTemplate", "/v1/templates"},
 	{"createTemplateVersion", "/v1/templates/cov/versions"},
+	{"previewTemplate", "/v1/templates/cov/preview"},
 	{"deactivateTemplate", "/v1/templates/cov/deactivate"},
 	{"activateTemplate", "/v1/templates/cov/activate"},
 }
@@ -431,6 +444,7 @@ func TestRequestID_EveryOperation(t *testing.T) {
 		{"createTemplateVersion", http.MethodPost, "/v1/templates/rid-tpl/versions", versionBody("bye")},
 		{"getTemplate", http.MethodGet, "/v1/templates/rid-tpl", ""},
 		{"getTemplateVersion", http.MethodGet, "/v1/templates/rid-tpl/versions/1", ""},
+		{"previewTemplate", http.MethodPost, "/v1/templates/rid-tpl/preview", ""},
 		{"deactivateTemplate", http.MethodPost, "/v1/templates/rid-tpl/deactivate", ""},
 		{"activateTemplate", http.MethodPost, "/v1/templates/rid-tpl/activate", ""},
 		{"getHealthz", http.MethodGet, "/healthz", ""},

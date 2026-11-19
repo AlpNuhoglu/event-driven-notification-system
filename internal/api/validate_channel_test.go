@@ -69,7 +69,7 @@ func TestValidateCreate_PerChannel(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			p := validateCreate([]byte(tt.body), tt.phone)
+			p := checkCreate([]byte(tt.body), tt.phone)
 			if got := codes(p); !slices.Equal(got, tt.codes) {
 				t.Fatalf("codes %v, want %v", got, tt.codes)
 			}
@@ -103,7 +103,7 @@ func TestValidateCreate_PerChannelMessages(t *testing.T) {
 		req("email", "user@example.com", strings.Repeat(secret, 30000)),
 		req("push", "token", strings.Repeat(secret, 2000)),
 	} {
-		p := validateCreate([]byte(body), domain.PhonePossible)
+		p := checkCreate([]byte(body), domain.PhonePossible)
 		if p == nil || len(p.errors) != 1 {
 			t.Fatalf("errors %v", codes(p))
 		}
@@ -111,10 +111,10 @@ func TestValidateCreate_PerChannelMessages(t *testing.T) {
 			t.Errorf("message leaks the value: %q", m)
 		}
 	}
-	if got := validateCreate([]byte(req("sms", "0555", "x")), domain.PhonePossible).errors[0].Message; got != "recipient must be an E.164 number such as +905551234567" {
+	if got := checkCreate([]byte(req("sms", "0555", "x")), domain.PhonePossible).errors[0].Message; got != "recipient must be an E.164 number such as +905551234567" {
 		t.Errorf("message %q", got)
 	}
-	if got := validateCreate([]byte(req("sms", phone, strings.Repeat("a", 1531))), domain.PhonePossible).errors[0].Message; got != "content needs more than 10 SMS segments" {
+	if got := checkCreate([]byte(req("sms", phone, strings.Repeat("a", 1531))), domain.PhonePossible).errors[0].Message; got != "content needs more than 10 SMS segments" {
 		t.Errorf("message %q", got)
 	}
 }

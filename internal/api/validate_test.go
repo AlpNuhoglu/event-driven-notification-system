@@ -16,6 +16,12 @@ const (
 	phone     = "+905551234567"
 )
 
+// checkCreate is validateCreate without the parsed request.
+func checkCreate(body []byte, phone domain.PhoneValidation) *problem {
+	_, p := validateCreate(body, phone)
+	return p
+}
+
 func codes(p *problem) []string {
 	if p == nil {
 		return nil
@@ -82,13 +88,13 @@ func TestValidateCreate(t *testing.T) {
 		{"empty object", `{}`, 422, []string{"channel:required", "recipient:required", "content:required"}},
 		{
 			"every field invalid, in field order then unknown fields",
-			`{"zeta":1,"dedupe_key":"","priority":"x","content":1,"recipient":"","channel":"fax","template":null}`, 422,
-			[]string{"channel:invalid_value", "recipient:empty", "content:invalid_type", "priority:invalid_value", "dedupe_key:empty", "zeta:unknown_field", "template:unknown_field"},
+			`{"zeta":1,"dedupe_key":"","priority":"x","content":1,"recipient":"","channel":"fax","template":{},"subject":"s"}`, 422,
+			[]string{"channel:invalid_value", "recipient:empty", "content:invalid_type", "template:conflicts_with_content", "priority:invalid_value", "dedupe_key:empty", "zeta:unknown_field", "subject:unknown_field"},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			p := validateCreate([]byte(tt.body), domain.PhonePossible)
+			p := checkCreate([]byte(tt.body), domain.PhonePossible)
 			if tt.status == 0 {
 				if p != nil {
 					t.Fatalf("got %d %v, want valid", p.kind.status, codes(p))
@@ -114,7 +120,7 @@ func TestValidateCreate_NoValueInMessages(t *testing.T) {
 		`{"channel":"sms","recipient":"` + phone + `","content":"x","dedupe_key":"` + content + `\u0000"}`,
 	}
 	for _, b := range bodies {
-		p := validateCreate([]byte(b), domain.PhonePossible)
+		p := checkCreate([]byte(b), domain.PhonePossible)
 		if p == nil {
 			t.Fatalf("valid: %s", b)
 		}
@@ -134,7 +140,7 @@ func TestValidateCreate_NoValueInMessages(t *testing.T) {
 }
 
 func TestValidateCreate_Detail(t *testing.T) {
-	p := validateCreate([]byte(`{}`), domain.PhonePossible)
+	p := checkCreate([]byte(`{}`), domain.PhonePossible)
 	if p.detail != "3 field(s) are invalid." {
 		t.Errorf("detail = %q", p.detail)
 	}
@@ -152,7 +158,7 @@ func TestValidateCreate_Bounds(t *testing.T) {
 		b.WriteString(`,"f` + strings.Repeat("x", i) + `":0`)
 	}
 	b.WriteString(`}`)
-	p := validateCreate([]byte(b.String()), domain.PhonePossible)
+	p := checkCreate([]byte(b.String()), domain.PhonePossible)
 	if len(p.errors) != 200 {
 		t.Fatalf("errors = %d, want 200 before the cap", len(p.errors))
 	}
@@ -188,7 +194,7 @@ func TestValidateCreate_MatchesSpec(t *testing.T) {
 	}
 	req := slices.Clone(s.Required)
 	slices.Sort(req)
-	if !slices.Equal(req, []string{fieldChannel, fieldContent, fieldRecipient}) {
+	if !slices.Equal(req, []string{fieldChannel, fieldRecipient}) {
 		t.Errorf("spec required = %v", req)
 	}
 	rcp := s.Properties[fieldRecipient].Value
@@ -364,7 +370,8 @@ func TestValidateBatch_ParsedItems(t *testing.T) {
 		t.Fatalf("valid = %d", len(in.valid))
 	}
 	first, second := in.valid[0], in.valid[1]
-	if first.index != 0 || first.request.Recipient != phone || first.request.Content != "a" || first.request.DedupeKey != nil {
+	if first.index != 0 || first.request.Recipient != phone || first.request.Content == nil || *first.request.Content != "a" ||
+		first.request.DedupeKey != nil || first.template != nil {
 		t.Errorf("first = %+v", first)
 	}
 	if second.index != 1 || second.request.DedupeKey == nil || *second.request.DedupeKey != "k-1" || string(second.request.Channel) != "email" {
@@ -421,6 +428,7 @@ func TestValidateBatch_DuplicatesInBatch(t *testing.T) {
 			if p != nil {
 				t.Fatalf("problem %v", codes(p))
 			}
+			claimDedupeKeys(&in)
 			if got := validIndexes(in); !slices.Equal(got, tt.valid) {
 				t.Errorf("valid = %v, want %v", got, tt.valid)
 			}
@@ -473,6 +481,7 @@ func TestValidateBatch_NoValueInMessages(t *testing.T) {
 	if p != nil {
 		t.Fatalf("problem %v", codes(p))
 	}
+	claimDedupeKeys(&in)
 	if len(in.rejected) != 4 {
 		t.Fatalf("rejected = %d", len(in.rejected))
 	}

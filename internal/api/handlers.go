@@ -2,13 +2,11 @@ package api
 
 import (
 	"bytes"
-	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
-	"slices"
 	"time"
 
 	"github.com/google/uuid"
@@ -55,16 +53,33 @@ type handlers struct {
 var _ apigen.StrictServerInterface = (*handlers)(nil)
 
 // CreateNotification stores a pending notification through the record and
-// request layers of duplicate prevention (ADR-0006 section 11). The body has
-// already passed validateCreate, and createGuard has read the
-// Idempotency-Key. Creation is not a state transition and emits no event.
-func (h *handlers) CreateNotification(ctx context.Context, req apigen.CreateNotificationRequestObject) (apigen.CreateNotificationResponseObject, error) {
-	if req.Body == nil {
-		return nil, newProblem(kindMalformed, "")
+// request layers of duplicate prevention (ADR-0006 section 11). createGuard
+// has validated and parsed the body (validateCreate) and read the
+// Idempotency-Key, and calls this method with both in the context; the
+// request object's body is not read. A notification from a template is
+// rendered first (renderForCreate), after an early look-up of its key
+// (earlyReplay). Creation is not a state transition and emits no event.
+func (h *handlers) CreateNotification(ctx context.Context, _ apigen.CreateNotificationRequestObject) (apigen.CreateNotificationResponseObject, error) {
+	in, ok := createInputFrom(ctx)
+	if !ok || in.single == nil {
+		return nil, internalProblem(errors.New("create request without validated input"))
 	}
-	in, _ := createInputFrom(ctx) // without it: no key
 	st := stateFrom(ctx)
-	n, p := h.newNotification(st, *req.Body)
+	cr := *in.single
+	if cr.template != nil {
+		if r, p := h.earlyReplay(ctx, in.key, "id", "/v1/notifications/", st.correlationID); r != nil || p != nil {
+			return replayOrProblem(r, p)
+		}
+		rendered, errs, p := h.newTemplateCache().renderForCreate(ctx, domain.Channel(cr.request.Channel), cr.template)
+		if p != nil {
+			return nil, p
+		}
+		if len(errs) > 0 {
+			return nil, newProblem(kindValidation, fmt.Sprintf("%d field(s) are invalid.", len(errs)), errs...)
+		}
+		cr.rendered = rendered
+	}
+	n, p := h.newNotification(st, cr)
 	if p != nil {
 		return nil, p
 	}
@@ -101,19 +116,37 @@ func (h *handlers) CreateNotification(ctx context.Context, req apigen.CreateNoti
 
 // CreateNotificationBatch stores the valid items of a batch (ADR-0006
 // section 6). createGuard has validated the body and calls this method with
-// the result in the context; the request object carries no body.
+// the result in the context; the request object carries no body. When an
+// item uses a template, the key is looked up early (earlyReplay) and the
+// template stage runs before the dedupe keys are claimed (prepareBatch).
 func (h *handlers) CreateNotificationBatch(ctx context.Context, _ apigen.CreateNotificationBatchRequestObject) (apigen.CreateNotificationBatchResponseObject, error) {
 	in, ok := createInputFrom(ctx)
 	if !ok || in.batch.total == 0 {
-		return nil, &problem{kind: kindInternal, detail: kindInternal.detail, cause: errors.New("batch request without validated input")}
+		return nil, internalProblem(errors.New("batch request without validated input"))
 	}
 	if len(in.batch.valid) == 0 {
 		return nil, allRejected(in.batch.total, in.batch.rejected)
 	}
 	st := stateFrom(ctx)
+	if in.batch.usesTemplate() {
+		if r, p := h.earlyReplay(ctx, in.key, "batch_id", "/v1/batches/", st.correlationID); r != nil || p != nil {
+			if p != nil {
+				return nil, p
+			}
+			return *r, nil
+		}
+	}
+	batch, p := prepareBatch(ctx, h.newTemplateCache(), in.batch)
+	if p != nil {
+		return nil, p
+	}
+	in.batch = batch
+	if len(in.batch.valid) == 0 {
+		return nil, allRejected(in.batch.total, in.batch.rejected)
+	}
 	items := make([]store.NewNotification, len(in.batch.valid))
 	for i, v := range in.batch.valid {
-		n, p := h.newNotification(st, v.request)
+		n, p := h.newNotification(st, v.createRequest)
 		if p != nil {
 			return nil, p
 		}
@@ -173,10 +206,60 @@ func (h *handlers) GetBatch(ctx context.Context, req apigen.GetBatchRequestObjec
 	}, nil
 }
 
+// newTemplateCache returns the template cache of one request.
+func (h *handlers) newTemplateCache() *templateCache {
+	return newTemplateCache(h.repo, h.dbTimeout)
+}
+
+// earlyReplay looks up the Idempotency-Key of a request that renders a
+// template before the template stage: what the request renders can change
+// between it and its retry (a new latest version, a deactivation), and a
+// retry must get the stored answer back, not a 422. A live key with the
+// same request hash gives the stored response to replay, with another hash
+// the 422 of a reused key; otherwise (no key, or none live) both results are
+// nil and the request goes on: the create transaction still claims the key
+// and decides between concurrent requests.
+func (h *handlers) earlyReplay(ctx context.Context, key *store.IdempotencyKey, idField, locationPrefix, requestID string) (*replayedResponse, *problem) {
+	if key == nil {
+		return nil, nil
+	}
+	dbCtx, cancel := context.WithTimeout(ctx, h.dbTimeout)
+	defer cancel()
+	stored, err := h.repo.LookupIdempotencyKey(dbCtx, key)
+	switch {
+	case errors.Is(err, store.ErrIdempotencyKeyReused):
+		return nil, idempotencyKeyReusedProblem()
+	case err != nil:
+		return nil, storeProblem(err)
+	case stored == nil:
+		return nil, nil
+	}
+	r, err := replay(stored, idField, locationPrefix, requestID)
+	if err != nil {
+		var p *problem
+		if errors.As(err, &p) {
+			return nil, p
+		}
+		return nil, internalProblem(err)
+	}
+	return &r, nil
+}
+
+// replayOrProblem turns the result of earlyReplay into the single create's
+// answer.
+func replayOrProblem(r *replayedResponse, p *problem) (apigen.CreateNotificationResponseObject, error) {
+	if p != nil {
+		return nil, p
+	}
+	return *r, nil
+}
+
 // newNotification builds the store input of one validated create request:
 // the TTL and failure budget of its priority, the request's correlation id
-// and trace parent.
-func (h *handlers) newNotification(st *requestState, req apigen.CreateNotificationRequest) (store.NewNotification, *problem) {
+// and trace parent, and the content: the request's, or the rendered text
+// with its template provenance.
+func (h *handlers) newNotification(st *requestState, cr createRequest) (store.NewNotification, *problem) {
+	req := cr.request
 	channel, err := domain.ParseChannel(string(req.Channel))
 	if err != nil {
 		return store.NewNotification{}, newProblem(kindValidation, "",
@@ -193,20 +276,33 @@ func (h *handlers) newNotification(st *requestState, req apigen.CreateNotificati
 	if !ok {
 		return store.NewNotification{}, &problem{kind: kindInternal, detail: kindInternal.detail, cause: errors.New("no limits for priority")}
 	}
+	var content string
+	switch {
+	case cr.rendered != nil:
+		content = cr.rendered.content
+	case req.Content != nil:
+		content = *req.Content
+	default:
+		return store.NewNotification{}, internalProblem(errors.New("notification without content"))
+	}
 	n := store.NewNotification{
 		DedupeKey:     req.DedupeKey,
 		Channel:       channel,
 		Priority:      priority,
 		Recipient:     domain.Recipient(req.Recipient),
-		Content:       req.Content,
+		Content:       content,
 		TTL:           lim.ttl,
 		MaxFailures:   lim.maxFailures,
 		CorrelationID: st.correlationID,
 		TraceParent:   st.traceParent,
 	}
+	if r := cr.rendered; r != nil {
+		name, version := r.name, r.version
+		n.TemplateName, n.TemplateVersion, n.TemplateVars = &name, &version, r.vars
+	}
 	if channel == domain.ChannelSMS {
 		// The content has passed validation: at most MaxSMSSegments segments.
-		info := domain.CountSMS(req.Content)
+		info := domain.CountSMS(content)
 		enc := string(info.Encoding)
 		segments := int16(info.Segments) //nolint:gosec // at most domain.MaxSMSSegments
 		n.SMSEncoding, n.SMSSegments = &enc, &segments
@@ -254,7 +350,7 @@ func mergeRejected(in batchInput, items []store.BatchItem) []apigen.RejectedItem
 			})
 		}
 	}
-	slices.SortFunc(out, func(a, b apigen.RejectedItem) int { return cmp.Compare(a.Index, b.Index) })
+	sortRejected(out)
 	return out
 }
 
@@ -414,6 +510,7 @@ func toNotification(n store.Notification) apigen.Notification {
 		UpdatedAt:         n.UpdatedAt.UTC(),
 		SentAt:            utcPtr(n.SentAt),
 		Sms:               smsInfo(n),
+		Template:          templateProvenance(n),
 	}
 	if n.FailureReason != nil {
 		r := apigen.FailureReason(*n.FailureReason)
@@ -432,6 +529,16 @@ func smsInfo(n store.Notification) *apigen.SMSInfo {
 		Encoding: apigen.SMSInfoEncoding(*n.SMSEncoding),
 		Segments: int32(*n.SMSSegments),
 	}
+}
+
+// templateProvenance is the template member of a notification: the template
+// version that produced the content, nil (null) for a notification created
+// with content. The variables are not returned.
+func templateProvenance(n store.Notification) *apigen.TemplateProvenance {
+	if n.TemplateName == nil || n.TemplateVersion == nil {
+		return nil
+	}
+	return &apigen.TemplateProvenance{Name: *n.TemplateName, Version: *n.TemplateVersion}
 }
 
 // toBatch builds the batch representation; every status is present in

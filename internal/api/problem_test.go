@@ -120,6 +120,8 @@ func TestProblemTypesDocumented(t *testing.T) {
 		codeInvalidE164, codeInvalidEmail, codeInvalidToken, codeTooManySegments,
 		codeUnexpectedBody, codeNotCancellable, codeNotFailed, codeExpiresAtRequired, codeExpiresAtNotAllowed, codeTooSoon,
 		codeUnknownParameter, codeDuplicateParameter, codeInvalidParameter, codeInvalidCursor,
+		codeConflictsWithContent, codeTemplateNotFound, codeTemplateVersionNotFound, codeTemplateInactive,
+		codeTemplateChannelMismatch, codeMissingVariable, codeUnknownVariable,
 	} {
 		if !strings.Contains(doc, "`"+code+"`") {
 			t.Errorf("docs/errors.md does not list code %s", code)

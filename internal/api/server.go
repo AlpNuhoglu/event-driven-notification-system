@@ -5,7 +5,6 @@
 package api
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -34,6 +33,7 @@ type Repository interface {
 		respond func(store.BatchResult) (store.StoredResponse, error)) (store.BatchResult, error)
 	GetNotification(ctx context.Context, id uuid.UUID) (store.Notification, error)
 	GetBatch(ctx context.Context, id uuid.UUID) (store.Batch, error)
+	LookupIdempotencyKey(ctx context.Context, key *store.IdempotencyKey) (*store.StoredResponse, error)
 	canceller
 	lister
 	templater
@@ -140,14 +140,18 @@ type createGuard struct {
 	keyTTL time.Duration
 }
 
-// CreateNotification hands a valid body on to the strict handler, which
-// decodes it again.
+// CreateNotification answers a create request itself, as
+// CreateNotificationBatch does: the strict handler's decoder would decode a
+// template variable's number as a float64 (and refuse one out of its range),
+// so the request parsed by validateCreate is handed on in the context and
+// the typed response is written here.
 func (g createGuard) CreateNotification(w http.ResponseWriter, r *http.Request, params apigen.CreateNotificationParams) {
 	body, ok := readJSONBody(w, r)
 	if !ok {
 		return
 	}
-	if p := validateCreate(body, g.h.phone); p != nil {
+	req, p := validateCreate(body, g.h.phone)
+	if p != nil {
 		writeProblem(w, r, p)
 		return
 	}
@@ -156,9 +160,15 @@ func (g createGuard) CreateNotification(w http.ResponseWriter, r *http.Request, 
 		writeProblem(w, r, p)
 		return
 	}
-	r = r.WithContext(withCreateInput(r.Context(), createInput{key: key}))
-	r.Body = io.NopCloser(bytes.NewReader(body))
-	g.ServerInterface.CreateNotification(w, r, params)
+	ctx := withCreateInput(r.Context(), createInput{key: key, single: &req})
+	resp, err := g.h.CreateNotification(ctx, apigen.CreateNotificationRequestObject{Params: params, Body: &req.request})
+	if err != nil {
+		responseError(w, r, err)
+		return
+	}
+	if err := resp.VisitCreateNotificationResponse(w); err != nil {
+		responseError(w, r, err)
+	}
 }
 
 // CreateNotificationBatch answers a batch request itself: the strict
@@ -225,6 +235,8 @@ func (g createGuard) requestKey(r *http.Request, body []byte) (*store.Idempotenc
 type createInput struct {
 	// key is nil when the request has no Idempotency-Key.
 	key *store.IdempotencyKey
+	// single is the validated request (single create only).
+	single *createRequest
 	// batch is the validated batch (batch requests only).
 	batch batchInput
 }
