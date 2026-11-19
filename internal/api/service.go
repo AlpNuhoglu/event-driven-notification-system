@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/AlpNuhoglu/event-driven-notification-system/internal/domain"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/events"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/platform/config"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/store"
@@ -50,6 +51,7 @@ func Service(ctx context.Context, cfg config.Config, logger *slog.Logger) error 
 		MaxBodyBytes:      cfg.API.MaxBodyBytes,
 		IdempotencyKeyTTL: cfg.API.IdempotencyKeyTTL,
 		ExpiresAtMinLead:  cfg.API.ExpiresAtMinLead,
+		PhoneValidation:   domain.PhoneValidation(cfg.API.PhoneValidation),
 		Events:            events.Nop{},
 	})
 	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", cfg.Ports.APIAddr)

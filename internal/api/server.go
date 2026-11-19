@@ -19,6 +19,8 @@ import (
 
 	spec "github.com/AlpNuhoglu/event-driven-notification-system/api"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/api/apigen"
+	"github.com/AlpNuhoglu/event-driven-notification-system/internal/api/swaggerui"
+	"github.com/AlpNuhoglu/event-driven-notification-system/internal/domain"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/events"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/platform/config"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/store"
@@ -76,6 +78,9 @@ type Options struct {
 	// IdempotencyKeyTTL is how long an Idempotency-Key stays live
 	// (IDEMPOTENCY_KEY_TTL); DefaultIdempotencyKeyTTL when zero.
 	IdempotencyKeyTTL time.Duration
+	// PhoneValidation is the level of the check of an SMS recipient
+	// (PHONE_VALIDATION); domain.PhonePossible when empty.
+	PhoneValidation domain.PhoneValidation
 }
 
 // NewHandler returns the API's http.Handler.
@@ -92,6 +97,9 @@ func NewHandler(o Options) http.Handler {
 	if o.Events == nil {
 		o.Events = events.Nop{}
 	}
+	if o.PhoneValidation == "" {
+		o.PhoneValidation = domain.PhonePossible
+	}
 	h := &handlers{
 		repo:      o.Repository,
 		db:        o.DB,
@@ -99,6 +107,7 @@ func NewHandler(o Options) http.Handler {
 		dbTimeout: o.DBTimeout,
 		events:    o.Events,
 		minLead:   o.ExpiresAtMinLead,
+		phone:     o.PhoneValidation,
 		spec:      spec.OpenAPI(),
 	}
 	strict := apigen.NewStrictHandlerWithOptions(h, nil, apigen.StrictHTTPServerOptions{
@@ -111,6 +120,9 @@ func NewHandler(o Options) http.Handler {
 		BaseRouter:       mux,
 		ErrorHandlerFunc: parameterError,
 	})
+	docs := swaggerui.Handler()
+	mux.Handle("GET /docs", docs)
+	mux.Handle("GET /docs/{asset}", docs)
 	return &frame{next: &router{mux: mux}, logger: o.Logger, maxBodyBytes: o.MaxBodyBytes}
 }
 
@@ -134,7 +146,7 @@ func (g createGuard) CreateNotification(w http.ResponseWriter, r *http.Request, 
 	if !ok {
 		return
 	}
-	if p := validateCreate(body); p != nil {
+	if p := validateCreate(body, g.h.phone); p != nil {
 		writeProblem(w, r, p)
 		return
 	}
@@ -158,7 +170,7 @@ func (g createGuard) CreateNotificationBatch(w http.ResponseWriter, r *http.Requ
 	if !ok {
 		return
 	}
-	in, p := validateBatch(body)
+	in, p := validateBatch(body, g.h.phone)
 	if p != nil {
 		writeProblem(w, r, p)
 		return

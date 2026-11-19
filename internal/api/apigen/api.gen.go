@@ -178,6 +178,24 @@ func (e ReadinessStatus) Valid() bool {
 	}
 }
 
+// Defines values for SMSInfoEncoding.
+const (
+	GSM7 SMSInfoEncoding = "GSM-7"
+	UCS2 SMSInfoEncoding = "UCS-2"
+)
+
+// Valid indicates whether the value is a known member of the SMSInfoEncoding enum.
+func (e SMSInfoEncoding) Valid() bool {
+	switch e {
+	case GSM7:
+		return true
+	case UCS2:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for Status.
 const (
 	Cancelled  Status = "cancelled"
@@ -317,7 +335,10 @@ type CreateBatchRequest struct {
 type CreateNotificationRequest struct {
 	Channel Channel `json:"channel"`
 
-	// Content The message. Must not contain U+0000.
+	// Content The message. Must not contain U+0000. At most 10 SMS segments for
+	// `sms` (the encoding and segment count are returned as `sms`),
+	// 100 KiB (102,400 bytes of UTF-8) for `email`, 4 KiB (4,096 bytes)
+	// for `push`.
 	Content string `json:"content"`
 
 	// DedupeKey Optional. A second notification with the same key is refused (`409`)
@@ -325,7 +346,11 @@ type CreateNotificationRequest struct {
 	DedupeKey *string   `json:"dedupe_key,omitempty"`
 	Priority  *Priority `json:"priority,omitempty"`
 
-	// Recipient Phone number, e-mail address or device token. Must not contain U+0000.
+	// Recipient Depends on the channel: `sms` an E.164 number such as
+	// `+905551234567` (not normalised: `05551234567` is refused), `email`
+	// a single address without a display name, `push` a device token of
+	// 1 to 4,096 characters without control characters. Must not
+	// contain U+0000.
 	Recipient string `json:"recipient"`
 }
 
@@ -374,6 +399,9 @@ type Notification struct {
 	ScheduledAt       *time.Time         `json:"scheduled_at"`
 	SentAt            *time.Time         `json:"sent_at"`
 
+	// Sms Set for the channel `sms`, `null` for every other channel.
+	Sms *SMSInfo `json:"sms"`
+
 	// Status `sent` is final. `cancelled` and `failed` can still become `sent` when
 	// a late provider result proves that the message was delivered.
 	Status    Status    `json:"status"`
@@ -416,6 +444,11 @@ type Problem struct {
 	// (`400`). At most 50 entries are listed.
 	Errors *[]FieldError `json:"errors,omitempty"`
 
+	// ExpiresAt Only on the `409` of a redrive that gave an `expires_at` it does
+	// not need (`expires_at_not_allowed`), the stored `expires_at`,
+	// which is still in the future and is kept.
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+
 	// Rejected Only on the `422` of the batch endpoint when every item was
 	// rejected: one entry per item, never truncated.
 	Rejected *[]RejectedItem `json:"rejected,omitempty"`
@@ -449,6 +482,17 @@ type RejectedItem struct {
 	// Index The item's position in the request's array.
 	Index int `json:"index"`
 }
+
+// SMSInfo How the content is sent as SMS, which decides its cost. One character
+// outside the GSM-7 alphabet (for example `ş`, `ğ` or `ı`) puts the
+// whole message into UCS-2.
+type SMSInfo struct {
+	Encoding SMSInfoEncoding `json:"encoding"`
+	Segments int32           `json:"segments"`
+}
+
+// SMSInfoEncoding defines model for SMSInfo.Encoding.
+type SMSInfoEncoding string
 
 // Status `sent` is final. `cancelled` and `failed` can still become `sent` when
 // a late provider result proves that the message was delivered.

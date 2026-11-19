@@ -25,6 +25,7 @@ Every non-2xx answer of the API is an RFC 9457 problem with `Content-Type: appli
 | `correlation_id` | The request's correlation id, also returned in the `X-Request-ID` header. Quote it when reporting a problem. |
 | `errors` | Present for `400`, `409` and `422`: one entry per problem, with `field` (the request field, header or path parameter, empty for the body as a whole), a stable `code` and a `message` for humans. At most 50 entries are listed; `detail` gives the total. No `message` contains the submitted value. An entry with the code `duplicate` also carries `existing_id`. |
 | `current_status` | Only on a `409` of cancel and redrive: the state the notification is in. |
+| `expires_at` | Only on the `409` of a redrive with the code `expires_at_not_allowed`: the stored `expires_at`, in UTC, which is still in the future and is kept. |
 | `rejected` | Only on the `422` of `POST /v1/notifications/batch` when every item was rejected: one entry per item with its `index` and its `errors`, never truncated. |
 
 ## `malformed-request`
@@ -64,13 +65,19 @@ Every non-2xx answer of the API is an RFC 9457 problem with `Content-Type: appli
 
 **422 Unprocessable Content.** The body is a JSON object, but fields are invalid. Every invalid field is reported in one answer: fields of the request in the order `channel`, `recipient`, `content`, `priority`, `dedupe_key`, then unknown fields in the order they appear.
 
+`recipient` and `content` are checked in two steps. First the rules every channel shares (type, empty, length, U+0000); then, only when that step passed and `channel` is valid, the rules of the channel. A field therefore has at most one error, and a missing or invalid `channel` gives no channel-specific error.
+
 | Code | When |
 |---|---|
 | `required` | A required field (`channel`, `recipient`, `content`; `notifications` in a batch) is missing. |
 | `invalid_type` | The field has the wrong JSON type; `null` is a wrong type for every field. In a batch, `notifications` must be an array, and an item that is not a JSON object is rejected with this code and an empty `field`. |
 | `invalid_value` | The value is not one of the allowed values (`channel`: `sms`, `email`, `push`; `priority`: `high`, `normal`, `low`), or `expires_at` of a redrive is not an RFC 3339 date-time with an offset. |
 | `empty` | `recipient`, `content` or `dedupe_key` is an empty string, or `notifications` is an empty array. |
-| `too_long` | `recipient` is longer than 512 characters, or `dedupe_key` longer than 255 characters. |
+| `too_long` | `recipient` is longer than 4,096 characters, or `dedupe_key` longer than 255 characters; or `content` is longer than 102,400 bytes of UTF-8 for `email`, or 4,096 bytes for `push`. |
+| `invalid_e164` | `recipient` of an `sms` is not a possible E.164 number (`PHONE_VALIDATION=possible`, the default: length and structure for the country code) or not a valid one (`strict`: the national numbering plan). The number must already be in E.164 form, such as `+905551234567`; `05551234567` is not normalised but refused. |
+| `invalid_email` | `recipient` of an `email` is not a single address, or carries a display name (`Ali <ali@example.com>`): the parsed address must equal the input. At most 254 characters. |
+| `invalid_token` | `recipient` of a `push` is not a device token: 1 to 4,096 characters without control characters. |
+| `too_many_segments` | `content` of an `sms` needs more than 10 segments. The encoding is GSM-7 (160 septets in one segment, 153 per segment when concatenated; the extension characters `€`, `[`, `]`, `{`, `}`, `^`, `~`, `\|` and `\` cost two) unless one character is outside the GSM-7 alphabet (for example `ş`, `ğ`, `ı`), which puts the whole message into UCS-2 (70 UTF-16 code units, 67 when concatenated). An escape sequence or a surrogate pair is never split across segments. |
 | `invalid_character` | `recipient`, `content` or `dedupe_key` contains the character U+0000, which cannot be stored. |
 | `too_many_items` | `notifications` has more than 1,000 items. No item is checked then. |
 | `duplicate_in_batch` | `dedupe_key` of a batch item: another valid item of the same batch, earlier in the array, has the same `dedupe_key`. The first valid item stays; an invalid item never claims its key. |
@@ -95,7 +102,7 @@ Every non-2xx answer of the API is an RFC 9457 problem with `Content-Type: appli
 | `not_cancellable` | `status` | Cancel: the notification is `processing` (a worker holds it), `sent` or `failed`. A notification that is already `cancelled` is not an error: the cancel answers `200` again. |
 | `not_failed` | `status` | Redrive: the notification is not `failed`. |
 | `expires_at_required` | `expires_at` | Redrive: the stored `expires_at` has passed, so the request must give a new one. |
-| `expires_at_not_allowed` | `expires_at` | Redrive: the stored `expires_at` is still in the future and is kept, so the request must not give one. |
+| `expires_at_not_allowed` | `expires_at` | Redrive: the stored `expires_at` is still in the future and is kept, so the request must not give one; the problem document carries the stored value as `expires_at`. |
 
 A `409` without `errors` means that the notification changed state while the request ran; the request can be repeated.
 

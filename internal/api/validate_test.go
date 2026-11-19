@@ -2,6 +2,7 @@ package api
 
 import (
 	"fmt"
+	"maps"
 	"net/http"
 	"slices"
 	"strings"
@@ -37,8 +38,8 @@ func TestValidateCreate(t *testing.T) {
 	}{
 		{"valid", validBody, 0, nil},
 		{"valid without priority", `{"channel":"email","recipient":"a@example.com","content":"x"}`, 0, nil},
-		{"recipient of 512 characters", `{"channel":"push","recipient":"` + long + `","content":"x"}`, 0, nil},
-		{"recipient of 512 multi-byte characters", `{"channel":"push","recipient":"` + strings.Repeat("ş", maxRecipientChars) + `","content":"x"}`, 0, nil},
+		{"recipient of the largest size", `{"channel":"push","recipient":"` + long + `","content":"x"}`, 0, nil},
+		{"recipient of the largest size in multi-byte characters", `{"channel":"push","recipient":"` + strings.Repeat("ş", maxRecipientChars) + `","content":"x"}`, 0, nil},
 		{"dedupe_key of 1 character", `{"channel":"sms","recipient":"+905551234567","content":"x","dedupe_key":"k"}`, 0, nil},
 		{"dedupe_key of 255 characters", `{"channel":"sms","recipient":"+905551234567","content":"x","dedupe_key":"` + key255 + `"}`, 0, nil},
 		{"dedupe_key of 255 multi-byte characters", `{"channel":"sms","recipient":"+905551234567","content":"x","dedupe_key":"` + strings.Repeat("ş", maxDedupeKeyChars) + `"}`, 0, nil},
@@ -87,7 +88,7 @@ func TestValidateCreate(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			p := validateCreate([]byte(tt.body))
+			p := validateCreate([]byte(tt.body), domain.PhonePossible)
 			if tt.status == 0 {
 				if p != nil {
 					t.Fatalf("got %d %v, want valid", p.kind.status, codes(p))
@@ -113,7 +114,7 @@ func TestValidateCreate_NoValueInMessages(t *testing.T) {
 		`{"channel":"sms","recipient":"` + phone + `","content":"x","dedupe_key":"` + content + `\u0000"}`,
 	}
 	for _, b := range bodies {
-		p := validateCreate([]byte(b))
+		p := validateCreate([]byte(b), domain.PhonePossible)
 		if p == nil {
 			t.Fatalf("valid: %s", b)
 		}
@@ -122,6 +123,9 @@ func TestValidateCreate_NoValueInMessages(t *testing.T) {
 			texts = append(texts, e.Message)
 		}
 		for _, s := range texts {
+			if slices.Contains(slices.Collect(maps.Values(recipientMessages)), s) {
+				continue // a fixed text; its example number is not the submitted value
+			}
 			if strings.Contains(s, "905551234567") || strings.Contains(s, content) || strings.Contains(s, "999") {
 				t.Errorf("message leaks a value: %q", s)
 			}
@@ -130,7 +134,7 @@ func TestValidateCreate_NoValueInMessages(t *testing.T) {
 }
 
 func TestValidateCreate_Detail(t *testing.T) {
-	p := validateCreate([]byte(`{}`))
+	p := validateCreate([]byte(`{}`), domain.PhonePossible)
 	if p.detail != "3 field(s) are invalid." {
 		t.Errorf("detail = %q", p.detail)
 	}
@@ -148,7 +152,7 @@ func TestValidateCreate_Bounds(t *testing.T) {
 		b.WriteString(`,"f` + strings.Repeat("x", i) + `":0`)
 	}
 	b.WriteString(`}`)
-	p := validateCreate([]byte(b.String()))
+	p := validateCreate([]byte(b.String()), domain.PhonePossible)
 	if len(p.errors) != 200 {
 		t.Fatalf("errors = %d, want 200 before the cap", len(p.errors))
 	}
@@ -284,7 +288,7 @@ func TestValidateBatch_TopLevel(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			in, p := validateBatch([]byte(tt.body))
+			in, p := validateBatch([]byte(tt.body), domain.PhonePossible)
 			if p == nil {
 				t.Fatalf("no problem, want %d %v", tt.status, tt.codes)
 			}
@@ -331,7 +335,7 @@ func TestValidateBatch_Items(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			in, p := validateBatch([]byte(tt.body))
+			in, p := validateBatch([]byte(tt.body), domain.PhonePossible)
 			if p != nil {
 				t.Fatalf("problem %d %v", p.kind.status, codes(p))
 			}
@@ -352,7 +356,7 @@ func TestValidateBatch_Items(t *testing.T) {
 }
 
 func TestValidateBatch_ParsedItems(t *testing.T) {
-	in, p := validateBatch([]byte(batchOf(itemA, itemWithKey("k-1"))))
+	in, p := validateBatch([]byte(batchOf(itemA, itemWithKey("k-1"))), domain.PhonePossible)
 	if p != nil {
 		t.Fatalf("problem %v", codes(p))
 	}
@@ -371,14 +375,14 @@ func TestValidateBatch_ParsedItems(t *testing.T) {
 func TestValidateBatch_Size(t *testing.T) {
 	items := func(n int) string { return batchOf(slices.Repeat([]string{itemA}, n)...) }
 	t.Run("1000 items are accepted", func(t *testing.T) {
-		in, p := validateBatch([]byte(items(maxBatchItems)))
+		in, p := validateBatch([]byte(items(maxBatchItems)), domain.PhonePossible)
 		if p != nil || in.total != maxBatchItems || len(in.valid) != maxBatchItems || len(in.rejected) != 0 {
 			t.Fatalf("problem %v, total %d, valid %d, rejected %d", codes(p), in.total, len(in.valid), len(in.rejected))
 		}
 	})
 	t.Run("1001 items are too many and none is validated", func(t *testing.T) {
 		// Every item is invalid; none of their errors may appear.
-		in, p := validateBatch([]byte(batchOf(slices.Repeat([]string{`{}`}, maxBatchItems+1)...)))
+		in, p := validateBatch([]byte(batchOf(slices.Repeat([]string{`{}`}, maxBatchItems+1)...)), domain.PhonePossible)
 		if p == nil || p.kind.status != 422 || !slices.Equal(codes(p), []string{"notifications:too_many_items"}) {
 			t.Fatalf("got %v", p)
 		}
@@ -413,7 +417,7 @@ func TestValidateBatch_DuplicatesInBatch(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			in, p := validateBatch([]byte(batchOf(tt.items...)))
+			in, p := validateBatch([]byte(batchOf(tt.items...)), domain.PhonePossible)
 			if p != nil {
 				t.Fatalf("problem %v", codes(p))
 			}
@@ -430,7 +434,7 @@ func TestValidateBatch_DuplicatesInBatch(t *testing.T) {
 // A batch whose items are all rejected is not a problem of validateBatch;
 // the caller answers it.
 func TestValidateBatch_AllRejected(t *testing.T) {
-	in, p := validateBatch([]byte(batchOf(`{}`, `{}`)))
+	in, p := validateBatch([]byte(batchOf(`{}`, `{}`)), domain.PhonePossible)
 	if p != nil {
 		t.Fatalf("problem %v", codes(p))
 	}
@@ -447,7 +451,7 @@ func TestValidateBatch_ItemErrorsBounded(t *testing.T) {
 		b.WriteString(`,"f` + strings.Repeat("x", i) + `":0`)
 	}
 	b.WriteString(`}`)
-	in, p := validateBatch([]byte(batchOf(b.String())))
+	in, p := validateBatch([]byte(batchOf(b.String())), domain.PhonePossible)
 	if p != nil || len(in.rejected) != 1 {
 		t.Fatalf("problem %v, rejected %d", codes(p), len(in.rejected))
 	}
@@ -465,7 +469,7 @@ func TestValidateBatch_NoValueInMessages(t *testing.T) {
 		itemWithKey(secret), itemWithKey(secret),
 		`"`+secret+`"`,
 	)
-	in, p := validateBatch([]byte(body))
+	in, p := validateBatch([]byte(body), domain.PhonePossible)
 	if p != nil {
 		t.Fatalf("problem %v", codes(p))
 	}
@@ -485,7 +489,7 @@ func TestValidateBatch_NoValueInMessages(t *testing.T) {
 			t.Errorf("message leaks a value: %q", s)
 		}
 	}
-	_, p = validateBatch([]byte(`{"notifications":"` + secret + `","` + phone + `":1}`))
+	_, p = validateBatch([]byte(`{"notifications":"`+secret+`","`+phone+`":1}`), domain.PhonePossible)
 	for _, e := range p.errors {
 		if strings.Contains(e.Message, secret) || strings.Contains(e.Message, "905551234567") {
 			t.Errorf("message leaks a value: %q", e.Message)
