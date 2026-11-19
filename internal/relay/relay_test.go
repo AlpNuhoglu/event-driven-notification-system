@@ -115,7 +115,7 @@ func (f *fakeStore) PublishLane(ctx context.Context, lane store.Lane, limit int,
 	if err != nil {
 		return nil, err
 	}
-	row := store.DueRow{ID: uuid.New(), TraceParent: "tp-" + string(lane.Channel)}
+	row := store.DueRow{ID: uuid.New(), TraceParent: laneTraceParent(lane.Channel)}
 	published, err := publish(ctx, []store.DueRow{row})
 	if err != nil {
 		return nil, err
@@ -381,9 +381,11 @@ func TestCycle_LaneErrorIsIsolated(t *testing.T) {
 		}
 	}
 	// Each message carries its lane's channel, priority and the row's trace
-	// parent, and the configured confirm timeout is passed on.
+	// parent (a first attempt: with the global provider recording nothing,
+	// the publish span keeps the stored context), and the configured
+	// confirm timeout is passed on.
 	for _, m := range pub.msgs {
-		if m.TraceParent != "tp-"+string(m.Channel) {
+		if m.TraceParent != laneTraceParent(m.Channel) {
 			t.Errorf("message %s: trace parent %q", m.ID, m.TraceParent)
 		}
 	}

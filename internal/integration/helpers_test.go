@@ -426,6 +426,8 @@ type request struct {
 	at   time.Time
 	body map[string]json.RawMessage
 	key  string
+	// traceparent is the request's traceparent header.
+	traceparent string
 }
 
 // recorder is the provider: it records every request and answers 202, or
@@ -455,7 +457,10 @@ func (r *recorder) serve(w http.ResponseWriter, req *http.Request) {
 		body = nil
 	}
 	r.mu.Lock()
-	r.reqs = append(r.reqs, request{at: at, body: body, key: req.Header.Get("Idempotency-Key")})
+	r.reqs = append(r.reqs, request{
+		at: at, body: body, key: req.Header.Get("Idempotency-Key"),
+		traceparent: req.Header.Get("traceparent"),
+	})
 	hold := r.hold
 	status := r.status // decided on arrival, also for a held request
 	r.mu.Unlock()

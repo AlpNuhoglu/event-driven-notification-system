@@ -10,9 +10,11 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus"
+	oteltrace "go.opentelemetry.io/otel/trace"
 
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/domain"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/platform/config"
+	"github.com/AlpNuhoglu/event-driven-notification-system/internal/platform/tracing"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/provider"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/queue"
 )
@@ -52,9 +54,11 @@ func TestProviderClient_Send(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := providerClient{c}
-	res := p.Send(context.Background(), Request{
+	// The traceparent header comes from the span in the context (the
+	// worker.process span in production).
+	parent := tracing.ParseTraceParent("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
+	res := p.Send(oteltrace.ContextWithRemoteSpanContext(context.Background(), parent), Request{
 		NotificationID: id, Channel: domain.ChannelSMS, To: testRecipient, Content: testContent,
-		TraceParent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
 	})
 	if p.Name() != "mock" || res.StatusCode != http.StatusAccepted || res.Err != nil || res.MessageID != "m-1" {
 		t.Errorf("name %q response %+v", p.Name(), res)
@@ -62,7 +66,7 @@ func TestProviderClient_Send(t *testing.T) {
 	if body["to"] != testRecipient || body["channel"] != "sms" || body["content"] != testContent || len(body) != 3 {
 		t.Errorf("body has %d fields", len(body))
 	}
-	if key != id.String() || trace == "" {
+	if key != id.String() || tracing.ParseTraceParent(trace).TraceID() != parent.TraceID() {
 		t.Errorf("idempotency key %q traceparent %q", key, trace)
 	}
 }

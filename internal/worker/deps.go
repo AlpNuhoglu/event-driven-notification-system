@@ -37,6 +37,10 @@ type Message interface {
 	// delivery from an older epoch it sends nothing and returns ErrStale,
 	// like Ack.
 	Nack() error
+	// TraceParent is the delivery's traceparent header: the context of the
+	// relay's publish span, which worker.process continues. Empty when the
+	// message has none.
+	TraceParent() string
 }
 
 // Limiter reserves rate-limit slots (implemented by internal/ratelimit).
@@ -103,7 +107,6 @@ type Request struct {
 	Channel        domain.Channel
 	To             string
 	Content        string
-	TraceParent    string
 }
 
 // String returns the notification id and channel only.

@@ -844,7 +844,7 @@ func TestRecipientPrivacy(t *testing.T) {
 		h.eventually(func() bool { return len(h.prov.sent()) == 1 })
 		req := h.prov.sent()[0].req
 		if req.To != testRecipient || req.Content != testContent || req.NotificationID != m.id ||
-			req.Channel != domain.ChannelSMS || req.TraceParent == "" {
+			req.Channel != domain.ChannelSMS {
 			t.Errorf("request = %#v (To %q)", req, req.To)
 		}
 	})

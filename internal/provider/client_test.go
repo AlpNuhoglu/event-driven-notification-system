@@ -19,8 +19,10 @@ import (
 	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus"
 	promtest "github.com/prometheus/client_golang/prometheus/testutil"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/domain"
+	"github.com/AlpNuhoglu/event-driven-notification-system/internal/platform/tracing"
 )
 
 const (
@@ -123,8 +125,14 @@ func TestSend_Headers(t *testing.T) {
 			defer srv.Close()
 			c, _ := newClient(t, srv.URL, func(c *Config) { c.IdempotencyHeader = tc.header })
 			r := req(phone)
-			r.TraceParent = tc.trace
-			c.Send(context.Background(), r)
+			// The header carries the context of the span in the request's
+			// context; the global provider records nothing here, so the
+			// client span keeps its parent's context.
+			ctx := context.Background()
+			if tc.trace != "" {
+				ctx = trace.ContextWithRemoteSpanContext(ctx, tracing.ParseTraceParent(tc.trace))
+			}
+			c.Send(ctx, r)
 			name := tc.header
 			if name == "" {
 				name = "Idempotency-Key"

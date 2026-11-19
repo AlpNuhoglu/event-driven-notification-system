@@ -35,10 +35,14 @@ func (s *Store) QueuedCounts(ctx context.Context) (map[Lane]int, error) {
 	return out, nil
 }
 
-// DueRow is a notification selected by the relay for publishing.
+// DueRow is a notification selected by the relay for publishing, with what
+// the relay's trace rule needs (D13): the stored trace parent, the number of
+// attempts made so far and whether the notification is scheduled.
 type DueRow struct {
-	ID          uuid.UUID
-	TraceParent string
+	ID           uuid.UUID
+	TraceParent  string
+	AttemptCount int
+	Scheduled    bool
 }
 
 // PublishFunc publishes the rows and returns the ids that were confirmed and
@@ -81,7 +85,7 @@ func (s *Store) PublishLane(ctx context.Context, lane Lane, limit int, publish P
 		rows := make([]DueRow, len(due))
 		selected := make(map[uuid.UUID]bool, len(due))
 		for i, d := range due {
-			rows[i] = DueRow{ID: d.ID, TraceParent: d.TraceParent}
+			rows[i] = DueRow{ID: d.ID, TraceParent: d.TraceParent, AttemptCount: int(d.AttemptCount), Scheduled: d.ScheduledAt != nil}
 			selected[d.ID] = true
 		}
 

@@ -17,6 +17,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/domain"
 )
@@ -38,6 +39,9 @@ type Config struct {
 	Timeout time.Duration
 	// MaxIdleConnsPerHost is the per-channel concurrency of the worker.
 	MaxIdleConnsPerHost int
+	// TracerProvider records the provider call's span; the global provider
+	// when nil.
+	TracerProvider trace.TracerProvider
 }
 
 // Request is one delivery attempt.
@@ -50,8 +54,6 @@ type Request struct {
 	To string
 	// Content is the rendered message.
 	Content string
-	// TraceParent is the W3C traceparent, sent when not empty.
-	TraceParent string
 }
 
 // Response is what one attempt produced.
@@ -112,7 +114,7 @@ func New(cfg Config, reg prometheus.Registerer) (*Client, error) {
 	c := &Client{
 		cfg: cfg,
 		http: &http.Client{
-			Transport: tr,
+			Transport: newTracedTransport(tr, cfg.TracerProvider, cfg.Name),
 			Timeout:   cfg.Timeout,
 			CheckRedirect: func(*http.Request, []*http.Request) error {
 				return http.ErrUseLastResponse
@@ -168,8 +170,10 @@ func (c *Client) InitSeries(ch domain.Channel) {
 func (c *Client) Name() string { return c.cfg.Name }
 
 // Send performs exactly one request and reports the result. It never
-// classifies the outcome.
+// classifies the outcome. The request carries the traceparent of its client
+// span, a child of the span in ctx.
 func (c *Client) Send(ctx context.Context, r Request) Response {
+	ctx = withSpanAttrs(ctx, r)
 	body, err := json.Marshal(payload{To: r.To, Channel: string(r.Channel), Content: r.Content})
 	if err != nil {
 		return Response{Err: errors.New("provider: encode request")}
@@ -193,9 +197,6 @@ func (c *Client) Send(ctx context.Context, r Request) Response {
 	req.GetBody = nil
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set(c.cfg.IdempotencyHeader, r.NotificationID.String())
-	if r.TraceParent != "" {
-		req.Header.Set("traceparent", r.TraceParent)
-	}
 
 	start := time.Now()
 	resp, err := c.http.Do(req)

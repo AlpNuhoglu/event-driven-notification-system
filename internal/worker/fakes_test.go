@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus"
+	oteltrace "go.opentelemetry.io/otel/trace"
 
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/domain"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/store"
@@ -155,6 +156,7 @@ func (t *trace) get() []string {
 type fakeMessage struct {
 	id      uuid.UUID
 	prio    uint8
+	tp      string // the traceparent header
 	stale   atomic.Bool
 	acks    atomic.Int32
 	nacks   atomic.Int32
@@ -165,6 +167,7 @@ func (m *fakeMessage) NotificationID() uuid.UUID { return m.id }
 func (m *fakeMessage) Priority() uint8           { return m.prio }
 func (m *fakeMessage) Epoch() uint64             { return 1 }
 func (m *fakeMessage) Stale() bool               { return m.stale.Load() }
+func (m *fakeMessage) TraceParent() string       { return m.tp }
 
 func (m *fakeMessage) Ack() error {
 	if m.stale.Load() {
@@ -460,6 +463,9 @@ func (s *fakeStore) finals() int {
 type sendRecord struct {
 	req Request
 	at  time.Time
+	// span is the span context of the send's context: the worker.process
+	// span the provider call's span is a child of.
+	span oteltrace.SpanContext
 }
 
 // fakeProvider answers 202 unless respond says otherwise. latency makes a
@@ -482,7 +488,7 @@ func (p *fakeProvider) Name() string { return "fake" }
 func (p *fakeProvider) Send(ctx context.Context, req Request) Response {
 	p.tr.add("send " + req.NotificationID.String())
 	p.mu.Lock()
-	p.sends = append(p.sends, sendRecord{req: req, at: p.clk.Now()})
+	p.sends = append(p.sends, sendRecord{req: req, at: p.clk.Now(), span: oteltrace.SpanContextFromContext(ctx)})
 	p.active++
 	p.maxActive = max(p.maxActive, p.active)
 	p.mu.Unlock()
@@ -555,6 +561,8 @@ type harness struct {
 	reg  *prometheus.Registry
 	cfg  Config
 	w    *Worker
+	// tp records the worker.process spans; the global provider when nil.
+	tp oteltrace.TracerProvider
 
 	cancel context.CancelFunc
 	done   chan struct{}
@@ -613,6 +621,8 @@ func (h *harness) build() {
 		Jitter:   func() float64 { return 0.25 },
 		Logger:   slog.New(slog.NewJSONHandler(h.logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
 		Metrics:  m,
+
+		TracerProvider: h.tp,
 	})
 	if err != nil {
 		h.t.Fatal(err)
