@@ -31,7 +31,8 @@ func Classify(r ProviderResult) Outcome {
 	case s == 500 || s == 502 || s == 503 || s == 504:
 		return OutcomeRetryable
 	default:
-		// Not in the ADR's table: open issue 9 in docs/progress.md.
+		// Every status the table does not name: any other 5xx and anything
+		// outside 200-599 (ADR-0007 section 2, last response row).
 		return OutcomeRetryable
 	}
 }
