@@ -100,11 +100,7 @@ func smsArrivals(t *testing.T, rep mockprovider.Report) []time.Time {
 
 // workerLogsSince returns the worker's log lines since the given time.
 func workerLogsSince(since time.Time) ([]string, error) {
-	out, err := compose("logs", "--no-color", "--no-log-prefix", "--since", since.UTC().Format(time.RFC3339Nano), "worker")
-	if err != nil {
-		return nil, err
-	}
-	return strings.Split(out, "\n"), nil
+	return serviceLogsSince(since, "worker")
 }
 
 // The exit criterion of the breaker pull request: 401 opens the circuit and

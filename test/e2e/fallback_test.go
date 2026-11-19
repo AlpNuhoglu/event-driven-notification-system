@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -52,20 +51,8 @@ func compose(args ...string) (string, error) {
 }
 
 // fallbackActive reads limiter_fallback_active from the worker's /metrics.
-// The admin port is not published on the host (ADR-0009 §8), so the request
-// is made from inside the stack's network: by the prometheus container,
-// whose image has wget (its healthcheck uses it).
 func fallbackActive() (float64, error) {
-	out, err := compose("exec", "-T", "prometheus", "wget", "-q", "-O", "-", "http://worker:8081/metrics")
-	if err != nil {
-		return 0, err
-	}
-	for _, line := range strings.Split(out, "\n") {
-		if v, ok := strings.CutPrefix(line, fallbackMetric+" "); ok {
-			return strconv.ParseFloat(strings.TrimSpace(v), 64)
-		}
-	}
-	return 0, fmt.Errorf("%s not found in the worker's /metrics", fallbackMetric)
+	return metric("worker", fallbackMetric)
 }
 
 // sendOne creates one SMS and waits until it is sent.

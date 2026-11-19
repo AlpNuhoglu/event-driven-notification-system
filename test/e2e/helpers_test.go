@@ -81,14 +81,17 @@ func (s *stack) do(method, url string, body any) (int, http.Header, []byte, erro
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), requestTimeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, method, url, rd)
+	// The URL is the stack under test (E2E_API_URL, E2E_MOCK_URL) and the
+	// body the test's own; gosec's taint analysis (G704) flags the request
+	// once a caller passes a request built from its parameters (createN).
+	req, err := http.NewRequestWithContext(ctx, method, url, rd) //nolint:gosec // see above
 	if err != nil {
 		return 0, nil, nil, err
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	resp, err := s.client.Do(req)
+	resp, err := s.client.Do(req) //nolint:gosec // G704, see above
 	if err != nil {
 		return 0, nil, nil, err
 	}
