@@ -453,6 +453,15 @@ func TestRedrive_Refusals(t *testing.T) {
 			if !ok || r.Refusal != tc.refusal || r.Current != tc.current {
 				t.Fatalf("err %v, want %s from %s", err, tc.refusal, tc.current)
 			}
+			// D16: only the refusal of an unneeded expires_at carries the
+			// stored value.
+			wantStored := time.Time{}
+			if tc.refusal == RefusalExpiresAtNotAllowed {
+				wantStored = before.ExpiresAt
+			}
+			if !r.StoredExpiresAt.Equal(wantStored) {
+				t.Errorf("stored expires_at %v, want %v", r.StoredExpiresAt, wantStored)
+			}
 			if after := get(t, s, tc.id); !reflect.DeepEqual(before, after) {
 				t.Errorf("row changed:\n%+v\n%+v", before, after)
 			}

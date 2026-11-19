@@ -17,10 +17,26 @@ RETURNING *;
 -- Transition 9 for every cancellable notification of a batch, in one
 -- statement (ADR-0006 section 7). Same guard and same SET as
 -- CancelNotification.
-UPDATE notifications
-SET status = 'cancelled', updated_at = now(), version = version + 1
-WHERE batch_id = @batch_id AND status IN ('pending', 'retrying', 'queued')
-RETURNING *;
+--
+-- Lock order: the rows are locked in id order first (the locking clause runs
+-- above the sort) and updated afterwards. A plain UPDATE locks rows in the
+-- order its scan meets them, which nothing fixes, so two transactions that
+-- each update several rows of one batch could wait for each other; with one
+-- global order they cannot. A row that leaves the cancellable states while
+-- the lock is waited for is dropped by the re-check of the SELECT, and the
+-- UPDATE repeats the guard.
+WITH locked AS (
+  SELECT c.id
+  FROM notifications AS c
+  WHERE c.batch_id = @batch_id AND c.status IN ('pending', 'retrying', 'queued')
+  ORDER BY c.id
+  FOR UPDATE
+)
+UPDATE notifications AS n
+SET status = 'cancelled', updated_at = now(), version = n.version + 1
+FROM locked
+WHERE n.id = locked.id AND n.status IN ('pending', 'retrying', 'queued')
+RETURNING n.*;
 
 -- name: HasUnknownAttempt :one
 -- may_have_been_sent (D15): an attempt ended without a known result.
