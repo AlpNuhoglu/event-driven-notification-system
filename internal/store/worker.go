@@ -233,7 +233,7 @@ func (s *Store) CompleteFailure(ctx context.Context, id uuid.UUID, attemptNo int
 // consuming budget. In one transaction, the fenced MarkRetrying leaves
 // failures unchanged and sets due_at = now() + delay, then the attempt row
 // gets the outcome aborted. It is used when the send deadline passes before
-// the send can start (D77) and, from P3, when the circuit opens between the
+// the send can start (D77) and when the circuit opens between the
 // claim and the send (D23).
 //
 // When the fenced statement matches zero rows, the attempt row is still
