@@ -1,0 +1,12 @@
+# End-to-end override: used by make test-e2e only, on top of
+# docker-compose.yml and docker-compose.mock.yml. It shortens the durations
+# that the end-to-end scenarios wait for; the defaults of docker-compose.yml
+# and .env.example stay as they are. Durations are in milliseconds, like
+# every duration set by a test.
+services:
+  worker:
+    environment:
+      # The circuit that a provider_fatal answer (401, 403, 404, 410, 3xx)
+      # opens stays open for this long (1 minute by default). The scenario
+      # of circuit_test.go waits for several open periods.
+      BREAKER_FATAL_OPEN: 2000ms

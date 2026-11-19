@@ -35,6 +35,9 @@ import (
 const (
 	faultBackoff         = 50 * time.Millisecond
 	faultThrottleDefault = 300 * time.Millisecond
+	// faultFatalOpen is BREAKER_FATAL_OPEN: how long a provider_fatal
+	// answer keeps the circuit open.
+	faultFatalOpen = 100 * time.Millisecond
 )
 
 // millis formats a duration as a configuration value in milliseconds.
@@ -52,7 +55,7 @@ func faultVars(providerURL string) map[string]string {
 		// milliseconds like every other duration.
 		"BREAKER_OPEN_BASE":  "50ms",
 		"BREAKER_OPEN_MAX":   "200ms",
-		"BREAKER_FATAL_OPEN": "100ms",
+		"BREAKER_FATAL_OPEN": millis(faultFatalOpen),
 		"THROTTLE_MAX_DELAY": "1200ms",
 	}
 }
@@ -228,6 +231,69 @@ func checkAttempts(t *testing.T, n store.Notification, a []store.Attempt, want [
 	}
 }
 
+// checkAttemptsBesideAborted is checkAttempts for a notification that may
+// also have aborted attempts (a circuit that opened between its claim and
+// its slot): the other attempts must be want, in order, and attempt_count
+// counts them all. An aborted attempt consumes no budget; the caller checks
+// failures.
+func checkAttemptsBesideAborted(t *testing.T, n store.Notification, a []store.Attempt, want []domain.Outcome) {
+	t.Helper()
+	var sent []domain.Outcome
+	for _, x := range a {
+		if x.Outcome != domain.OutcomeAborted {
+			sent = append(sent, x.Outcome)
+		}
+	}
+	if !slices.Equal(sent, want) {
+		t.Errorf("attempts other than aborted %v, want %v (all: %v)", sent, want, outcomes(a))
+	}
+	if n.AttemptCount != len(a) {
+		t.Errorf("attempt_count %d, want %d", n.AttemptCount, len(a))
+	}
+}
+
+// arrivals returns the arrival times of the requests mockprovider received
+// on a channel, in order.
+func arrivals(t *testing.T, rep mockprovider.Report, channel string) []time.Time {
+	t.Helper()
+	out := make([]time.Time, 0, len(rep.Channels[channel].Arrivals))
+	for _, s := range rep.Channels[channel].Arrivals {
+		at, err := time.Parse(mockArrivalLayout, s)
+		if err != nil {
+			t.Fatalf("arrival %q: %v", s, err)
+		}
+		out = append(out, at)
+	}
+	return out
+}
+
+// mockArrivalLayout is the layout of mockprovider's arrival times.
+const mockArrivalLayout = "2006-01-02T15:04:05.000000Z"
+
+// gaps returns the time between consecutive arrivals.
+func gaps(at []time.Time) []time.Duration {
+	var out []time.Duration
+	for i := 1; i < len(at); i++ {
+		out = append(out, at[i].Sub(at[i-1]))
+	}
+	return out
+}
+
+// checkSeparated asserts that consecutive requests are at least d apart:
+// each request after the first is the probe of a circuit that the previous
+// one opened for d. The arrival times and the breaker's clock are the same
+// clock (the mock runs in the test process), so no tolerance is needed
+// below d.
+func checkSeparated(t *testing.T, at []time.Time, d time.Duration) {
+	t.Helper()
+	for i, g := range gaps(at) {
+		if g < d {
+			t.Errorf("requests %d and %d arrived %s apart, want at least the open period %s (gaps %v)",
+				i+1, i+2, g, d, gaps(at))
+		}
+	}
+}
+
 // checkKey asserts that the provider saw the notification's idempotency key
 // n times and no other key.
 func checkKey(t *testing.T, rep mockprovider.Report, id uuid.UUID, n int) {
@@ -308,7 +374,9 @@ func TestE2E_Fault429WithoutHintUsesThrottleDefault(t *testing.T) {
 
 // 404 more often than max_failures, then 202: provider_fatal never consumes
 // budget, so the row is sent with failures 0. (The answer of a deleted
-// webhook.site URL, assumption U2.)
+// webhook.site URL, assumption U2.) Every 404 opens the circuit for
+// BREAKER_FATAL_OPEN, so the requests the provider received are separated by
+// open periods; an aborted attempt, if one occurs, consumes no budget either.
 func TestE2E_Fault404DoesNotConsumeBudget(t *testing.T) {
 	const maxFailures = 2
 	e := newEnv(t)
@@ -319,8 +387,11 @@ func TestE2E_Fault404DoesNotConsumeBudget(t *testing.T) {
 
 	n := e.waitFinal(id)
 	checkFinal(t, n, domain.StatusSent, "none", 0)
-	checkAttempts(t, n, e.attempts(id), append(repeat(domain.OutcomeProviderFatal, 2*maxFailures), domain.OutcomeSuccess))
-	checkKey(t, m.report(), id, 2*maxFailures+1)
+	checkAttemptsBesideAborted(t, n, e.attempts(id),
+		append(repeat(domain.OutcomeProviderFatal, 2*maxFailures), domain.OutcomeSuccess))
+	rep := m.report()
+	checkKey(t, rep, id, 2*maxFailures+1)
+	checkSeparated(t, arrivals(t, rep, "sms"), faultFatalOpen)
 }
 
 // 400: failed with provider_rejected after exactly one attempt, without
@@ -414,8 +485,9 @@ func closedURL(t *testing.T) string {
 }
 
 // 302 with a Location to a second server: the redirect is not followed, so
-// the second server receives nothing, and the attempt is provider_fatal. The
-// next attempt is answered 202, so the row ends sent without budget used.
+// the second server receives nothing, and the attempt is provider_fatal. It
+// opens the circuit, so the next attempt, answered 202, is its probe, one
+// open period later; the row ends sent without budget used.
 func TestE2E_FaultRedirectNotFollowed(t *testing.T) {
 	e := newEnv(t)
 	target := newCounter(t)
@@ -433,14 +505,16 @@ func TestE2E_FaultRedirectNotFollowed(t *testing.T) {
 	n := e.waitFinal(id)
 	checkFinal(t, n, domain.StatusSent, "none", 0)
 	a := e.attempts(id)
-	checkAttempts(t, n, a, []domain.Outcome{domain.OutcomeProviderFatal, domain.OutcomeSuccess})
-	if len(a) == 2 && (a[0].HTTPStatus == nil || *a[0].HTTPStatus != 302) {
+	checkAttemptsBesideAborted(t, n, a, []domain.Outcome{domain.OutcomeProviderFatal, domain.OutcomeSuccess})
+	if len(a) > 0 && (a[0].HTTPStatus == nil || *a[0].HTTPStatus != 302) {
 		t.Errorf("http_status %v, want 302", a[0].HTTPStatus)
 	}
 	if got := target.count(); got != 0 {
 		t.Errorf("the redirect target received %d requests, want 0", got)
 	}
-	checkKey(t, m.report(), id, 2)
+	rep := m.report()
+	checkKey(t, rep, id, 2)
+	checkSeparated(t, arrivals(t, rep, "sms"), faultFatalOpen)
 }
 
 // A 2xx with a malformed body is a success: the provider accepted the

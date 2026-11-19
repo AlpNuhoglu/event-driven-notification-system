@@ -63,6 +63,7 @@ type env struct {
 	rdb     *redis.Client
 	prov    *recorder
 	log     *slog.Logger
+	logs    *lockedBuffer // what log has written, as JSON lines
 }
 
 func newEnv(t *testing.T) *env {
@@ -94,6 +95,7 @@ func newEnv(t *testing.T) *env {
 		rdb:     testutil.NewRedis(t),
 		prov:    newRecorder(t),
 		log:     slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
+		logs:    logs,
 	}
 	e.checkGoroutines()
 	return e
@@ -417,13 +419,15 @@ type request struct {
 }
 
 // recorder is the provider: it records every request and answers 202, or
-// holds each request until released while blocked.
+// the status set with answer, and holds each request until released while
+// blocked.
 type recorder struct {
 	srv *httptest.Server
 
-	mu   sync.Mutex
-	reqs []request
-	hold chan struct{} // non-nil while blocked; closed by the release
+	mu     sync.Mutex
+	reqs   []request
+	hold   chan struct{} // non-nil while blocked; closed by the release
+	status int           // the answer; 0 means 202
 }
 
 func newRecorder(t *testing.T) *recorder {
@@ -443,6 +447,7 @@ func (r *recorder) serve(w http.ResponseWriter, req *http.Request) {
 	r.mu.Lock()
 	r.reqs = append(r.reqs, request{at: at, body: body, key: req.Header.Get("Idempotency-Key")})
 	hold := r.hold
+	status := r.status // decided on arrival, also for a held request
 	r.mu.Unlock()
 	if hold != nil {
 		select {
@@ -452,6 +457,11 @@ func (r *recorder) serve(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 	w.Header().Set("Content-Type", "application/json")
+	if status != 0 && status != http.StatusAccepted {
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte("{}"))
+		return
+	}
 	w.WriteHeader(http.StatusAccepted)
 	_ = json.NewEncoder(w).Encode(map[string]string{
 		"messageId": uuid.NewString(), "status": "accepted", "timestamp": time.Now().UTC().Format(time.RFC3339),
@@ -477,6 +487,14 @@ func (r *recorder) block(t *testing.T) (release func()) {
 	}
 	t.Cleanup(release)
 	return release
+}
+
+// answer makes the recorder answer status to the requests that arrive from
+// now on.
+func (r *recorder) answer(status int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.status = status
 }
 
 func (r *recorder) requests() []request {

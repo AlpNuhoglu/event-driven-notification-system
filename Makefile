@@ -17,12 +17,15 @@ COMPOSE_MOCK = docker-compose -f docker-compose.yml -f docker-compose.mock.yml
 # when the defaults are taken (the other host ports as in .env.example).
 # The tests receive E2E_PROJECT too: the Redis fallback scenario stops and
 # starts the stack's redis service and reads the worker's /metrics through
-# docker-compose.
+# docker-compose. E2E_OVERRIDE shortens the durations the scenarios wait for
+# (the circuit's open period after a provider_fatal answer); it is used here
+# only, never by make up-mock.
 E2E_PROJECT       ?= edns-e2e
 E2E_TIMEOUT       ?= 10m
 API_PORT          ?= 8080
 MOCKPROVIDER_PORT ?= 8090
-E2E_COMPOSE        = API_PORT=$(API_PORT) MOCKPROVIDER_PORT=$(MOCKPROVIDER_PORT) $(COMPOSE_MOCK) -p $(E2E_PROJECT)
+E2E_OVERRIDE       = test/e2e/docker-compose.e2e.yml
+E2E_COMPOSE        = API_PORT=$(API_PORT) MOCKPROVIDER_PORT=$(MOCKPROVIDER_PORT) $(COMPOSE_MOCK) -f $(E2E_OVERRIDE) -p $(E2E_PROJECT)
 
 TEST_CMD = go test -race -tags=integration -count=1 ./...
 
