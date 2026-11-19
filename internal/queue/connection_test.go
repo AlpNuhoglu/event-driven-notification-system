@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"testing"
 	"time"
+
+	amqp "github.com/rabbitmq/amqp091-go"
 )
 
 // newTestConnection returns a Connection in the state after a first
@@ -100,5 +102,27 @@ func TestIsOpen(t *testing.T) {
 	never.declared, never.opens = 0, 0
 	if never.IsOpen() {
 		t.Error("IsOpen is true on a connection whose topology was never declared")
+	}
+}
+
+// A broker shutdown closes the connection with 320 CONNECTION_FORCED and every
+// channel reports it: those lines are info, because the connection's state
+// change already logs the loss at warn. A channel's own error stays at warn.
+func TestChannelCloseLevel(t *testing.T) {
+	cases := []struct {
+		name string
+		err  *amqp.Error
+		want slog.Level
+	}{
+		{"broker shutdown", &amqp.Error{Code: amqp.ConnectionForced, Reason: "CONNECTION_FORCED - broker forced connection closure with reason 'shutdown'", Server: true}, slog.LevelInfo},
+		{"unknown delivery tag", &amqp.Error{Code: amqp.PreconditionFailed, Reason: "PRECONDITION_FAILED - unknown delivery tag 7", Server: true}, slog.LevelWarn},
+		{"queue not found", &amqp.Error{Code: amqp.NotFound, Reason: "NOT_FOUND - no queue", Server: true}, slog.LevelWarn},
+		{"connection lost without a close frame", amqp.ErrClosed, slog.LevelWarn},
+		{"no error", nil, slog.LevelWarn},
+	}
+	for _, tc := range cases {
+		if got := channelCloseLevel(tc.err); got != tc.want {
+			t.Errorf("%s: level %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }

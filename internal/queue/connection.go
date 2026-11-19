@@ -4,6 +4,7 @@
 package queue
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -162,9 +163,25 @@ func (r *recovery) OnChannelClose(ch *amqp.Channel, err *amqp.Error) {
 		k.advance(true)
 	}
 	if err != nil { // the library calls this hook only with an error
-		r.c.logger.Warn("rabbitmq channel closed with an error; the library reopens it", "error", err.Error())
+		r.c.logger.Log(context.Background(), channelCloseLevel(err),
+			"rabbitmq channel closed with an error; the library reopens it", "error", err.Error())
 	}
 	r.inner.OnChannelClose(ch, err)
+}
+
+// channelCloseLevel is the level of the line for a channel that closed with
+// err. With 320 CONNECTION_FORCED the broker closes the connection on a
+// planned shutdown or at an operator's request, and every channel of the
+// connection reports that same error: the loss is the connection's, and the
+// state change logs it once at warn level (watch). Repeating it per channel
+// (one line for the relay, three for the worker) is noise on every planned
+// broker restart, so those lines are info. An error of the channel's own
+// stays at warn.
+func channelCloseLevel(err *amqp.Error) slog.Level {
+	if err != nil && err.Code == amqp.ConnectionForced {
+		return slog.LevelInfo
+	}
+	return slog.LevelWarn
 }
 
 // RecoverTopology declares the topology again on a reconnection and
