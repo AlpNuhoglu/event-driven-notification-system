@@ -3,6 +3,7 @@ module github.com/AlpNuhoglu/event-driven-notification-system
 go 1.27.0
 
 require (
+	github.com/coder/websocket v1.8.15
 	github.com/getkin/kin-openapi v0.153.0
 	github.com/golang-migrate/migrate/v4 v4.20.1
 	github.com/google/uuid v1.6.0
