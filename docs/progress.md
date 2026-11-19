@@ -12,7 +12,7 @@ The first file every session reads and the last one it updates. The phases and t
 
 **Minimum Compose version:** v2.24.0, from Docker's documentation and the release notes; tested with v5.6.1 (D45, D70). Re-derived in P1 when the application services and the one-shot `migrate` service landed. Three features decide it: `up --wait` (introduced in v2.1.1), `up --wait` with a one-shot container that other services wait for with `service_completed_successfully` (fixed in v2.7.0: "Use appropriate dependency condition for one-shot containers when running `compose up --wait`"), and the optional `.env` entry, `env_file` with `required: false` (the documentation says "As of Docker Compose version 2.24.0"); the last is the newest. The number is not run against a v2.24.0 binary; the practical check is the clean-clone rehearsal in P7. CI runs the stack with the standalone v5.6.1 binary.
 
-**Decision ledger:** v4 (`D1`–`D77`), amended after the first-hour experiments: D5 and D7 were extended and D76 was added, by the author's decision. In P1 the author added D77 (the pacer's missed-slot rule and send deadline) and amended D20 and D23 to it. Section K records the points settled during the preparation session, and D76. The ADRs are the primary design documents; the ledger is the decision record.
+**Decision ledger:** v4 (`D1`–`D78`), amended after the first-hour experiments: D5 and D7 were extended and D76 was added, by the author's decision. In P1 the author added D77 (the pacer's missed-slot rule and send deadline) and amended D20 and D23 to it. In P2 the author added D78 (the relay's idempotency-key cleanup, built in P3). Section K records the points settled during the preparation session, and D76. The ADRs are the primary design documents; the ledger is the decision record.
 
 ## Phase status
 
@@ -66,7 +66,6 @@ Questions that the ledger and the ADRs do not answer, and problems that are not 
 | # | Raised on | Issue | Blocks |
 |---|---|---|---|
 | 7 | 2026-11-19 | **A claim that fails with a database error nacks at once (for P3; not fixed in P1).** During a Postgres outage each buffered message then cycles between the broker and the worker: every cycle uses a rate-limit slot and logs an error. **Proposed fix (author):** retry the claim in place with back-off while holding the delivery and the concurrency slot, and nack once on shutdown. **Also for P3:** check on RabbitMQ 4.4.1 that a nack with requeue does not count toward the delivery limit (nack one message 25 times; it must not be dead-lettered), which is why requeues use `basic.nack` and not `basic.reject` (ADR-0001); and add "the poison queues stay empty" to the Postgres-restart chaos scenario (ADR-0010, P6). | The worker's claim path in P3 |
-| 8 | 2026-11-19 | **The idempotency-key cleanup has no phase.** ADR-0005 lists it among the relay's jobs and ADR-0006 §11 says it only keeps the table small (expired keys are taken over on write, so correctness does not depend on it). No phase of the plan names it, and `.env.example` has no cadence for it. It is not built in P2; until it exists, `idempotency_keys` grows by one row per key used. **Proposed:** add it to P3 next to the expiry pass (a bounded `DELETE … WHERE expires_at <= now()` on the relay's ticker, with its own cadence and batch-size variables). | Nothing in P2 |
 
 ## Session log
 

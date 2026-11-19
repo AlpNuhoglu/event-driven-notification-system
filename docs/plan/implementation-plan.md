@@ -255,7 +255,7 @@ The README gains its API examples (day 2 of D57).
 
 **Goal.** Failures are classified by scope, retried with the right budget, and every recovery path of the design exists and is tested.
 
-**Implements.** D2 (redeclaration on reconnection), D5, D6, D8 (resubscribe safety net), D12, D14, D17 (full), D18, D20, D23 (abort path), D25, D26, D27, D30, D31, D32, D64, D68, D76 (connection epoch).
+**Implements.** D2 (redeclaration on reconnection), D5, D6, D8 (resubscribe safety net), D12, D14, D17 (full), D18, D20, D23 (abort path), D25, D26, D27, D30, D31, D32, D64, D68, D76 (connection epoch), D78 (idempotency-key cleanup).
 
 | ADR | Sections |
 |---|---|
@@ -265,7 +265,7 @@ The README gains its API examples (day 2 of D57).
 | [0005](../adr/0005-service-topology-and-status-events.md) | Connections to RabbitMQ (recovery budget, exit when recovery gives up); worker internals: the connection epoch |
 | [0007](../adr/0007-retry-policy-and-circuit-breaker.md) | §1–4, §7–10 |
 
-**Scope.** The full classification table with `unreachable` and `aborted`; `decideRetry` in full with the priority profiles and TTLs; `Retry-After` and consecutive-`429` handling; the in-process circuit breaker; the Redis-down fallback limiter; the expiry pass; reconciliation on (re)connection with the deferred trigger; the `requeue-stale` relay subcommand (`--older-than`, 5 minutes by default; `--all`); transition 12; the 60-second final-write retry; the lease sweeper in full; resubscribe on a server-side consumer cancellation; `mockprovider` fault injection (error rates, `429`, connection close, timeouts, redirects, malformed bodies, per channel).
+**Scope.** The full classification table with `unreachable` and `aborted`; `decideRetry` in full with the priority profiles and TTLs; `Retry-After` and consecutive-`429` handling; the in-process circuit breaker; the Redis-down fallback limiter; the expiry pass; the idempotency-key cleanup next to it (D78: batches of 1,000 ordered by `expires_at` with `FOR UPDATE SKIP LOCKED`, every `IDEMPOTENCY_CLEANUP_INTERVAL`, repeated at once while a batch comes back full); reconciliation on (re)connection with the deferred trigger; the `requeue-stale` relay subcommand (`--older-than`, 5 minutes by default; `--all`); transition 12; the 60-second final-write retry; the lease sweeper in full; resubscribe on a server-side consumer cancellation; `mockprovider` fault injection (error rates, `429`, connection close, timeouts, redirects, malformed bodies, per channel).
 
 **Files and packages.** `internal/domain` (classification, `decideRetry`), `internal/breaker`, `internal/ratelimit` (fallback), `internal/relay` (expiry, reconciliation, lease sweeper), `internal/worker`, `internal/queue`, `internal/store`, `cmd/relay` (`requeue-stale`), `cmd/mockprovider`.
 
@@ -283,6 +283,7 @@ The README gains its API examples (day 2 of D57).
 | Final write | Retried while Postgres is unavailable; transition 12 tried when transition 4 affects zero rows |
 | Lease sweeper | `TestLeaseSweeper_VersusFinalWrite`, `TestLeaseSweeper_TwoSweepersSkipLocked`; `finished_at` set |
 | Expiry | `TestExpiry_VersusClaim`; bounded batches; an immediate next batch when one comes back full |
+| Idempotency-key cleanup (D78) | An expired key is deleted; a live key is kept; a concurrent take-over of an expired key succeeds whether the delete runs before or after it |
 | Fallback limiter | Sending continues with Redis stopped; `limiter_fallback_active` is set |
 | Throttling | `429` with and without `Retry-After`; doubling up to 2 minutes; `failures` unchanged |
 | Consumer | A server-side cancellation is followed by a resubscribe |

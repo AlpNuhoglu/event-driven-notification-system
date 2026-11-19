@@ -65,18 +65,21 @@ type API struct {
 
 // Relay configures the outbox relay and its housekeeping passes.
 type Relay struct {
-	TickInterval      time.Duration
-	BatchSize         int
-	ConfirmTimeout    time.Duration
-	LaneHWMHigh       int
-	LaneHWMNormal     int
-	LaneHWMLow        int
-	ExpiryInterval    time.Duration
-	ExpiryBatchSize   int
-	LeaseSweepEvery   time.Duration
-	LeaseSweepBatch   int
-	ReconcileMinEvery time.Duration
-	BacklogGaugeEvery time.Duration
+	TickInterval    time.Duration
+	BatchSize       int
+	ConfirmTimeout  time.Duration
+	LaneHWMHigh     int
+	LaneHWMNormal   int
+	LaneHWMLow      int
+	ExpiryInterval  time.Duration
+	ExpiryBatchSize int
+	// IdempotencyCleanupEvery is the cadence of the idempotency-key cleanup
+	// (D78; the pass itself arrives in P3).
+	IdempotencyCleanupEvery time.Duration
+	LeaseSweepEvery         time.Duration
+	LeaseSweepBatch         int
+	ReconcileMinEvery       time.Duration
+	BacklogGaugeEvery       time.Duration
 }
 
 // Worker configures the delivery workers.
@@ -335,18 +338,19 @@ func (l *loader) load() Config {
 		SummaryBacklogTTL:     l.dur("SUMMARY_BACKLOG_CACHE_TTL", 10*time.Second),
 	}
 	c.Relay = Relay{
-		TickInterval:      l.dur("RELAY_TICK_INTERVAL", 100*time.Millisecond),
-		BatchSize:         l.intv("RELAY_BATCH_SIZE", 200),
-		ConfirmTimeout:    l.dur("RELAY_CONFIRM_TIMEOUT", 5*time.Second),
-		LaneHWMHigh:       l.intv("LANE_HWM_HIGH", 500),
-		LaneHWMNormal:     l.intv("LANE_HWM_NORMAL", 1000),
-		LaneHWMLow:        l.intv("LANE_HWM_LOW", 500),
-		ExpiryInterval:    l.dur("EXPIRY_INTERVAL", time.Second),
-		ExpiryBatchSize:   l.intv("EXPIRY_BATCH_SIZE", 1000),
-		LeaseSweepEvery:   l.dur("LEASE_SWEEP_INTERVAL", 5*time.Second),
-		LeaseSweepBatch:   l.intv("LEASE_SWEEP_BATCH_SIZE", 500),
-		ReconcileMinEvery: l.dur("RECONCILE_MIN_INTERVAL", 60*time.Second),
-		BacklogGaugeEvery: l.dur("BACKLOG_GAUGE_INTERVAL", 10*time.Second),
+		TickInterval:            l.dur("RELAY_TICK_INTERVAL", 100*time.Millisecond),
+		BatchSize:               l.intv("RELAY_BATCH_SIZE", 200),
+		ConfirmTimeout:          l.dur("RELAY_CONFIRM_TIMEOUT", 5*time.Second),
+		LaneHWMHigh:             l.intv("LANE_HWM_HIGH", 500),
+		LaneHWMNormal:           l.intv("LANE_HWM_NORMAL", 1000),
+		LaneHWMLow:              l.intv("LANE_HWM_LOW", 500),
+		ExpiryInterval:          l.dur("EXPIRY_INTERVAL", time.Second),
+		ExpiryBatchSize:         l.intv("EXPIRY_BATCH_SIZE", 1000),
+		IdempotencyCleanupEvery: l.dur("IDEMPOTENCY_CLEANUP_INTERVAL", time.Minute),
+		LeaseSweepEvery:         l.dur("LEASE_SWEEP_INTERVAL", 5*time.Second),
+		LeaseSweepBatch:         l.intv("LEASE_SWEEP_BATCH_SIZE", 500),
+		ReconcileMinEvery:       l.dur("RECONCILE_MIN_INTERVAL", 60*time.Second),
+		BacklogGaugeEvery:       l.dur("BACKLOG_GAUGE_INTERVAL", 10*time.Second),
 	}
 	c.Worker = Worker{
 		Channels:            l.channels("WORKER_CHANNELS", []string{"sms", "email", "push"}),
