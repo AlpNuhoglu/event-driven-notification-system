@@ -94,8 +94,9 @@ func TestCompleteFailure_Fail(t *testing.T) {
 		}
 		after := get(t, s, n.ID)
 		checkTransition(t, before, after, ev, domain.StatusFailed)
-		if after.FailureReason == nil || *after.FailureReason != domain.ReasonMaxFailures ||
-			after.Failures != 1 || after.LeaseExpiresAt != nil {
+		// A permanent rejection is not a budget failure: failures stays 0.
+		if after.FailureReason == nil || *after.FailureReason != domain.ReasonProviderRejected ||
+			after.Failures != 0 || after.LeaseExpiresAt != nil {
 			t.Errorf("row = %+v", after)
 		}
 		if a := attempts(t, s, n.ID); a[0].Outcome != domain.OutcomePermanent || a[0].FinishedAt == nil {

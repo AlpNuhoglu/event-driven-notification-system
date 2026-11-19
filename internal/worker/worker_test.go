@@ -445,8 +445,30 @@ func TestOutcomes(t *testing.T) {
 			nil, false, domain.OutcomeRetryable, 500, nil, false, 2,
 		},
 		{
-			"no response", func(Request) Response { return Response{Err: context.DeadlineExceeded} },
+			"no response, request written", func(Request) Response {
+				return Response{Err: context.DeadlineExceeded, WroteRequest: true}
+			},
 			nil, false, domain.OutcomeUnknown, 0, nil, true, 2,
+		},
+		{
+			"no response, request not written", func(Request) Response { return Response{Err: context.DeadlineExceeded} },
+			nil, false, domain.OutcomeUnreachable, 0, nil, true, 2,
+		},
+		{
+			"404", func(Request) Response { return Response{StatusCode: 404, WroteRequest: true} },
+			nil, false, domain.OutcomeProviderFatal, 404, nil, false, 2,
+		},
+		{
+			"400", func(Request) Response { return Response{StatusCode: 400, WroteRequest: true} },
+			nil, false, domain.OutcomePermanent, 400, nil, false, 2,
+		},
+		{
+			"redirect", func(Request) Response { return Response{StatusCode: 302, WroteRequest: true} },
+			nil, false, domain.OutcomeProviderFatal, 302, nil, false, 2,
+		},
+		{
+			"429", func(Request) Response { return Response{StatusCode: 429, WroteRequest: true} },
+			nil, false, domain.OutcomeThrottled, 429, nil, false, 2,
 		},
 		{
 			"panic in Send", func(Request) Response { panic("provider client bug") },
@@ -502,6 +524,61 @@ func TestOutcomes(t *testing.T) {
 			}
 			if tt.finalErr != nil && strings.Contains(h.logs.String(), `"level":"ERROR"`) {
 				t.Errorf("a final write that was not applied logged an error:\n%s", h.logs)
+			}
+		})
+	}
+}
+
+// The Retry-After header becomes the retry hint only on 429 and 503, and
+// only when it is usable; an HTTP-date is measured on the worker's clock.
+func TestRetryAfterHint(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		header func(now time.Time) string
+		want   time.Duration
+	}{
+		{"429 delta-seconds", 429, func(time.Time) string { return "7" }, 7 * time.Second},
+		{"503 delta-seconds", 503, func(time.Time) string { return "120" }, 2 * time.Minute},
+		{"429 HTTP-date", 429, func(now time.Time) string {
+			return now.Add(90 * time.Second).UTC().Format("Mon, 02 Jan 2006 15:04:05 GMT")
+		}, 90 * time.Second},
+		{"429 without the header", 429, func(time.Time) string { return "" }, 0},
+		{"429 zero", 429, func(time.Time) string { return "0" }, 0},
+		{"429 date in the past", 429, func(now time.Time) string {
+			return now.Add(-time.Minute).UTC().Format("Mon, 02 Jan 2006 15:04:05 GMT")
+		}, 0},
+		{"429 garbage", 429, func(time.Time) string { return "soon" }, 0},
+		{"500 ignores the header", 500, func(time.Time) string { return "7" }, 0},
+		{"502 ignores the header", 502, func(time.Time) string { return "7" }, 0},
+		{"301 ignores the header", 301, func(time.Time) string { return "7" }, 0},
+		{"404 ignores the header", 404, func(time.Time) string { return "7" }, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newHarness(t)
+			// Whole seconds, so that an HTTP-date round-trips exactly.
+			now := h.clk.Now().Truncate(time.Second)
+			h.prov.respond = func(Request) Response {
+				return Response{StatusCode: tt.status, WroteRequest: true, RetryAfter: tt.header(now)}
+			}
+			h.push(prioNormal)
+			h.start()
+			h.eventually(func() bool { return h.st.finals() == 1 })
+			h.stop()
+
+			_, _, failures, _ := h.st.snapshot()
+			if len(failures) != 1 {
+				t.Fatalf("%d failures recorded, want 1", len(failures))
+			}
+			got := failures[0].result.RetryAfter
+			// The fake clock may have advanced past `now` by the slot wait,
+			// which shortens a date-based hint by less than a second.
+			if tt.want == 0 && got != 0 {
+				t.Errorf("retry hint = %s, want none", got)
+			}
+			if tt.want != 0 && (got > tt.want || got <= tt.want-time.Second) {
+				t.Errorf("retry hint = %s, want in (%s, %s]", got, tt.want-time.Second, tt.want)
 			}
 		})
 	}

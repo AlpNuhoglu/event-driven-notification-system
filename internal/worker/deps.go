@@ -94,6 +94,13 @@ type Response struct {
 	MessageID string
 	// Latency is the duration of the request.
 	Latency time.Duration
+	// WroteRequest reports that the request was written completely and
+	// without error. Without a response it decides between unreachable
+	// (nothing was sent) and unknown (ADR-0007 section 2).
+	WroteRequest bool
+	// RetryAfter is the response's Retry-After header, verbatim; empty when
+	// there is none.
+	RetryAfter string
 }
 
 // Store holds the transitions the worker performs (implemented by
