@@ -84,7 +84,7 @@ func TestValidateCreate_TemplateMember(t *testing.T) {
 				t.Fatalf("codes %v, want %v", got, tt.codes)
 			}
 			// An item of a batch is checked the same way.
-			in, bp := validateBatch([]byte(batchOf(tt.body)), domain.PhonePossible)
+			in, bp := validateBatch([]byte(batchOf(tt.body)), testRules(domain.PhonePossible))
 			if bp != nil {
 				t.Fatalf("batch: %v", codes(bp))
 			}
@@ -112,7 +112,7 @@ func prefixed(prefix string, list []string) []string {
 // sent: a number is not turned into a float64.
 func TestValidateCreate_TemplateParsed(t *testing.T) {
 	body := tplItem(`{"name":"otp","version":7,"variables":{"code":482913,"long":12345678901234567890123,"s":"x"}}`)
-	req, p := validateCreate([]byte(body), domain.PhonePossible)
+	req, p := validateCreate([]byte(body), testRules(domain.PhonePossible))
 	if p != nil {
 		t.Fatalf("problem %v", codes(p))
 	}
@@ -231,7 +231,7 @@ func newFakeTemplates() *fakeTemplates {
 // batchFrom validates a batch body that must pass its top level.
 func batchFrom(t *testing.T, items ...string) batchInput {
 	t.Helper()
-	in, p := validateBatch([]byte(batchOf(items...)), domain.PhonePossible)
+	in, p := validateBatch([]byte(batchOf(items...)), testRules(domain.PhonePossible))
 	if p != nil {
 		t.Fatalf("problem %v", codes(p))
 	}
@@ -367,7 +367,7 @@ func TestRenderForCreate_Errors(t *testing.T) {
 		{"renders over the SMS limit", domain.ChannelSMS, `{"name":"long","variables":{"v":"x"}}`, []string{"template:too_many_segments"}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			req, p := validateCreate([]byte(tplItem(tt.use)), domain.PhonePossible)
+			req, p := validateCreate([]byte(tplItem(tt.use)), testRules(domain.PhonePossible))
 			if p != nil {
 				t.Fatalf("problem %v", codes(p))
 			}
@@ -389,7 +389,7 @@ func TestRenderForCreate_Errors(t *testing.T) {
 	}
 
 	// A pinned old version renders the old body.
-	req, _ := validateCreate([]byte(tplItem(`{"name":"otp","version":1,"variables":{"code":7}}`)), domain.PhonePossible)
+	req, _ := validateCreate([]byte(tplItem(`{"name":"otp","version":1,"variables":{"code":7}}`)), testRules(domain.PhonePossible))
 	r, errs, p := newTemplateCache(f, cacheTimeout).renderForCreate(context.Background(), domain.ChannelSMS, req.template)
 	if p != nil || len(errs) > 0 || r.content != "Old 7" || r.version != 1 {
 		t.Errorf("pinned: %+v %v %v", r, errs, p)

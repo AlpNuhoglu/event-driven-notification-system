@@ -57,6 +57,16 @@ const DefaultIdempotencyKeyTTL = 24 * time.Hour
 // EXPIRES_AT_MIN_LEAD).
 const DefaultExpiresAtMinLead = 30 * time.Second
 
+// DefaultScheduledAtTolerance is how far in the past a scheduled_at may be
+// and still mean "now" when Options.ScheduledAtTolerance is zero (the
+// default of SCHEDULE_PAST_TOLERANCE).
+const DefaultScheduledAtTolerance = 30 * time.Second
+
+// DefaultScheduledAtMaxAhead is how far ahead a notification may be
+// scheduled when Options.ScheduledAtMaxAhead is zero (the default of
+// SCHEDULE_MAX_HORIZON: 30 days).
+const DefaultScheduledAtMaxAhead = 720 * time.Hour
+
 // Options configures NewHandler.
 type Options struct {
 	Repository Repository
@@ -74,8 +84,19 @@ type Options struct {
 	// nil.
 	Events events.Publisher
 	// ExpiresAtMinLead is how far ahead a new expires_at must be
-	// (EXPIRES_AT_MIN_LEAD); DefaultExpiresAtMinLead when zero.
+	// (EXPIRES_AT_MIN_LEAD): from now for a redrive, from the due time for a
+	// create. DefaultExpiresAtMinLead when zero.
 	ExpiresAtMinLead time.Duration
+	// ScheduledAtTolerance is how far in the past a scheduled_at may be and
+	// still mean "now" (SCHEDULE_PAST_TOLERANCE); DefaultScheduledAtTolerance
+	// when zero.
+	ScheduledAtTolerance time.Duration
+	// ScheduledAtMaxAhead is how far ahead a notification may be scheduled
+	// (SCHEDULE_MAX_HORIZON); DefaultScheduledAtMaxAhead when zero.
+	ScheduledAtMaxAhead time.Duration
+	// Now is the clock that judges scheduled_at and expires_at of a create,
+	// read once per request; time.Now when nil.
+	Now func() time.Time
 	// IdempotencyKeyTTL is how long an Idempotency-Key stays live
 	// (IDEMPOTENCY_KEY_TTL); DefaultIdempotencyKeyTTL when zero.
 	IdempotencyKeyTTL time.Duration
@@ -95,6 +116,15 @@ func NewHandler(o Options) http.Handler {
 	if o.ExpiresAtMinLead <= 0 {
 		o.ExpiresAtMinLead = DefaultExpiresAtMinLead
 	}
+	if o.ScheduledAtTolerance <= 0 {
+		o.ScheduledAtTolerance = DefaultScheduledAtTolerance
+	}
+	if o.ScheduledAtMaxAhead <= 0 {
+		o.ScheduledAtMaxAhead = DefaultScheduledAtMaxAhead
+	}
+	if o.Now == nil {
+		o.Now = time.Now
+	}
 	if o.Events == nil {
 		o.Events = events.Nop{}
 	}
@@ -109,7 +139,13 @@ func NewHandler(o Options) http.Handler {
 		events:    o.Events,
 		minLead:   o.ExpiresAtMinLead,
 		phone:     o.PhoneValidation,
-		spec:      spec.OpenAPI(),
+		schedule: scheduleRules{
+			tolerance: o.ScheduledAtTolerance,
+			maxAhead:  o.ScheduledAtMaxAhead,
+			minLead:   o.ExpiresAtMinLead,
+		},
+		now:  o.Now,
+		spec: spec.OpenAPI(),
 	}
 	strict := apigen.NewStrictHandlerWithOptions(h, nil, apigen.StrictHTTPServerOptions{
 		RequestErrorHandlerFunc:  requestError,
@@ -150,8 +186,16 @@ func (g createGuard) CreateNotification(w http.ResponseWriter, r *http.Request, 
 	if !ok {
 		return
 	}
-	req, p := validateCreate(body, g.h.phone)
+	req, p := validateCreate(body, g.h.createRules())
 	if p != nil {
+		if rep, rp := g.replayForClockErrors(r, body, p); rp != nil {
+			p = rp
+		} else if rep != nil {
+			if err := rep.VisitCreateNotificationResponse(w); err != nil {
+				responseError(w, r, err)
+			}
+			return
+		}
 		writeProblem(w, r, p)
 		return
 	}
@@ -171,6 +215,30 @@ func (g createGuard) CreateNotification(w http.ResponseWriter, r *http.Request, 
 	}
 }
 
+// replayForClockErrors handles a single create that failed validation only
+// by the rules judged against the clock (clockDependentOnly) and carries an
+// Idempotency-Key: it may be the retry of a request that was accepted when
+// it was first sent, and a retry gets the stored answer (ADR-0006 section
+// 11), not a 422 that depends on when it arrived. It returns the response to
+// replay when the key is live for the same request. Otherwise the validation
+// problem stands and both results are nil, also for a key that is live for
+// another request; only a database failure is returned as a problem, because
+// the answer is then not known.
+func (g createGuard) replayForClockErrors(r *http.Request, body []byte, validation *problem) (*replayedResponse, *problem) {
+	if validation.kind != kindValidation || !clockDependentOnly(validation.errors) {
+		return nil, nil
+	}
+	key, p := g.requestKey(r, body)
+	if p != nil || key == nil {
+		return nil, nil
+	}
+	rep, p := g.h.earlyReplay(r.Context(), key, "id", "/v1/notifications/", stateFrom(r.Context()).correlationID)
+	if p != nil && p.kind == kindIdempotencyKeyReused {
+		return nil, nil
+	}
+	return rep, p
+}
+
 // CreateNotificationBatch answers a batch request itself: the strict
 // handler's decoder would refuse a body with an invalid item, and the items
 // have already been parsed by validateBatch. It calls the strict handler's
@@ -181,7 +249,7 @@ func (g createGuard) CreateNotificationBatch(w http.ResponseWriter, r *http.Requ
 	if !ok {
 		return
 	}
-	in, p := validateBatch(body, g.h.phone)
+	in, p := validateBatch(body, g.h.createRules())
 	if p != nil {
 		writeProblem(w, r, p)
 		return

@@ -11,7 +11,7 @@ Every non-2xx answer of the API is an RFC 9457 problem with `Content-Type: appli
   "correlation_id": "0193f0d2-7c1e-7b3a-9d41-5be0a1c2e3f4",
   "errors": [
     { "field": "recipient", "code": "empty", "message": "recipient must not be empty" },
-    { "field": "scheduled_at", "code": "unknown_field", "message": "this field is not defined by the API" }
+    { "field": "subject", "code": "unknown_field", "message": "this field is not defined by the API" }
   ]
 }
 ```
@@ -64,15 +64,15 @@ Every non-2xx answer of the API is an RFC 9457 problem with `Content-Type: appli
 
 ## `validation`
 
-**422 Unprocessable Content.** The body is a JSON object, but fields are invalid. Every invalid field is reported in one answer: fields of the request in the order `channel`, `recipient`, `content`, `template`, `priority`, `dedupe_key`, then unknown fields in the order they appear.
+**422 Unprocessable Content.** The body is a JSON object, but fields are invalid. Every invalid field is reported in one answer: fields of the request in the order `channel`, `recipient`, `content`, `template`, `priority`, `scheduled_at`, `expires_at`, `dedupe_key`, then unknown fields in the order they appear.
 
 `recipient` and `content` are checked in two steps. First the rules every channel shares (type, empty, length, U+0000); then, only when that step passed and `channel` is valid, the rules of the channel. A field therefore has at most one error, and a missing or invalid `channel` gives no channel-specific error.
 
 | Code | When |
 |---|---|
 | `required` | A required field (`channel`, `recipient`; `notifications` in a batch; `name`, `channel`, `body` of a template; `template.name`) is missing. A notification with neither `content` nor `template` has this error on `content` ("content or template is required"); `"template": null` counts as absent. |
-| `invalid_type` | The field has the wrong JSON type; `null` is a wrong type for every field except `template`, where it means absent. `template` and `template.variables` must be objects and `template.version` an integer (`"3"`, `1.5` and `1e2` are not); a template variable (`template.variables.<name>`, `variables.<name>` in a preview) must be a JSON string, number or boolean. `variables` and `optional_variables` of a template must be arrays of strings; the error is on the list's field whatever element is wrong. In a batch, `notifications` must be an array, and an item that is not a JSON object is rejected with this code and an empty `field`. |
-| `invalid_value` | The value is not one of the allowed values (`channel`: `sms`, `email`, `push`; `priority`: `high`, `normal`, `low`), or `name` of a template (or `template.name`) does not match `^[a-z0-9][a-z0-9_-]{0,63}$`, or `template.version` (`version` of a preview) is not from 1 to 2,147,483,647, or `expires_at` of a redrive is not an RFC 3339 date-time with an offset. |
+| `invalid_type` | The field has the wrong JSON type; `null` is a wrong type for every field except `template` and `scheduled_at`, where it means absent (`"expires_at": null` is this error). `template` and `template.variables` must be objects and `template.version` an integer (`"3"`, `1.5` and `1e2` are not); a template variable (`template.variables.<name>`, `variables.<name>` in a preview) must be a JSON string, number or boolean. `variables` and `optional_variables` of a template must be arrays of strings; the error is on the list's field whatever element is wrong. In a batch, `notifications` must be an array, and an item that is not a JSON object is rejected with this code and an empty `field`. |
+| `invalid_value` | The value is not one of the allowed values (`channel`: `sms`, `email`, `push`; `priority`: `high`, `normal`, `low`), or `name` of a template (or `template.name`) does not match `^[a-z0-9][a-z0-9_-]{0,63}$`, or `template.version` (`version` of a preview) is not from 1 to 2,147,483,647, or `scheduled_at` or `expires_at` of a create, or `expires_at` of a redrive, is not an RFC 3339 date-time with an explicit offset (`2026-11-19T10:00:00Z`, `2026-11-19T13:00:00+03:00`; a time without an offset, a date alone or `+0300` is refused). |
 | `empty` | `recipient`, `content`, `dedupe_key` or `body` of a template is an empty string, or `notifications` is an empty array, or a template renders to an empty text (on `template`; on `content` in a preview). |
 | `too_long` | `recipient` is longer than 4,096 characters, or `dedupe_key` longer than 255 characters; or `body` of a template is longer than 65,536 bytes (or renders to more than 524,288 bytes); or `content` is longer than 102,400 bytes of UTF-8 for `email`, or 4,096 bytes for `push`; or the text a template renders is over that limit (on `template`; on `content` in a preview); or a template variable is longer than 1,024 characters once converted to a string. |
 | `invalid_e164` | `recipient` of an `sms` is not a possible E.164 number (`PHONE_VALIDATION=possible`, the default: length and structure for the country code) or not a valid one (`strict`: the national numbering plan). The number must already be in E.164 form, such as `+905551234567`; `05551234567` is not normalised but refused. |
@@ -82,7 +82,9 @@ Every non-2xx answer of the API is an RFC 9457 problem with `Content-Type: appli
 | `invalid_character` | `recipient`, `content`, `dedupe_key`, `body` of a template or a template variable contains the character U+0000, which cannot be stored. |
 | `too_many_items` | `notifications` has more than 1,000 items. No item is checked then. |
 | `duplicate_in_batch` | `dedupe_key` of a batch item: another valid item of the same batch, earlier in the array, has the same `dedupe_key`. The first valid item stays; an invalid item never claims its key, also one whose template cannot be rendered. |
-| `too_soon` | `expires_at` of a redrive is closer than 30 seconds (`EXPIRES_AT_MIN_LEAD`). |
+| `in_the_past` | `scheduled_at` is more than 30 seconds (`SCHEDULE_PAST_TOLERANCE`) in the past. A value up to 30 seconds in the past is not an error: it means "now", the notification is due at once, and its `scheduled_at` is stored and answered as `null`. The API's clock decides, read once per request, so every item of a batch is judged at the same instant. |
+| `too_far_ahead` | `scheduled_at` is more than 30 days (`SCHEDULE_MAX_HORIZON`) ahead. |
+| `too_soon` | `expires_at` of a create is earlier than the due time plus 30 seconds (`EXPIRES_AT_MIN_LEAD`): the due time is `scheduled_at` when it is in the future, otherwise now. Exactly 30 seconds is accepted. When `scheduled_at` is itself invalid, `expires_at` is checked only for its type and format. For a redrive: the new `expires_at` is closer than 30 seconds to now. |
 | `unused_variable` | `variables` of a template: a declared variable (`variables` or `optional_variables`) is not used by the body. The message names the variable. |
 | `invalid_variable_name` | `variables` of a template: a variable name does not match `^[A-Za-z_][A-Za-z0-9_]{0,63}$` (ASCII only), in the declaration or in the body. |
 | `duplicate_variable` | `variables` of a template: a name is declared twice, in one list or across both. |
@@ -101,7 +103,7 @@ Every non-2xx answer of the API is an RFC 9457 problem with `Content-Type: appli
 | `template_channel_mismatch` | `template.name`: the template's channel is not the notification's `channel`. |
 | `missing_variable` | `template.variables.<name>` (`variables.<name>` in a preview): a required variable of the template is not given. |
 | `unknown_variable` | `template.variables.<name>` (`variables.<name>` in a preview): the template does not declare this variable, for example a misspelt name. The name is cut to 64 characters. |
-| `unknown_field` | The API does not define this field. It is rejected rather than ignored, so a field of a later version (for example `scheduled_at`) never leads to a behaviour the client did not ask for. |
+| `unknown_field` | The API does not define this field. It is rejected rather than ignored, so a field of a later version, or a misspelt one (for example `schedule_at`), never leads to a behaviour the client did not ask for. |
 | `duplicate_field` | The field appears more than once in the object; for a key repeated inside `template.variables`, the field is `template.variables.<name>`. |
 
 ### Template answers

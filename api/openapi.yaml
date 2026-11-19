@@ -55,6 +55,16 @@ paths:
         `template.version`, `template`). A retry with the same
         `Idempotency-Key` and the same body returns the stored answer even if
         the template was changed or deactivated since.
+
+        A notification can be scheduled for later delivery with
+        `scheduled_at`: it stays `pending` until that time and is delivered
+        then, not before (to about 100 ms). A `scheduled_at` up to 30
+        seconds in the past means "now": it is stored and answered as
+        `null`. Older values (`in_the_past`) and values more than 30 days
+        ahead (`too_far_ahead`) are refused. An explicit `expires_at` must be
+        at least 30 seconds after the due time (`too_soon`). A scheduled
+        notification can be cancelled until a worker takes it; it cannot be
+        rescheduled.
       parameters:
         - $ref: "#/components/parameters/XRequestID"
         - $ref: "#/components/parameters/TraceParent"
@@ -995,6 +1005,31 @@ components:
             template's channel must be the notification's.
         priority:
           $ref: "#/components/schemas/Priority"
+        scheduled_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: |
+            Optional: deliver the notification at this time, not before. RFC
+            3339 with an explicit offset (`Z` or `+03:00`); stored and
+            answered in UTC to the microsecond. `null` counts as absent. A
+            value up to 30 seconds in the past (`SCHEDULE_PAST_TOLERANCE`)
+            means "now": the notification is due at once and its
+            `scheduled_at` is stored and answered as `null`. An older value is
+            refused (`in_the_past`), and so is one more than 30 days ahead
+            (`SCHEDULE_MAX_HORIZON`, `too_far_ahead`). The API's clock
+            judges the value; every item of a batch is judged at the same
+            instant.
+        expires_at:
+          type: string
+          format: date-time
+          description: |
+            Optional: the notification fails as `expired` if it is not sent by
+            this time. RFC 3339 with an explicit offset; `null` is not a
+            value. It must be at least 30 seconds (`EXPIRES_AT_MIN_LEAD`)
+            after the due time: the `scheduled_at` when it is in the future,
+            otherwise now (`too_soon`). Without it, the notification expires
+            at the due time plus its priority's TTL.
         dedupe_key:
           type: string
           minLength: 1
@@ -1173,6 +1208,9 @@ components:
           type: string
           format: date-time
           nullable: true
+          description: |
+            The time the notification is scheduled for; `null` when it was due
+            at creation (no `scheduled_at`, or one within the tolerance).
         expires_at:
           type: string
           format: date-time

@@ -106,6 +106,10 @@ func TestOverrides(t *testing.T) {
 
 		"AMQP_RECOVERY_RETRY_INTERVAL": "20ms",
 		"AMQP_RECOVERY_MAX_RETRIES":    "3",
+
+		"SCHEDULE_PAST_TOLERANCE": "1500ms",
+		"SCHEDULE_MAX_HORIZON":    "2h",
+		"EXPIRES_AT_MIN_LEAD":     "750ms",
 	}))
 	if err != nil {
 		t.Fatal(err)
@@ -127,8 +131,27 @@ func TestOverrides(t *testing.T) {
 		cfg.Connections.AMQPRecoveryMaxRetries != 3,
 		cfg.RateLimit.PerSecond != 10,
 		cfg.RateLimit.RedisTimeout != 30*time.Millisecond,
-		cfg.RateLimit.FallbackProbeInterval != 40*time.Millisecond:
+		cfg.RateLimit.FallbackProbeInterval != 40*time.Millisecond,
+		cfg.API.SchedulePastTolerance != 1500*time.Millisecond,
+		cfg.API.ScheduleMaxHorizon != 2*time.Hour,
+		cfg.API.ExpiresAtMinLead != 750*time.Millisecond:
 		t.Errorf("overrides not applied: %+v", cfg)
+	}
+}
+
+// The scheduling rules of ADR-0008 are the defaults: a scheduled_at up to
+// 30 seconds in the past means now, at most 30 days ahead, and an explicit
+// expires_at at least 30 seconds after the due time.
+func TestSchedulingDefaults(t *testing.T) {
+	cfg, err := LoadFrom(lookup(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.API.SchedulePastTolerance != 30*time.Second ||
+		cfg.API.ScheduleMaxHorizon != 30*24*time.Hour ||
+		cfg.API.ExpiresAtMinLead != 30*time.Second {
+		t.Errorf("scheduling defaults: tolerance %s, max ahead %s, min lead %s",
+			cfg.API.SchedulePastTolerance, cfg.API.ScheduleMaxHorizon, cfg.API.ExpiresAtMinLead)
 	}
 }
 
@@ -157,6 +180,10 @@ func TestInvalid(t *testing.T) {
 		{"WORKER_CHANNELS", "sms,sms"},
 		{"WORKER_CHANNELS", " ; "},
 		{"PHONE_VALIDATION", secret},
+		{"SCHEDULE_PAST_TOLERANCE", "0s"},
+		{"SCHEDULE_PAST_TOLERANCE", secret},
+		{"SCHEDULE_MAX_HORIZON", "-1h"},
+		{"EXPIRES_AT_MIN_LEAD", "0s"},
 		{"LOG_LEVEL", secret},
 	}
 	for _, tt := range tests {

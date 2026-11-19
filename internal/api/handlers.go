@@ -48,6 +48,19 @@ type handlers struct {
 	minLead time.Duration
 	// phone is the level of the check of an SMS recipient.
 	phone domain.PhoneValidation
+	// schedule holds the limits of scheduled_at and expires_at of a create,
+	// and now the clock that judges them.
+	schedule scheduleRules
+	now      func() time.Time
+}
+
+// createRules returns the rules a create request is validated by, with the
+// clock read once: every item of a batch is judged at the same instant. The
+// instant is cut to the microsecond, like the times it is compared with.
+func (h *handlers) createRules() createRules {
+	s := h.schedule
+	s.now = asStored(h.now())
+	return createRules{phone: h.phone, schedule: s}
 }
 
 var _ apigen.StrictServerInterface = (*handlers)(nil)
@@ -124,10 +137,24 @@ func (h *handlers) CreateNotificationBatch(ctx context.Context, _ apigen.CreateN
 	if !ok || in.batch.total == 0 {
 		return nil, internalProblem(errors.New("batch request without validated input"))
 	}
+	st := stateFrom(ctx)
 	if len(in.batch.valid) == 0 {
+		// Every item was rejected. If one of them was rejected only by the
+		// rules judged against the clock, this can be the retry of a batch
+		// that was accepted when it was first sent: a live key for the same
+		// request replays its stored answer. (A retry with at least one
+		// item still valid reaches the claim, which replays.)
+		if in.key != nil && in.batch.rejectedByClockOnly() {
+			r, p := h.earlyReplay(ctx, in.key, "batch_id", "/v1/batches/", st.correlationID)
+			switch {
+			case r != nil:
+				return *r, nil
+			case p != nil && p.kind != kindIdempotencyKeyReused:
+				return nil, p
+			}
+		}
 		return nil, allRejected(in.batch.total, in.batch.rejected)
 	}
-	st := stateFrom(ctx)
 	if in.batch.usesTemplate() {
 		if r, p := h.earlyReplay(ctx, in.key, "batch_id", "/v1/batches/", st.correlationID); r != nil || p != nil {
 			if p != nil {
@@ -256,8 +283,10 @@ func replayOrProblem(r *replayedResponse, p *problem) (apigen.CreateNotification
 
 // newNotification builds the store input of one validated create request:
 // the TTL and failure budget of its priority, the request's correlation id
-// and trace parent, and the content: the request's, or the rendered text
-// with its template provenance.
+// and trace parent, the content (the request's, or the rendered text with
+// its template provenance), and the schedule: scheduled_at (nil when absent
+// or within the tolerance, so the notification is due at once) and an
+// explicit expires_at (nil: the insert computes due time + TTL).
 func (h *handlers) newNotification(st *requestState, cr createRequest) (store.NewNotification, *problem) {
 	req := cr.request
 	channel, err := domain.ParseChannel(string(req.Channel))
@@ -295,6 +324,8 @@ func (h *handlers) newNotification(st *requestState, cr createRequest) (store.Ne
 		MaxFailures:   lim.maxFailures,
 		CorrelationID: st.correlationID,
 		TraceParent:   st.traceParent,
+		ScheduledAt:   req.ScheduledAt,
+		ExpiresAt:     req.ExpiresAt,
 	}
 	if r := cr.rendered; r != nil {
 		name, version := r.name, r.version

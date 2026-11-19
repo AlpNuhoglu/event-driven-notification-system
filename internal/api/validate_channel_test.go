@@ -74,7 +74,7 @@ func TestValidateCreate_PerChannel(t *testing.T) {
 				t.Fatalf("codes %v, want %v", got, tt.codes)
 			}
 			// The same rules apply to an item of a batch.
-			in, bp := validateBatch([]byte(batchOf(tt.body)), tt.phone)
+			in, bp := validateBatch([]byte(batchOf(tt.body)), testRules(tt.phone))
 			if bp != nil {
 				t.Fatalf("batch: %v", codes(bp))
 			}

@@ -85,11 +85,15 @@ const (
 // fieldNotifications is the one field of the batch request.
 const fieldNotifications = "notifications"
 
-// createFields lists the fields the create request defines in this phase.
-// Any other field is rejected with unknown_field: a client that sends a
-// field of a later phase (scheduled_at, say) must not get a different
-// behaviour than it asked for.
-var createFields = []string{fieldChannel, fieldRecipient, fieldContent, fieldTemplate, fieldPriority, fieldDedupeKey}
+// createFields lists the fields the create request defines, in the order
+// their errors are listed. Any other field is rejected with unknown_field: a
+// client that sends a field of a later version must not get a different
+// behaviour than it asked for. scheduled_at comes before expires_at, whose
+// rule depends on it.
+var createFields = []string{
+	fieldChannel, fieldRecipient, fieldContent, fieldTemplate, fieldPriority,
+	fieldScheduledAt, fieldExpiresAt, fieldDedupeKey,
+}
 
 // allowedChannels and allowedPriorities are the enum values of the request.
 var (
@@ -102,12 +106,13 @@ var (
 // would decode a template variable's number as a float64, so this is the
 // place where the request schema of api/openapi.yaml is enforced, followed
 // by the rules of the channel (ADR-0006 section 5) with the phone check at
-// level phone. What needs a stored template is checked later, by the
-// template stage (renderForCreate). It returns the parsed request for a
+// level of rules.phone, and the rules of scheduled_at and expires_at
+// against rules.schedule. What needs a stored template is checked later, by
+// the template stage (renderForCreate). It returns the parsed request for a
 // valid body, a 400 problem when the body is not a JSON object, and a 422
 // problem that lists every invalid field otherwise. No message contains a
 // submitted value.
-func validateCreate(body []byte, phone domain.PhoneValidation) (createRequest, *problem) {
+func validateCreate(body []byte, rules createRules) (createRequest, *problem) {
 	if p := checkBodyIsJSON(body); p != nil {
 		return createRequest{}, p
 	}
@@ -115,7 +120,7 @@ func validateCreate(body []byte, phone domain.PhoneValidation) (createRequest, *
 	if !ok {
 		return createRequest{}, notAnObject()
 	}
-	req, errs := validateNotificationMembers(fields, order, dups, phone)
+	req, errs := validateNotificationMembers(fields, order, dups, rules)
 	if len(errs) == 0 {
 		return req, nil
 	}
@@ -154,8 +159,8 @@ func notAnObject() *problem {
 // validateNotificationMembers checks one notification object, given as its
 // members (the result of objectMembers), and returns the parsed request or
 // every invalid field: the fields of the request in the order channel,
-// recipient, content, template, priority, dedupe_key, then unknown fields in
-// the order they appear.
+// recipient, content, template, priority, scheduled_at, expires_at,
+// dedupe_key, then unknown fields in the order they appear.
 //
 // recipient and content are checked in two steps: first the rules every
 // channel shares (type, empty, length, U+0000), then, only when that step
@@ -167,7 +172,12 @@ func notAnObject() *problem {
 // as absent. Neither is content / required, both is template /
 // conflicts_with_content. The members of template are checked by
 // checkTemplateMember; what needs the stored template is not checked here.
-func validateNotificationMembers(fields map[string]json.RawMessage, order []string, dups map[string]bool, phone domain.PhoneValidation) (createRequest, []apigen.FieldError) {
+//
+// scheduled_at and expires_at are checked by scheduleRules: "scheduled_at":
+// null counts as absent, a scheduled_at within the tolerance is parsed as
+// absent (stored as NULL), and the rule of expires_at applies only when
+// scheduled_at is valid.
+func validateNotificationMembers(fields map[string]json.RawMessage, order []string, dups map[string]bool, rules createRules) (createRequest, []apigen.FieldError) {
 	var errs []apigen.FieldError
 	add := func(field, code, msg string) { errs = append(errs, fieldError(field, code, msg)) }
 
@@ -177,9 +187,14 @@ func validateNotificationMembers(fields map[string]json.RawMessage, order []stri
 	templateGiven = templateGiven && (dups[fieldTemplate] || !isJSONNull(templateRaw))
 
 	var channel domain.Channel // "" unless valid
+	phone := rules.phone
+	sched := scheduleCheck{start: rules.schedule.now}
 	for _, name := range createFields {
 		if dups[name] {
 			add(name, codeDuplicateField, name+" must appear only once")
+			if name == fieldScheduledAt {
+				sched.invalid = true
+			}
 			continue
 		}
 		raw, present := fields[name]
@@ -232,6 +247,10 @@ func validateNotificationMembers(fields map[string]json.RawMessage, order []stri
 				continue
 			}
 			out.template = checkTemplateMember(add, raw)
+		case fieldScheduledAt:
+			out.request.ScheduledAt, sched = rules.schedule.checkScheduledAt(add, raw, present)
+		case fieldExpiresAt:
+			out.request.ExpiresAt = rules.schedule.checkExpiresAt(add, raw, present, sched)
 		case fieldDedupeKey:
 			checkText(add, name, raw, present, false, maxDedupeKeyChars)
 			if len(errs) == before && present {
@@ -438,8 +457,8 @@ type batchInput struct {
 // not claimed here: an item can still fail the template stage, and an
 // invalid item never claims its key (prepareBatch, claimDedupeKeys). The
 // work is linear in the size of the body. No message contains a submitted
-// value.
-func validateBatch(body []byte, phone domain.PhoneValidation) (batchInput, *problem) {
+// value. Every item is judged by the same rules, so at the same instant.
+func validateBatch(body []byte, rules createRules) (batchInput, *problem) {
 	if p := checkBodyIsJSON(body); p != nil {
 		return batchInput{}, p
 	}
@@ -480,7 +499,7 @@ func validateBatch(body []byte, phone domain.PhoneValidation) (batchInput, *prob
 
 	in := batchInput{total: len(items)}
 	for i, raw := range items {
-		req, itemErrs := validateBatchItem(raw, phone)
+		req, itemErrs := validateBatchItem(raw, rules)
 		if len(itemErrs) > 0 {
 			in.reject(i, itemErrs)
 			continue
@@ -538,12 +557,12 @@ func sortRejected(r []apigen.RejectedItem) {
 }
 
 // validateBatchItem checks one element of the notifications array.
-func validateBatchItem(raw json.RawMessage, phone domain.PhoneValidation) (createRequest, []apigen.FieldError) {
+func validateBatchItem(raw json.RawMessage, rules createRules) (createRequest, []apigen.FieldError) {
 	fields, order, dups, ok := objectMembers(raw)
 	if !ok {
 		return createRequest{}, []apigen.FieldError{fieldError("", codeInvalidType, "each item must be a JSON object")}
 	}
-	return validateNotificationMembers(fields, order, dups, phone)
+	return validateNotificationMembers(fields, order, dups, rules)
 }
 
 // arrayElements splits a JSON array into its raw elements, stopping after
