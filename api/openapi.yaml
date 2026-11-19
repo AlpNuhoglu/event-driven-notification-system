@@ -636,12 +636,21 @@ components:
         recipient:
           type: string
           minLength: 1
-          maxLength: 512
-          description: Phone number, e-mail address or device token. Must not contain U+0000.
+          maxLength: 4096
+          description: |
+            Depends on the channel: `sms` an E.164 number such as
+            `+905551234567` (not normalised: `05551234567` is refused), `email`
+            a single address without a display name, `push` a device token of
+            1 to 4,096 characters without control characters. Must not
+            contain U+0000.
         content:
           type: string
           minLength: 1
-          description: The message. Must not contain U+0000.
+          description: |
+            The message. Must not contain U+0000. At most 10 SMS segments for
+            `sms` (the encoding and segment count are returned as `sms`),
+            100 KiB (102,400 bytes of UTF-8) for `email`, 4 KiB (4,096 bytes)
+            for `push`.
         priority:
           $ref: "#/components/schemas/Priority"
         dedupe_key:
@@ -774,6 +783,7 @@ components:
         - priority
         - status
         - version
+        - sms
         - scheduled_at
         - expires_at
         - attempt_count
@@ -803,6 +813,11 @@ components:
           format: int64
           minimum: 1
           description: Increases with every state change; clients order status events by it.
+        sms:
+          allOf:
+            - $ref: "#/components/schemas/SMSInfo"
+          nullable: true
+          description: Set for the channel `sms`, `null` for every other channel.
         scheduled_at:
           type: string
           format: date-time
@@ -832,6 +847,23 @@ components:
           type: string
           format: date-time
           nullable: true
+    SMSInfo:
+      type: object
+      additionalProperties: false
+      required: [encoding, segments]
+      description: |
+        How the content is sent as SMS, which decides its cost. One character
+        outside the GSM-7 alphabet (for example `ş`, `ğ` or `ı`) puts the
+        whole message into UCS-2.
+      properties:
+        encoding:
+          type: string
+          enum: [GSM-7, UCS-2]
+        segments:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 10
     NotificationList:
       type: object
       additionalProperties: false
@@ -1006,6 +1038,13 @@ components:
             rejected: one entry per item, never truncated.
           items:
             $ref: "#/components/schemas/RejectedItem"
+        expires_at:
+          type: string
+          format: date-time
+          description: |
+            Only on the `409` of a redrive that gave an `expires_at` it does
+            not need (`expires_at_not_allowed`), the stored `expires_at`,
+            which is still in the future and is kept.
         current_status:
           allOf:
             - $ref: "#/components/schemas/Status"

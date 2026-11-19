@@ -285,7 +285,8 @@ func TestGet_UnknownAndInvalidID(t *testing.T) {
 
 // Validation through the real handler: status and codes; nothing is stored.
 func TestCreate_Validation(t *testing.T) {
-	a := newTestAPI(t)
+	// The body limit admits a recipient of the largest size and one more.
+	a := newTestAPIOn(t, testutil.NewPool(t), &syncBuffer{}, func(o *Options) { o.MaxBodyBytes = 2 * itMaxBody })
 	tests := []struct {
 		name   string
 		body   string
@@ -299,7 +300,9 @@ func TestCreate_Validation(t *testing.T) {
 		{"invalid priority", `{"channel":"sms","recipient":"+905551234567","content":"x","priority":"urgent"}`, 422, []string{"priority:invalid_value"}},
 		{"empty recipient", `{"channel":"sms","recipient":"","content":"x"}`, 422, []string{"recipient:empty"}},
 		{"empty content", `{"channel":"sms","recipient":"+905551234567","content":""}`, 422, []string{"content:empty"}},
-		{"recipient too long", `{"channel":"push","recipient":"` + strings.Repeat("t", 513) + `","content":"x"}`, 422, []string{"recipient:too_long"}},
+		{"recipient too long", `{"channel":"push","recipient":"` + strings.Repeat("t", 4097) + `","content":"x"}`, 422, []string{"recipient:too_long"}},
+		{"recipient invalid for its channel", `{"channel":"sms","recipient":"05551234567","content":"x"}`, 422, []string{"recipient:invalid_e164"}},
+		{"content invalid for its channel", `{"channel":"sms","recipient":"+905551234567","content":"` + strings.Repeat("a", 1531) + `"}`, 422, []string{"content:too_many_segments"}},
 		{"NUL in content", `{"channel":"sms","recipient":"+905551234567","content":"a\u0000"}`, 422, []string{"content:invalid_character"}},
 		{"unknown field", `{"channel":"sms","recipient":"+905551234567","content":"x","scheduled_at":"2030-01-01T00:00:00Z"}`, 422, []string{"scheduled_at:unknown_field"}},
 		{"dedupe_key wrong type", `{"channel":"sms","recipient":"+905551234567","content":"x","dedupe_key":5}`, 422, []string{"dedupe_key:invalid_type"}},
@@ -339,8 +342,8 @@ func TestCreate_Validation(t *testing.T) {
 		t.Errorf("%d rows stored by invalid requests", n)
 	}
 	// The boundary is accepted.
-	if res := a.post(`{"channel":"push","recipient":"` + strings.Repeat("t", 512) + `","content":"x"}`); res.status != http.StatusAccepted {
-		t.Errorf("512-character recipient: status %d", res.status)
+	if res := a.post(`{"channel":"push","recipient":"` + strings.Repeat("t", 4096) + `","content":"x"}`); res.status != http.StatusAccepted {
+		t.Errorf("4096-character recipient: status %d", res.status)
 	}
 }
 
@@ -481,6 +484,14 @@ func TestUnavailable(t *testing.T) {
 	}
 }
 
+// otherChannel is a channel for which the recipient of channel c is invalid.
+func otherChannel(c string) string {
+	if c == "sms" {
+		return "email"
+	}
+	return "sms"
+}
+
 // No log line, and no response other than the successful notification,
 // contains the recipient or the content.
 func TestNoPersonalDataInLogsOrErrors(t *testing.T) {
@@ -493,16 +504,18 @@ func TestNoPersonalDataInLogsOrErrors(t *testing.T) {
 	}
 
 	var errorBodies []string
-	for _, recipient := range []string{phone, email} {
-		ok := a.post(body("sms", recipient))
+	for _, c := range []struct{ channel, recipient string }{{"sms", phone}, {"email", email}} {
+		recipient := c.recipient
+		ok := a.post(body(c.channel, recipient))
 		if ok.status != http.StatusAccepted {
 			t.Fatalf("valid create: %d", ok.status)
 		}
 		for _, res := range []response{
 			a.post(body("fax", recipient)), // 422
 			a.post(`{"channel":"` + recipient + `","recipient":"` + recipient + `","content":"` + content + `","priority":"` + content + `"}`),
-			a.do(http.MethodPost, "/v1/notifications", body("sms", recipient), map[string][]string{"Content-Type": {"text/plain"}}), // 415
-			down.post(body("sms", recipient)), // 503
+			a.do(http.MethodPost, "/v1/notifications", body(c.channel, recipient), map[string][]string{"Content-Type": {"text/plain"}}), // 415
+			down.post(body(c.channel, recipient)),            // 503
+			a.post(body(otherChannel(c.channel), recipient)), // 422: invalid for the channel
 		} {
 			if res.status < 400 {
 				t.Fatalf("expected an error, got %d", res.status)
@@ -545,6 +558,11 @@ func TestNoPersonalDataInLogsOrErrors(t *testing.T) {
 			t.Errorf("log contains %q:\n%s", secret, logs)
 		}
 		for _, b := range errorBodies {
+			// The fixed messages of the recipient check quote the reserved
+			// example values; they are not an echo of the request.
+			for _, m := range recipientMessages {
+				b = strings.ReplaceAll(b, m, "")
+			}
 			if strings.Contains(b, secret) {
 				t.Errorf("error body contains %q: %s", secret, b)
 			}
@@ -557,7 +575,7 @@ func TestNoPersonalDataInLogsOrErrors(t *testing.T) {
 			}
 		}
 	}
-	if strings.Count(logs.String(), "\n") != 18 {
-		t.Errorf("want one log line per request (18), got:\n%s", logs)
+	if strings.Count(logs.String(), "\n") != 20 {
+		t.Errorf("want one log line per request (20), got:\n%s", logs)
 	}
 }

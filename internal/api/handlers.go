@@ -48,6 +48,8 @@ type handlers struct {
 	events events.Publisher
 	// minLead is how far ahead a new expires_at must be.
 	minLead time.Duration
+	// phone is the level of the check of an SMS recipient.
+	phone domain.PhoneValidation
 }
 
 var _ apigen.StrictServerInterface = (*handlers)(nil)
@@ -191,7 +193,7 @@ func (h *handlers) newNotification(st *requestState, req apigen.CreateNotificati
 	if !ok {
 		return store.NewNotification{}, &problem{kind: kindInternal, detail: kindInternal.detail, cause: errors.New("no limits for priority")}
 	}
-	return store.NewNotification{
+	n := store.NewNotification{
 		DedupeKey:     req.DedupeKey,
 		Channel:       channel,
 		Priority:      priority,
@@ -201,7 +203,15 @@ func (h *handlers) newNotification(st *requestState, req apigen.CreateNotificati
 		MaxFailures:   lim.maxFailures,
 		CorrelationID: st.correlationID,
 		TraceParent:   st.traceParent,
-	}, nil
+	}
+	if channel == domain.ChannelSMS {
+		// The content has passed validation: at most MaxSMSSegments segments.
+		info := domain.CountSMS(req.Content)
+		enc := string(info.Encoding)
+		segments := int16(info.Segments) //nolint:gosec // at most domain.MaxSMSSegments
+		n.SMSEncoding, n.SMSSegments = &enc, &segments
+	}
+	return n, nil
 }
 
 // acceptedItem is the element type of BatchAccepted.Accepted, which the
@@ -403,12 +413,25 @@ func toNotification(n store.Notification) apigen.Notification {
 		CreatedAt:         n.CreatedAt.UTC(),
 		UpdatedAt:         n.UpdatedAt.UTC(),
 		SentAt:            utcPtr(n.SentAt),
+		Sms:               smsInfo(n),
 	}
 	if n.FailureReason != nil {
 		r := apigen.FailureReason(*n.FailureReason)
 		out.FailureReason = &r
 	}
 	return out
+}
+
+// smsInfo is the sms member of a notification: the stored encoding and
+// segment count for the channel sms, nil (null) for every other channel.
+func smsInfo(n store.Notification) *apigen.SMSInfo {
+	if n.Channel != domain.ChannelSMS || n.SMSEncoding == nil || n.SMSSegments == nil {
+		return nil
+	}
+	return &apigen.SMSInfo{
+		Encoding: apigen.SMSInfoEncoding(*n.SMSEncoding),
+		Segments: int32(*n.SMSSegments),
+	}
 }
 
 // toBatch builds the batch representation; every status is present in

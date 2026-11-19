@@ -117,6 +117,7 @@ func TestProblemTypesDocumented(t *testing.T) {
 		codeEmptyBody, codeMalformedJSON, codeNotAnObject, codeInvalidUUID, codeRequired, codeInvalidType,
 		codeInvalidValue, codeEmpty, codeTooLong, codeInvalidCharacter, codeUnknownField, codeDuplicateField,
 		codeTooManyItems, codeDuplicate, codeDuplicateInBatch, codeInvalidIdempotencyKey, codeIdempotencyKeyReused,
+		codeInvalidE164, codeInvalidEmail, codeInvalidToken, codeTooManySegments,
 		codeUnexpectedBody, codeNotCancellable, codeNotFailed, codeExpiresAtRequired, codeExpiresAtNotAllowed, codeTooSoon,
 		codeUnknownParameter, codeDuplicateParameter, codeInvalidParameter, codeInvalidCursor,
 	} {

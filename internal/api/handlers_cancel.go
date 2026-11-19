@@ -125,6 +125,8 @@ func (h *handlers) transitionProblem(err error) *problem {
 		p = newProblem(kindConflict, "",
 			fieldError(fieldExpiresAt, codeExpiresAtNotAllowed,
 				"the stored expires_at is still in the future and is kept; the request must not give one"))
+		stored := refused.StoredExpiresAt
+		p.expiresAt = &stored
 	default: // store.RefusalStateChanged
 		p = newProblem(kindConflict, "The notification changed while the request ran; the request can be repeated.")
 	}

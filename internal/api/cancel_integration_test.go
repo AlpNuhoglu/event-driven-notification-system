@@ -223,6 +223,10 @@ func expectConflict(t *testing.T, r response, current domain.Status, fieldCode s
 	if !strings.HasSuffix(r.object(t)["type"].(string), "#conflict") {
 		t.Errorf("type %v", r.object(t)["type"])
 	}
+	// Only the expires_at_not_allowed 409 carries the stored expires_at.
+	if _, ok := r.object(t)["expires_at"]; ok != (fieldCode == "expires_at:expires_at_not_allowed") {
+		t.Errorf("expires_at member present %v: %s", ok, r.body)
+	}
 }
 
 func expectCodes(t *testing.T, r response, status int, codes ...string) {
@@ -469,12 +473,17 @@ func TestRedrive_VersusExpiry(t *testing.T) {
 		id := a.create(t, smsBody)
 		a.toFailed(t, id)
 		before := a.get(t, id)
-		expectConflict(t, a.redrive(id, body(at(3_600_000*time.Millisecond))), domain.StatusFailed,
-			"expires_at:expires_at_not_allowed")
+		r := a.redrive(id, body(at(7_200_000*time.Millisecond)))
+		expectConflict(t, r, domain.StatusFailed, "expires_at:expires_at_not_allowed")
+		// D16: the problem carries the stored expires_at, in UTC with
+		// microsecond precision like every timestamp of the API.
+		if got, want := r.object(t)["expires_at"], before.ExpiresAt.UTC().Format(time.RFC3339Nano); got != want {
+			t.Errorf("expires_at %v, want the stored %s", got, want)
+		}
 		if got := a.get(t, id); !reflect.DeepEqual(got, before) {
 			t.Fatalf("a refused redrive changed the row")
 		}
-		r := a.redrive(id, "")
+		r = a.redrive(id, "")
 		if r.status != http.StatusOK {
 			t.Fatalf("redrive: %d %s", r.status, r.body)
 		}

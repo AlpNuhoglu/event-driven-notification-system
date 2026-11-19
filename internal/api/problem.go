@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"mime"
 	"net/http"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -115,6 +116,9 @@ type problem struct {
 	// currentStatus is the notification's state on a 409 of cancel and
 	// redrive.
 	currentStatus *apigen.Status
+	// expiresAt is the stored expires_at on the 409 of a redrive that gave
+	// an expires_at it does not need (expires_at_not_allowed).
+	expiresAt *time.Time
 	// checks are the dependency checks of a failed readiness probe.
 	checks []apigen.Check
 	// cause is the underlying error of a 500 or 503. It is logged as a class
@@ -171,6 +175,10 @@ func (p *problem) body(correlationID string) apigen.Problem {
 	}
 	if p.currentStatus != nil {
 		doc.CurrentStatus = p.currentStatus
+	}
+	if p.expiresAt != nil {
+		t := p.expiresAt.UTC()
+		doc.ExpiresAt = &t
 	}
 	if len(p.checks) > 0 {
 		doc.Checks = &p.checks

@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/api/apigen"
+	"github.com/AlpNuhoglu/event-driven-notification-system/internal/domain"
 )
 
 // The stable code values of errors[] (docs/errors.md).
@@ -29,6 +30,12 @@ const (
 	codeUnknownField     = "unknown_field"
 	codeDuplicateField   = "duplicate_field"
 
+	// 422: a field is invalid for the notification's channel.
+	codeInvalidE164     = string(domain.RecipientNotE164)
+	codeInvalidEmail    = string(domain.RecipientInvalidEmail)
+	codeInvalidToken    = string(domain.RecipientInvalidToken)
+	codeTooManySegments = "too_many_segments"
+
 	// 422: a batch is invalid as a whole, or one of its items repeats another.
 	codeTooManyItems     = "too_many_items"
 	codeDuplicateInBatch = "duplicate_in_batch"
@@ -46,9 +53,10 @@ const (
 	codeIdempotencyKeyReused = "idempotency_key_reused"
 )
 
-// maxRecipientChars is the longest recipient accepted in this phase, in
-// characters (Unicode code points, as JSON Schema's maxLength counts them).
-const maxRecipientChars = 512
+// maxRecipientChars is the longest recipient of any channel, in characters
+// (Unicode code points, as JSON Schema's maxLength counts them): the longest
+// push token. Each channel then checks its own form (validateForChannel).
+const maxRecipientChars = domain.MaxPushTokenChars
 
 // maxDedupeKeyChars is the longest dedupe_key, in characters.
 const maxDedupeKeyChars = 255
@@ -87,10 +95,12 @@ var (
 // validateCreate checks a create request body completely, before the
 // generated code decodes it. The generated decoder ignores unknown fields and
 // does not enforce the schema, so this is the place where the request schema
-// of api/openapi.yaml is enforced. It returns nil for a valid body, a 400
-// problem when the body is not a JSON object, and a 422 problem that lists
-// every invalid field otherwise. No message contains a submitted value.
-func validateCreate(body []byte) *problem {
+// of api/openapi.yaml is enforced, followed by the rules of the channel
+// (ADR-0006 section 5) with the phone check at level phone. It returns nil
+// for a valid body, a 400 problem when the body is not a JSON object, and a
+// 422 problem that lists every invalid field otherwise. No message contains
+// a submitted value.
+func validateCreate(body []byte, phone domain.PhoneValidation) *problem {
 	if p := checkBodyIsJSON(body); p != nil {
 		return p
 	}
@@ -98,7 +108,7 @@ func validateCreate(body []byte) *problem {
 	if !ok {
 		return notAnObject()
 	}
-	errs := validateNotificationMembers(fields, order, dups)
+	errs := validateNotificationMembers(fields, order, dups, phone)
 	if len(errs) == 0 {
 		return nil
 	}
@@ -128,25 +138,43 @@ func notAnObject() *problem {
 // members (the result of objectMembers), and returns every invalid field:
 // the fields of the request in the order channel, recipient, content,
 // priority, dedupe_key, then unknown fields in the order they appear.
-func validateNotificationMembers(fields map[string]json.RawMessage, order []string, dups map[string]bool) []apigen.FieldError {
+//
+// recipient and content are checked in two steps: first the rules every
+// channel shares (type, empty, length, U+0000), then, only when that step
+// and the channel are valid, the rules of the channel (validateForChannel).
+// So a missing or invalid channel gives no channel-specific error, and each
+// field has at most one error.
+func validateNotificationMembers(fields map[string]json.RawMessage, order []string, dups map[string]bool, phone domain.PhoneValidation) []apigen.FieldError {
 	var errs []apigen.FieldError
 	add := func(field, code, msg string) { errs = append(errs, fieldError(field, code, msg)) }
 
+	var channel domain.Channel // "" unless valid
 	for _, name := range createFields {
 		if dups[name] {
 			add(name, codeDuplicateField, name+" must appear only once")
 			continue
 		}
 		raw, present := fields[name]
+		before := len(errs)
 		switch name {
 		case fieldChannel:
 			checkEnum(add, name, raw, present, true, allowedChannels)
+			if len(errs) == before {
+				s, _ := stringValue(raw)
+				channel = domain.Channel(s)
+			}
 		case fieldPriority:
 			checkEnum(add, name, raw, present, false, allowedPriorities)
-		case fieldRecipient:
-			checkText(add, name, raw, present, true, maxRecipientChars)
-		case fieldContent:
-			checkText(add, name, raw, present, true, 0)
+		case fieldRecipient, fieldContent:
+			limit := 0
+			if name == fieldRecipient {
+				limit = maxRecipientChars
+			}
+			checkText(add, name, raw, present, true, limit)
+			if len(errs) == before && channel != "" {
+				s, _ := stringValue(raw)
+				validateForChannel(add, channel, name, s, phone)
+			}
 		case fieldDedupeKey:
 			checkText(add, name, raw, present, false, maxDedupeKeyChars)
 		}
@@ -161,6 +189,40 @@ func validateNotificationMembers(fields map[string]json.RawMessage, order []stri
 		add(echoed, codeUnknownField, "this field is not defined by the API")
 	}
 	return errs
+}
+
+// The messages of the recipient check per channel; none contains the value.
+var recipientMessages = map[domain.RecipientProblem]string{
+	domain.RecipientNotE164:      "recipient must be an E.164 number such as +905551234567",
+	domain.RecipientInvalidEmail: "recipient must be a single e-mail address such as user@example.com",
+	domain.RecipientInvalidToken: "recipient must be a device token of 1 to 4096 characters without control characters",
+}
+
+// validateForChannel applies the rules of the channel (ADR-0006 section 5)
+// to a recipient or content that passed the shared checks: the form of the
+// recipient, and the size of the content (SMS segments, bytes for e-mail and
+// push).
+func validateForChannel(add addFunc, channel domain.Channel, name, value string, phone domain.PhoneValidation) {
+	if name == fieldRecipient {
+		if p := domain.ValidateRecipient(channel, value, phone); p != "" {
+			add(name, string(p), recipientMessages[p])
+		}
+		return
+	}
+	switch channel {
+	case domain.ChannelSMS:
+		if domain.CountSMS(value).Segments > domain.MaxSMSSegments {
+			add(name, codeTooManySegments, fmt.Sprintf("content needs more than %d SMS segments", domain.MaxSMSSegments))
+		}
+	case domain.ChannelEmail:
+		if len(value) > domain.MaxEmailContentBytes {
+			add(name, codeTooLong, fmt.Sprintf("content must be at most %d bytes for email", domain.MaxEmailContentBytes))
+		}
+	case domain.ChannelPush:
+		if len(value) > domain.MaxPushContentBytes {
+			add(name, codeTooLong, fmt.Sprintf("content must be at most %d bytes for push", domain.MaxPushContentBytes))
+		}
+	}
 }
 
 func isCreateField(name string) bool { return slices.Contains(createFields, name) }
@@ -291,7 +353,7 @@ type batchInput struct {
 // items, the first one with a given dedupe_key stays valid and every later
 // one is rejected; an invalid item never claims its key. The work is linear
 // in the size of the body. No message contains a submitted value.
-func validateBatch(body []byte) (batchInput, *problem) {
+func validateBatch(body []byte, phone domain.PhoneValidation) (batchInput, *problem) {
 	if p := checkBodyIsJSON(body); p != nil {
 		return batchInput{}, p
 	}
@@ -333,7 +395,7 @@ func validateBatch(body []byte) (batchInput, *problem) {
 	in := batchInput{total: len(items)}
 	claimed := map[string]bool{}
 	for i, raw := range items {
-		itemErrs := validateBatchItem(raw)
+		itemErrs := validateBatchItem(raw, phone)
 		var req apigen.CreateNotificationRequest
 		if len(itemErrs) == 0 {
 			// The item passed validation, so it decodes.
@@ -361,12 +423,12 @@ func validateBatch(body []byte) (batchInput, *problem) {
 }
 
 // validateBatchItem checks one element of the notifications array.
-func validateBatchItem(raw json.RawMessage) []apigen.FieldError {
+func validateBatchItem(raw json.RawMessage, phone domain.PhoneValidation) []apigen.FieldError {
 	fields, order, dups, ok := objectMembers(raw)
 	if !ok {
 		return []apigen.FieldError{fieldError("", codeInvalidType, "each item must be a JSON object")}
 	}
-	return validateNotificationMembers(fields, order, dups)
+	return validateNotificationMembers(fields, order, dups, phone)
 }
 
 // arrayElements splits a JSON array into its raw elements, stopping after
