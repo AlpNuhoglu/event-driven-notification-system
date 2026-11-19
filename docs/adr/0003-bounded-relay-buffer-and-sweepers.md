@@ -88,6 +88,40 @@ Rows reach this sweeper whenever a worker stops without finishing its sends: `SI
 
 Reconciliation, the lease sweeper and the expiry pass ([ADR-0002](0002-postgres-as-outbox-scheduler-and-retry-delay.md)) run as goroutines inside the **relay** process ([ADR-0005](0005-service-topology-and-status-events.md)). They are counted in `reconciliation_runs_total`, `reconciled_rows_total`, `sweeper_recovered_total{kind}` and `expired_total{channel,priority}` ([ADR-0009](0009-observability.md)).
 
+### 6. Plans of the statements that run all the time
+
+Three statement classes of this system were correct and fast in `EXPLAIN` and slow as they really ran: the listing (P2), the expiry pass and the idempotency-key cleanup (P3). Each time the cause was a plan that Postgres had cached for a prepared statement and that no longer fitted ([design review log](../ai/design-review-log.md) §6). After the third case every statement that runs periodically or per message and usually finds little or nothing was **measured**, not reasoned about.
+
+**Method.** Postgres 18.7, the exact SQL text the store runs. Dataset R: 1,000,000 `pending` rows, due, spread over the nine lanes, next to about 550,000 rows in other states. Dataset S: 200,000 `processing` rows with an expired lease, next to the same remainder. Each statement was prepared and explained (`ANALYZE`, `BUFFERS`) under `plan_cache_mode = force_custom_plan` and `force_generic_plan`, with fresh statistics, three runs each. The machine was loaded by other work, so the times are orders of magnitude.
+
+| Statement | Runs | Data | Custom plan | Generic plan (forced) | Verdict | Action |
+|---|---|---|---|---|---|---|
+| `CountQueuedByLane` | every 100 ms | R | Bitmap scan of the queued-lane index, hash aggregate; 3.6 ms | The same (the statement has no parameters, so it has only one plan); 3.1 ms | same | left cached |
+| `LockDueLane` | up to 9 per tick | R | Limit, row locks, ordered scan of the relay-lane index; 0.19 ms | The same; 0.19 ms | same | left cached |
+| `MarkQueued` (200 ids) | per lane | R | Primary-key index scan; 2.0 ms | The same; 1.9 ms | same | left cached |
+| `ClaimNotification` | per message | R | Primary-key index scan in the CTE, insert of the attempt; 0.14 ms | The same; 0.10 ms | same | left cached |
+| `MarkSent` | per message | R | Primary-key index scan; 0.05 ms | The same; 0.07 ms | same | left cached |
+| `LockProcessing` | per failed attempt | R | Primary-key index scan, row lock; 0.016 ms | The same | same | left cached |
+| `MarkRetrying` | per failed attempt, per swept row | R, S | Primary-key index scan; 0.06 ms | The same; 0.05 ms | same | left cached |
+| `MarkFailed` | per failed attempt, per swept row | R, S | Primary-key index scan; 0.05 ms | The same; 0.04 ms | same | left cached |
+| `FinishAttempt` | per message | R | Index scan of the attempts' primary key; 0.03 ms | The same; 0.03 ms | same | left cached |
+| `LockExpiredLeases` | every 5 s | S | Limit, row locks, ordered scan of the lease index; 0.35 to 0.6 ms | The same; 0.35 ms | same | left cached |
+| `MarkAttemptUnknown` | per swept row | S | Index scan of the one-in-flight index; 0.03 ms | The same; 0.025 ms | same | left cached |
+| `ExpireDue`, `DeleteExpiredIdempotencyKeys` | every second, every minute | | | Worse: the batch joined against the whole expired backlog ([ADR-0002](0002-postgres-as-outbox-scheduler-and-retry-delay.md), expiry) | generic worse | planned on every call (since `p3/classification-and-retry`) |
+
+**Result: for these eleven statements the generic plan is the custom plan.** Their plans do not depend on the values of their parameters, which is what distinguishes them from the expiry pass (whose selectivity changes with time) and the listing (whose optional filters hide the selectivity). They stay cached prepared statements. The reconciliation and `requeue-stale` statements are measured the same way when they are written.
+
+**A different defect, found by the same measurement and not settled here.** The comparison above uses fresh statistics. In the order production can meet them, the same statements were also run with statistics taken while the tables were small (40 rows), executed 35 times, and then the backlog of dataset R or S inserted without an `ANALYZE` in between, as when a fresh deployment receives its first burst. The cached plans are then the sequential scans that were right for 40 rows:
+
+| What | With the stale cached plans | After the next `ANALYZE` |
+|---|---|---|
+| One primary-key write of the worker | 90 to 480 ms | 0.05 ms |
+| Claim plus final write of one message | 240 to 390 ms | about 1 ms |
+| One relay tick (count and nine lanes) | about 6 s | about 40 ms |
+| One sweep of 500 expired leases | 42 to 48 s | about 0.2 s |
+
+This is not the generic-plan defect: custom and generic plan are equal here, and both are stale. It ends when autovacuum analyses the table, which invalidates the cached plans: 22 s after the insert in the one run measured, and in general within the autovacuum launcher's cycle (60 s by default) plus the time of the `ANALYZE`. It affects every cached statement of every role, and also the foreign-key checks that Postgres runs inside the claim's insert, which the application cannot plan differently by changing how it sends a statement. Three remedies were measured; the choice is **open issue 10** in [`progress.md`](../progress.md), and the table of their costs is there. Two cases stay slow under every plan until statistics are fresh, because the planner itself is misled: `CountQueuedByLane` with statistics from a steady state without a backlog (100 to 200 ms per tick), and the sweeper's `MarkRetrying` with 200,000 expired leases and statistics from a small table (about 30 ms per row).
+
 ## Alternatives considered
 
 | Alternative | Why it was rejected |
@@ -128,4 +162,5 @@ Changes made after the design review, recorded in the [design review log](../ai/
 - The lease now accounts for the rate-limit wait after the claim, and the lease sweeper sets `finished_at` on the attempts it marks `unknown`. (D20)
 - Lanes are counted in Postgres over one broker queue per channel; "about 6,000 messages" became "about 6,000 distinct notifications; duplicates possible". (D7)
 - After experiment E4 (P0), the reconciliation trigger was named exactly (the connection's change from `reconnecting` to `open`), and the recovery budget of 24 attempts at 5 s was added. (D5)
+- In P3, after the expiry pass had been found slow under a cached generic plan, every periodic and per-message statement was measured under both plan modes (section 6). The eleven statements have the same plan either way and stay cached; the measurement also found that plans cached while a table was small stay in use after a burst until the next `ANALYZE`.
 - The rejection of unbounded publishing no longer cites memory pressure, which does not apply to quorum queues; unbounded backlog in Postgres is now listed as a known limitation. (D56)

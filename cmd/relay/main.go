@@ -1,6 +1,6 @@
 // Command relay is the outbox relay role: it publishes due notifications from
 // Postgres to RabbitMQ and runs the lease sweeper (internal/relay), next to the
-// admin health endpoints. "relay healthcheck" probes a running instance.
+// admin endpoints (health and metrics). "relay healthcheck" probes a running instance.
 package main
 
 import (
