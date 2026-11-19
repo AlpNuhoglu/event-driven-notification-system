@@ -4,9 +4,9 @@ The first file every session reads and the last one it updates. The phases and t
 
 ## Current phase
 
-**P3: delivery robustness** — in review (pull request 3 of 3, `p3/recovery`). `p3/classification-and-retry` and `p3/breaker-and-fallback` are merged. Every exit criterion of the phase has been run; the phase is done when this pull request is merged.
+**P3: delivery robustness** — done: its three pull requests are merged and every exit criterion was run. One follow-up is in review: `p3/isopen-race`, the fix for the red `integration` job on `main` after the last merge (session log).
 
-**Next step:** the author merges the `p3/recovery` pull request and answers open issue 11. Then P4 (templates and scheduling) from the updated `main`.
+**Next step:** the author merges the `p3/isopen-race` pull request and answers open issue 11. Then P4 (templates and scheduling) from the updated `main`.
 
 **How P3 is split** (the plan names the three branches, not their contents):
 
@@ -14,7 +14,7 @@ The first file every session reads and the last one it updates. The phases and t
 |---|---|
 | `p3/classification-and-retry` (merged) | The classification table, `decideRetry` in full, `Retry-After`, the worker's wiring, `mockprovider` fault injection, the expiry pass (transition 10), the idempotency-key cleanup (D78). Exit criterion: `5xx` → retries → `sent`. |
 | `p3/breaker-and-fallback` (merged) | The circuit breaker with the abort path and the doubling of the throttle delay, the Redis-down fallback limiter with `/metrics` on the admin port, open issue 7 (the claim during a Postgres outage, with the 25-nack check), the measurement of the hot-path statements under both plan modes. Exit criteria: `401` → circuit open with `failures = 0`; sending continues with Redis stopped. Mutation check: the five-consecutive-failures rule. |
-| `p3/recovery` (this one) | D79 (every pool plans with the current values) with the burst measured on the real code; reconciliation with the deferred trigger, `requeue-stale`, transition 12 and the 60-second final-write retry, the lease sweeper's tests, resubscribe, the connection epoch (D76), topology redeclaration, the relay's publisher after a closed channel (the exit stays). Exit criteria: the RabbitMQ restart, the empty broker volume, `requeue-stale`, a real Postgres restart. Mutation checks: transition 12's guards, reconciliation. |
+| `p3/recovery` (merged) | D79 (every pool plans with the current values) with the burst measured on the real code; reconciliation with the deferred trigger, `requeue-stale`, transition 12 and the 60-second final-write retry, the lease sweeper's tests, resubscribe, the connection epoch (D76), topology redeclaration, the relay's publisher after a closed channel (the exit stays). Exit criteria: the RabbitMQ restart, the empty broker volume, `requeue-stale`, a real Postgres restart. Mutation checks: transition 12's guards, reconciliation. |
 
 **Rules of the phase (author):** fault scenarios and exit criteria run on the mock profile only. The default webhook.site URL is not used (48 of its 50 requests are left).
 
@@ -31,7 +31,7 @@ Status is one of: `not started`, `in progress`, `in review` (pull requests open)
 | P0 | Repository skeleton and first-hour experiments | done | [#2](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/2) (`p0/skeleton`, merged), [#3](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/3) (`p0/experiments`, merged) | 2026-11-18 |
 | P1 | Core path | done | [#4](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/4) (`p1/schema-and-store`, merged), [#5](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/5) (`p1/relay-worker-provider`, merged), [#6](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/6) (`p1/compose-e2e`, merged) | 2026-11-19 |
 | P2 | API completeness | done | [#7](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/7) (`p2/batch-and-idempotency`, merged), [#8](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/8) (`p2/cancel-redrive-listing`, merged), [#9](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/9) (`p2/validation`, merged) | 2026-11-19 |
-| P3 | Delivery robustness | in review | [#10](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/10) (`p3/classification-and-retry`, merged), [#11](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/11) (`p3/breaker-and-fallback`, merged), [#12](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/12) (`p3/recovery`) | |
+| P3 | Delivery robustness | done | [#10](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/10) (`p3/classification-and-retry`, merged), [#11](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/11) (`p3/breaker-and-fallback`, merged), [#12](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/12) (`p3/recovery`, merged); follow-up `p3/isopen-race` | 2026-11-19 |
 | P4 | Templates and scheduling | not started | | |
 | P5 | Real-time and observability | not started | | |
 | P6 | Quality | not started | | |
@@ -89,6 +89,20 @@ Newest entry first. One entry per session, in this form:
 - **Open issues:** new entries added to the table above.
 - **Next step:** the first thing the next session does.
 ```
+
+### 2026-11-19 — P3: the red `integration` job on `main` (follow-up)
+
+- **Reported by the author:** after the merge of `p3/recovery` the CI run on `main` (commit 520e85a) was red in the `integration` job; the other six jobs passed.
+- **What failed:** one test, `TestConnection_TopologyDeclaredAgainOnEmptyBroker` (`internal/queue`), with four lines: "IsOpen was true before the topology existed on the recovered connection", "no reconnection signalled", "opens 1 after one reconnection, want 2", and "publish after the wipe: publish batch: connection not open". The same test had passed on the pull request's own run and passes locally (40 of 40, also with two CPUs).
+- **Cause: a race in `Connection.IsOpen()`, not in the test.** `IsOpen` combined two facts read at two moments: our generation ("the topology is declared on the current connection", under the connection's lock) and then the client library's closed flag. A reconnection attempt changes both, in this order: its dial hook starts a new generation, then the library clears its closed flag, and only later is the topology declared. An attempt that began **between** the two reads made `IsOpen` see the old generation, still usable, and then the cleared flag of the new connection, and answer true before the topology was declared. The test samples `IsOpen` in a tight loop across the reconnection, which is how the CI runner hit a window of a few microseconds. All four lines follow from that one wrong answer: the test took it for the reconnection and went on while the recovery was still running.
+- **Effect outside the test:** the relay asks `IsOpen` before every lane. A wrong true starts a lane transaction during a reconnection; the publisher's own check (the `lost` signal, which is set and cleared inside the recovery and has no such gap) then refuses the batch, the lane is rolled back and logged as failed. Nothing is published or recorded wrongly. This is very likely the single unexplained "lane failed" line of the wipe scenario noted in the previous entry.
+- **Fix:** `IsOpen` reads the library's flag first and the generation second. If the flag is read as cleared because an attempt cleared it, that attempt's dial hook has already run, so the generation read afterwards is the attempt's, and it counts as usable only once the topology is declared on it. The doc comment of `IsOpen` states the argument.
+- **Test:** `TestIsOpen_ReconnectionAttemptBetweenItsTwoReads` places a reconnection attempt exactly at the read of the flag (the flag is read through a field so that a test can do this). **It fails on the code before the fix** with "IsOpen is true during a reconnection attempt, before the topology is declared on the new connection" and passes after it. `TestIsOpen` covers the plain cases, including a failed attempt that leaves the library's flag cleared.
+- **Checks:** `make test` green (21 packages); the originally failing test 40 of 40 with two CPUs; `make lint` 0 issues. `gh pr checks` is reported on the pull request.
+- **Not verified:** the failure itself could not be reproduced locally by repetition before the fix; the diagnosis rests on the code path and on the deterministic test. The other reader of the flag (the state watcher, under the connection's lock) and the `lost` signal were read again and have no such gap.
+- **Why review and the tests missed it:** the delegate's argument for the epoch covered the answer path (check and ack in one critical section) and the order of the hooks; `IsOpen` was treated as two independent flags. The integration test that samples it was right and passed every run before the merge. Recorded in the design review log, section 6.
+- **Open issues:** none new. Issue 11 stays.
+- **Next step:** after the merge and the answer to issue 11, P4.
 
 ### 2026-11-19 — P3: recovery (pull request 3 of 3)
 
