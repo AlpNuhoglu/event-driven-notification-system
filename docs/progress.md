@@ -4,16 +4,16 @@ The first file every session reads and the last one it updates. The phases and t
 
 ## Current phase
 
-**P5: real-time and observability** — in progress: `p5/events-and-gateway`, the first of three pull requests.
+**P5: real-time and observability** — in progress: `p5/events-and-gateway` is merged, and `p5/metrics-and-summary`, the second of three pull requests, is open.
 
-**Next step:** the author merges `p5/events-and-gateway`. Then `p5/metrics-and-summary` from the updated `main`.
+**Next step:** the author merges `p5/metrics-and-summary`. Then `p5/logging-tracing-health` from the updated `main`.
 
 **How P5 is split** (the plan names the three branches):
 
 | Pull request | Contents |
 |---|---|
-| `p5/events-and-gateway` (in review) | The repetition of the P4 tests and the three timing dependencies it led to. The status event's message, the lazy and bounded event publisher in api, relay and worker, the gateway with subscribe-then-snapshot, origin patterns, the bounded send queue and its own event queue, the `gateway` service in Compose, the Compose scenario create → subscribe → snapshot → events → `sent`. Mutation check: the snapshot read before the registration. |
-| `p5/metrics-and-summary` | Every metric of ADR-0009 §1 with the ones later decisions added (`expired_total` by priority and `notifications_finished_total`, D75; `pacer_slots_missed_total`, D77; `limiter_fallback_active`; the reconciliation counters), `GET /v1/metrics/summary` with its two caches, the "Overview" dashboard with its smoke test, `alerts.yml` with the thresholds of D74 and `promtool check rules`, Prometheus scraping the roles. |
+| `p5/events-and-gateway` (merged) | The repetition of the P4 tests and the three timing dependencies it led to. The status event's message, the lazy and bounded event publisher in api, relay and worker, the gateway with subscribe-then-snapshot, origin patterns, the bounded send queue and its own event queue, the `gateway` service in Compose, the Compose scenario create → subscribe → snapshot → events → `sent`. Mutation check: the snapshot read before the registration. |
+| `p5/metrics-and-summary` (in review) | By the author's decisions after the first pull request: ids in the canonical spelling only (open issue 12), a deadline for the whole snapshot of a subscribe request, `.claude/worktrees/` ignored, and the gateway's readiness check. Then: every metric of ADR-0009 §1 with the ones later decisions added (`expired_total` by priority and `notifications_finished_total`, D75; `pacer_slots_missed_total`, D77; `limiter_fallback_active`; the reconciliation counters), `GET /v1/metrics/summary` with its two caches, the "Overview" dashboard with its smoke test, `alerts.yml` with the thresholds of D74 and `promtool check rules`, Prometheus scraping the roles. |
 | `p5/logging-tracing-health` | `slog` with the central handler and the three redaction layers, the request log brought in line with ADR-0009 §4, correlation IDs, hybrid tracing, the health endpoints in full, the canary scan, `make demo`. |
 
 **How P4 was split** (the plan names the two branches):
@@ -48,7 +48,7 @@ Status is one of: `not started`, `in progress`, `in review` (pull requests open)
 | P2 | API completeness | done | [#7](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/7) (`p2/batch-and-idempotency`, merged), [#8](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/8) (`p2/cancel-redrive-listing`, merged), [#9](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/9) (`p2/validation`, merged) | 2026-11-19 |
 | P3 | Delivery robustness | done | [#10](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/10) (`p3/classification-and-retry`, merged), [#11](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/11) (`p3/breaker-and-fallback`, merged), [#12](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/12) (`p3/recovery`, merged); follow-up [#13](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/13) (`p3/isopen-race`, merged) | 2026-11-19 |
 | P4 | Templates and scheduling | done | [#14](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/14) (`p4/templates`, merged), [#15](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/15) (`p4/scheduling`, merged) | 2026-11-19 |
-| P5 | Real-time and observability | in progress | [#16](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/16) (`p5/events-and-gateway`, in review) | |
+| P5 | Real-time and observability | in progress | [#16](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/16) (`p5/events-and-gateway`, merged), `p5/metrics-and-summary` (in review) | |
 | P6 | Quality | not started | | |
 | P7 | Delivery | not started | | |
 
@@ -88,9 +88,8 @@ Questions that the ledger and the ADRs do not answer, and problems that are not 
 
 | # | Raised on | Issue | Blocks |
 |---|---|---|---|
-| 12 | 2026-11-19 (P5) | **The API accepts an id in spellings other than the canonical one.** The UUID parser behind every path and query id (`google/uuid` v1.6.0, through the generated parameter binding and `list_params.go`) also accepts `urn:uuid:…`, `{…}`, 32 digits without hyphens, and any 38-character string whose middle is a UUID: it drops the first and the last character without looking at them. On the stack: `GET /v1/notifications/x<id>y` and `/v1/notifications/{<id>}` answer `200` with the notification; `/v1/notifications/abc` answers `400`. Nothing wrong is read or written (the parsed id is the one used), and no label or log line takes the raw path. ADR-0006 says ids are UUIDs and not which spellings. The gateway, built in P5, accepts only the 36-character form (in either case). **Options:** (a) leave the API as it is and say so in ADR-0006; (b) the API refuses every other spelling like an id that is not a UUID (`400` for a path id, `invalid_parameter` for `batch_id` in a listing), a small change with table tests. **Recommended:** (b), so that one notification has one URL and the API and the gateway agree. | Nothing |
 
-Issue 11 (the claim misled by statistics from an empty outbox) was answered by the author with option (d): it is part of the tuning of P6, with its measurements named in the plan (session log, P4).
+No issue is open. Issue 12 (ids in spellings other than the canonical one) was answered by the author with the recommended option and is closed by `p5/metrics-and-summary`: one parser, the canonical form only, everywhere an id arrives from outside (session log, P5, pull request 2). Issue 11 (the claim misled by statistics from an empty outbox) was answered by the author with option (d): it is part of the tuning of P6, with its measurements named in the plan (session log, P4).
 
 ## Session log
 
@@ -106,6 +105,68 @@ Newest entry first. One entry per session, in this form:
 - **Open issues:** new entries added to the table above.
 - **Next step:** the first thing the next session does.
 ```
+
+### 2026-11-20 — P5: metrics and summary (pull request 2 of 3)
+
+- **By the author, at the start:** `p5/events-and-gateway` is merged and its fifteen decisions are accepted. **Open issue 12 is answered with the recommended option:** one shared parser accepts an id only in the 36-character hyphenated form, in either letter case, wherever an id is read from outside; a path id in another spelling is `400` with a problem document, and ids in bodies and queries follow the rules those places have; contract tests for the refused spellings and a guard test against a direct call of the library's parser; ADR-0006 states the rule. Two checks in the same pull request: the gateway's snapshot write has a deadline (name the test, or add the deadline and a test), and `.claude/worktrees/` is in `.gitignore`. Then the metrics and the summary, with the gateway's own metrics and readiness check.
+- **How the last sentence was read:** the gateway's metrics and the gateway's readiness check are both in this pull request. Readiness "in full" for the api, the relay and the worker stays with `p5/logging-tracing-health`, where the plan's split has the health endpoints.
+- **Issue 12, done** (one commit): `domain.ParseID` is the one parser.
+
+  | Where an id arrives | Answer to `urn:uuid:<id>`, `{<id>}`, 32 digits or `x<id>y` |
+  |---|---|
+  | Path id of the six operations that take one | `400`, `id` / `invalid_uuid`, as for a path id that is not a UUID at all |
+  | `batch_id` in a listing | `400`, `batch_id` / `invalid_parameter` |
+  | The gateway's `notification_ids`, `batch_id` | `invalid_id` (as before) |
+  | The worker's message body | The message goes to the poison queue |
+  | A status event's `id`, `batch_id` | The event is dropped |
+
+  The API's id parameters are bound as strings (`x-go-type: string` in the specification, which still documents them as UUIDs), so the generated binding no longer reaches the library's parser. A cursor carries its id as 16 raw bytes and had one spelling already; no request body carries an id. **The guard** (`TestLenientUUIDParserIsCalledOnlyByParseID`) type-checks every non-test package, generated code included, and fails with file and line on a use of `uuid.Parse`, `ParseBytes`, `MustParse` or `Validate`, on the library types' `UnmarshalText`, `UnmarshalJSON` and `Scan`, and on a JSON, XML or parameter binding into a value that holds a UUID. Shown to fail by the delegate: with a direct call added, with a JSON decode into a struct with a UUID field, and with the `x-go-type` lines removed (all seven generated bindings reported). What it cannot see is listed under "Not verified".
+- **The snapshot's deadline: it was not so, and is now** (one commit). Every write had a deadline (`WS_WRITE_TIMEOUT`), but a client that does not read was not closed by it: with the socket buffers full, a write still completes now and then (about one message per 100 ms in the test), each within its own deadline, so a snapshot of a thousand messages held the connection until a ping went unanswered. The hand-over of the whole snapshot of one subscribe request now has one deadline, the same `WS_WRITE_TIMEOUT`; when it passes, the connection is closed and counted. **Tests:** `TestGateway_ClientThatDoesNotReadItsSnapshotIsDisconnected` (failed 10 of 10 before the change with "condition not met within 10s"; a stack dump showed the writer inside a write that kept returning) and `TestGateway_ClientThatDoesNotReadItsSnapshotDelaysNobody` (another client subscribes to the same batch meanwhile and receives all 1,000 messages and a live event; this passed before the change too).
+- **`.claude/worktrees/` is in `.gitignore`** (one commit).
+- **Done:**
+  - **Metrics:** every row of ADR-0009 §1 for api, relay, worker and gateway, with the ones later decisions added (`expired_total` by priority and `notifications_finished_total`, D75; `pacer_slots_missed_total`, D77; `limiter_fallback_active` and the reconciliation counters, which existed). On the running stack each role's `/metrics` lists exactly its set (below).
+  - **`GET /v1/metrics/summary`** with its two caches.
+  - **Prometheus** scrapes the four roles on their admin port and loads `alerts.yml`; **Grafana** is provisioned with the data source and the "Overview" dashboard (24 panels).
+  - **Alert rules** with the thresholds of D74, a description and a one-line runbook note each, and unit tests (`alerts_test.yml`); `make check-rules`, also in CI.
+  - **Readiness on the admin port** (a registry of named checks) and the gateway's three checks.
+  - **Documents:** ADR-0009 (§1 definitions, §2, §3, §7, review history), ADR-0006 (the id rule, §10), ADR-0005 (the snapshot's deadline), ADR-0010 (ids, metrics, summary, dashboard and alerts, readiness), `future-work.md` (two rows), the README (metrics, dashboard and alerts), `.env.example`.
+- **The alert rules** (point 1 of the phase): `RelayDown` (`up{job="relay"} == 0` for 30 s), `HighLaneStalled` (oldest queued age of a `high` lane above 120 s for 2 min), `PoisonMessages` (a poison queue above 0 for 5 min), `ExpirySpike` (any `high` expiry in 10 min, or `normal` expiries above 1 % of the finished `normal` notifications over 15 min; `expired_total` against `notifications_finished_total`), **`CircuitNotClosed`** (`circuit_state != 0` for 5 min: "not closed for more than 5 minutes"), `LimiterFallbackActive`. The unit tests include a circuit that alternates between open and half-open for six minutes (fires) and one that closes within five (does not).
+- **The worker's pacer and dispatch code, read line by line by the main loop:** the pacer loop (`pace`, `next`, `reserve`, the ack and nack code) is not changed. The store, the limiter and the event publisher are wrapped by decorators that hand every result on unchanged and observe after the call returns. `dispatch` gains the in-flight gauge (incremented at its start; decremented by a deferred call that runs after the recover and before the concurrency slot is released) and one count at the top of `complete` and of `abort`. `New` wraps the dependencies and creates the channel's series. No order of operations changed.
+- **Pull requests opened:** see the phase table.
+- **Exit criteria** (run by the main loop on this branch; mock profile and test containers only; the default webhook.site URL received nothing, 48 of its 50 requests are left):
+  - `make test`: green, 23 packages (`internal/platform/metrics` is new).
+  - `make test-e2e`: green, 165 s. `TestDashboardSmoke`: the four role targets up, the six rules loaded, all 31 queries of the 24 panels return data. `load-smoke`: 6,000 SMS in 61.2 s, 98.0/s, largest one-second window **99**.
+  - `make check-rules`: `SUCCESS: 6 rules found`, and the rule unit tests `SUCCESS`.
+  - `curl -fsS localhost:8080/v1/metrics/summary` on the mock stack after 6 SMS and 1 e-mail: 9 lanes, 3 channels; sms `success 6`, `success_rate 1`, end-to-end p50 100 ms and p95 104 ms; push all zero with `success_rate` and the percentiles `null`.
+  - **On the same stack:** each role's `/metrics` (read from inside the Compose network) has its set: api 8 names, relay 12, worker 15, gateway 3. The gateway's `/readyz` lists `postgres`, `rabbitmq` and `event_consumer` as ok; **with RabbitMQ stopped it answers `503`** and `gateway healthcheck` exits 1, while the api's `/readyz` stays `200`; about 5 s after RabbitMQ starts again it is ok.
+  - `make generate`: no drift (checksums compared). `make lint`: 0 issues.
+  - `make demo` belongs to the third pull request. `gh pr checks` is reported on the pull request.
+- **Decisions taken** (within the latitude of the ledger and the ADRs; the ADRs are updated):
+  1. **`expired_total` is also counted by the worker,** for a notification whose claim finds that `expires_at` has passed. ADR-0009's table had it on the relay only; left there, the expiry alert would miss such an expiry. Found in the delegate's report, changed by the main loop.
+  2. **Three metrics the table did not have:** `status_events_published_total` and `status_events_dropped_total{reason}` in api, relay and worker, and `ws_clients_disconnected_total{reason}` in the gateway. "Events can be lost" should be visible.
+  3. **`notifications_finished_total` and `expired_total` are counted where a role hands a transition's event to its publisher:** one place per role, each transition once.
+  4. **Every series of a fixed label set exists at zero from the start;** `http_requests_total` for every route, method and code the specification documents.
+  5. Label values: `route` is the template, `unmatched` without a route, `OTHER` for a method outside the standard ones, `unknown` for a channel that is not one. `sweeper_recovered_total{kind}` is `retrying` or `failed`. `notifications_rejected_total{reason}` is `malformed`, `invalid`, `duplicate` or `idempotency_key`.
+  6. `circuit_state` is 0 closed, 1 half-open, 2 open. `inflight` counts running dispatches. `scheduled_future` counts every pending or retrying row due later, retries waiting for their back-off included.
+  7. `delivery_attempts_total` is counted when the provider call has returned, before the final write.
+  8. The buckets: 0.1 s to 10,800 s for the two long latencies; 5 ms to 30 s for an HTTP request and a provider call; 1 ms to 1 s for a rate-limit wait.
+  9. **The summary's window and "due" cut are counted from the api's clock,** read once per computation (as the scheduling rules are since P4); `generated_at` is that instant. End-to-end latency counts a notification once. The caches are per api process. A failed computation is not cached and is answered `503`.
+  10. **One `ExpirySpike` rule** with both conditions joined by `or`, so the rule count is the ADR's six. `RelayDown` waits 30 s. The rules carry a `severity` label.
+  11. The dashboard does not draw the lanes' high-water marks (configuration, not a metric); it has three panels the ADR's list does not name (queue wait p95, limiter fallback, scrape targets up) and none for the two provider-anomaly counters.
+  12. **Readiness on the admin port is a registry** that a role's service fills through its context; each check gets `READINESS_CHECK_TIMEOUT` (new, 1 s); the body never has a check's error text. A role without checks answers ok with an empty list (the api, the relay and the worker until the third pull request).
+  13. **The gateway has three checks,** `postgres`, `rabbitmq` and `event_consumer`: an open connection alone does not prove that events arrive.
+  14. **The whole snapshot of one subscribe request shares one deadline, `WS_WRITE_TIMEOUT`;** no new variable. A client that misses it is disconnected without a close frame, like one that does not answer a ping.
+  15. The id parameters are bound as strings by `x-go-type`; the path id is checked in the guard (to keep "id before body") and parsed again in the handler.
+- **Observed:**
+  - **One run of `internal/api` failed and was not reproduced.** Right after the summary endpoint was merged into the checkout, one run of the package ended `FAIL`; its output was not kept. 14 full runs of the package since (8 of them four at a time) and 40 repetitions of the summary and contract tests passed, and the two later runs of `make test` are green. Which test it was is not known.
+  - The gauge and summary counts are planned through the expiry index with a status filter, not through the lanes' own indexes, on every dataset tried (`future-work.md`; measured on the large dataset in P6).
+  - On Go's router a `405` on a known path reports no pattern, so its `route` is `unmatched`.
+  - `google/uuid`'s parser is what the oapi-codegen runtime uses for a `format: uuid` parameter; for a string destination the runtime ignores the format.
+  - A stalled WebSocket client still takes about one small message per 100 ms on this machine with 4 KB socket buffers.
+- **Not verified:** the summary and the gauges on a large table (P6); the dashboard by eye in a browser (its queries are run by the smoke test; the layout was not looked at); the alert rules firing on the real stack (they are unit-tested on synthetic series and loaded by Prometheus; none fired during the runs); routes the id guard cannot see (a decode into an `any` whose dynamic type holds a UUID, decoders other than JSON, XML and the generated binding, `Scan` called by the database driver on our own rows, files behind a build tag); `ws_subscriptions` under many subscriptions (it walks the index at scrape time); `make test-docker`; a v2.24.0 Compose binary.
+- **Delegation:** four delegates, each in its own worktree. **Opus** for the id rule with its guard test, from a brief that gave the author's decision and left the binding and the guard's method to it. **Sonnet** for the Prometheus configuration, the alert rules with their unit tests, the dashboard and the smoke test, from a brief that named the files, the metric names and the steps. **Opus** for the metrics of the four roles, from a brief that fixed the names, the label rules and the "series at zero" requirement. **Sonnet** for the summary endpoint, from a brief with the response, the caching rules and the tests. The main loop wrote the snapshot deadline with its two tests (after the first test failed against the code as it was), the readiness registry and the gateway's checks, the worker's expiry count, the four briefs, corrected one runbook line and two SQL comments, merged the four diffs (three conflicts between the metrics and the summary in `internal/api`, both sides kept), read the worker's changes line by line, checked that the two intermediate metrics commits build and vet on their own, ran `make test`, `make test-e2e`, `make check-rules`, lint, the drift check and the stack checks itself, and wrote the documents.
+- **Open issues:** none. Issue 12 is closed.
+- **Next step:** after the merge, `p5/logging-tracing-health`: `slog` with the central handler and the redaction layers, the request log brought in line with ADR-0009 §4, correlation IDs, hybrid tracing, readiness for the api, the relay and the worker, the canary scan (also over the gateway's error messages and every problem document), `make demo`.
 
 ### 2026-11-19 — P5: events and gateway (pull request 1 of 3)
 

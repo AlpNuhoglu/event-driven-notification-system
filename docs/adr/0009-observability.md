@@ -34,7 +34,8 @@ Three properties of this system make observability harder than in a request/resp
 | relay | `lane_queued{channel,priority}` | gauge | **Queue depth:** occupancy of each lane's buffer against its HWM |
 | relay | `lane_oldest_queued_age_seconds{channel,priority}` | gauge | Whether queued work is being consumed; the signal for messages lost without a reconnection ([ADR-0003](0003-bounded-relay-buffer-and-sweepers.md)) |
 | relay | `backlog_due{channel,priority}`, `scheduled_future` | gauge | Work waiting in Postgres; measured every 10 s |
-| relay | `relay_published_total{channel,priority}`, `reconciliation_runs_total`, `reconciled_rows_total`, `sweeper_recovered_total{kind}`, `expired_total{channel,priority}` | counter | Control-plane health |
+| relay | `relay_published_total{channel,priority}`, `reconciliation_runs_total`, `reconciled_rows_total`, `sweeper_recovered_total{kind}` | counter | Control-plane health. `kind` is the status the lease sweeper moved the row to: `retrying` or `failed`. |
+| relay, worker | `expired_total{channel,priority}` | counter | Notifications failed with reason `expired`: by the relay's expiry pass, and by the worker when a claim finds that `expires_at` has passed. Both count, so that the expiry alert sees every expiry. |
 | api, relay, worker | `notifications_finished_total{channel,priority,status}` | counter | Notifications reaching a final status (`sent`, `failed`, `cancelled`), incremented by whichever service performs the final transition. It counts transitions, so a notification that is redriven, or that becomes `sent` through a late success, is counted more than once. It is the denominator of the expiry alert. |
 | worker | `delivery_attempts_total{channel,provider,outcome}` | counter | **Success and failure rates**, via `rate()`. `outcome` takes every final value of [ADR-0007](0007-retry-policy-and-circuit-breaker.md) §2, including `unreachable` and `aborted`. |
 | worker | `provider_request_duration_seconds{channel,provider}` | histogram | Provider latency |
@@ -43,7 +44,8 @@ Three properties of this system make observability harder than in a request/resp
 | worker | `ratelimit_wait_seconds{channel}`, `circuit_state{channel,provider}`, `limiter_fallback_active`, `inflight{channel}` | histogram, gauge | Flow control. `circuit_state` is the only source of circuit state. |
 | worker | `pacer_slots_missed_total{channel}` | counter | Rate-limit slots given up because the claim returned more than the tolerance after them (D77, [ADR-0007](0007-retry-policy-and-circuit-breaker.md) §5). A steady rate above zero means claims are slow: relay batches that take long to commit, or a slow database. |
 | worker | `provider_unexpected_2xx_total{channel,provider,code}`, `provider_malformed_response_total{provider}` | counter | Provider anomalies that still count as success: a `2xx` other than `202` (`code` is the status code, a small fixed set), and a `202` whose body cannot be parsed |
-| gateway | `ws_connections`, `ws_subscriptions` | gauge | Real-time layer |
+| gateway | `ws_connections`, `ws_subscriptions`, `ws_clients_disconnected_total{reason}` | gauge, counter | Real-time layer. A subscription is one id or one batch of one connection. `reason` is `slow_client` (a full send queue) or `snapshot_timeout`. |
+| api, relay, worker | `status_events_published_total`, `status_events_dropped_total{reason}` | counter | The role's event publisher ([ADR-0005](0005-service-topology-and-status-events.md)): events written to the broker, and events dropped because the buffer was full (`buffer_full`), there was no connection (`not_connected`) or the publish failed (`publish_error`) |
 | RabbitMQ | Queue depth, unacked messages, poison queue depth | | **Not re-implemented:** scraped from RabbitMQ's `rabbitmq_prometheus` plugin, which is enabled explicitly. Prometheus scrapes the **per-object (detailed) endpoint**; the default endpoint is aggregated and has no per-queue series. |
 
 **Why `COALESCE(scheduled_at, created_at)` is the start point:**
@@ -53,6 +55,21 @@ Three properties of this system make observability harder than in a request/resp
 - The chosen start point is immutable, so retry and queueing time remain visible.
 
 Histogram buckets run from 100 ms to 3 hours, so a burst backlog is visible rather than collapsed into the last bucket.
+
+**Definitions settled when the metrics were built (P5):**
+
+| Topic | Rule |
+|---|---|
+| Where a transition is counted | `notifications_finished_total` and `expired_total` are counted where a role hands a transition's event to its publisher: every transition reaches it exactly once, after its commit. A role creates only the series it can reach (api `cancelled`; relay `failed`; worker `sent` and `failed` on its channels). |
+| Series at zero | Every series of a fixed label set exists from the start, so a `rate()` over something that has not happened yet is 0, not "no data". `http_requests_total` is created for every route, method and status code the OpenAPI specification documents. |
+| `route` | The route template. A request that matches no route is `unmatched` (also a `405` on a known path, for which the router reports no pattern); a method outside the standard ones is `OTHER`. |
+| `notifications_rejected_total{channel,reason}` | `reason` is `malformed` (400, 413, 415), `invalid` (422), `duplicate` (409 and a duplicate item of a batch) or `idempotency_key` (an invalid or reused key). `channel` is the request's when it is a channel, otherwise `unknown`. A rejected item of a batch counts once; a batch refused as a whole counts once with `unknown`. A `5xx` and a replay count nothing. |
+| `delivery_attempts_total` | Counted when the provider call has returned, before the final write. For an attempt whose final write never lands (the lease sweeper closes it later) the counter and `notification_attempts` can differ. |
+| `inflight{channel}` | Running dispatches (claim, slot wait, send, final write): the quantity the concurrency limit bounds. |
+| `circuit_state` | 0 closed, 1 half-open, 2 open. It moves when the breaker changes state, and open becomes half-open only when the next message asks: in a channel with nothing to send, a circuit whose open period has ended still reads 2. The alert is written on "not closed" and reads the same either way. |
+| `scheduled_future` | Pending and retrying rows that are due later: scheduled notifications and retries waiting for their back-off. |
+| Gauges of the relay | Measured at start and every `BACKLOG_GAUGE_INTERVAL` by a loop of their own, in two statements that read only rows that are not finished. An age is 0 when the lane has nothing queued. |
+| Buckets | `end_to_end_latency_seconds`, `queue_wait_seconds`: 0.1 s to 10,800 s. `http_request_duration_seconds`: 5 ms to 30 s. `provider_request_duration_seconds`: 5 ms to 30 s. `ratelimit_wait_seconds`: 1 ms to 1 s. |
 
 ### 2. Metrics summary as JSON
 
@@ -88,6 +105,7 @@ The Prometheus endpoint exposes raw counters; rates and percentiles require Prom
   - end-to-end latency joins the window's successful attempts to their notifications.
 - **Postgres is the endpoint's only dependency.** There is no `circuits` field: circuit state lives in the worker processes and is exposed by their `circuit_state` metric.
 - **Caching.** The result is cached for **2 seconds**, behind **`singleflight`**, so concurrent requests share one computation. **`backlog_due` is cached separately for 10 seconds,** because counting due rows on a table with a large backlog is the most expensive part.
+- **Details (P5).** `lanes` always has the nine lanes and `channels` the three channels, in a fixed order. `hwm` is the lane's configured high-water mark. The window and the "due" cut are counted from the api's clock, read once per computation; `generated_at` is that instant, so a cached answer shows when it was computed. End-to-end latency counts a notification once however many successful attempts it has in the window. A percentile is `null` when there is nothing to measure. A failed computation is not cached and is answered `503`. The caches are per api process.
 
 ### 3. Dashboard and alerts
 
@@ -107,6 +125,8 @@ Shipped in the repository and provisioned automatically, so they are available r
 | Limiter fallback | `limiter_fallback_active == 1` |
 
 The thresholds are first values, set when the rules are written and tuned against the load and chaos results. Each rule carries a one-line runbook note in `alerts.yml`.
+
+**As built (P5):** `deploy/prometheus/alerts.yml` has the six rules `RelayDown` (for 30 s), `HighLaneStalled`, `PoisonMessages` (the per-object depth of the `dispatch.<channel>.poison` queues), `ExpirySpike` (one rule with both conditions joined by `or`; when nothing finished, the ratio has no sample and stays silent), `CircuitNotClosed` (`circuit_state != 0` for 5 minutes) and `LimiterFallbackActive`. `alerts_test.yml` holds unit tests for them, a series that fires each rule and one that does not, among them a circuit that alternates between open and half-open for six minutes. `make check-rules` runs `promtool check rules` and `promtool test rules` with the pinned Prometheus image, also in CI. The dashboard has 24 panels; the lanes' high-water marks are configuration, not a metric, and are not drawn. The smoke test reads the panel queries from the dashboard file and runs each against Prometheus after the end-to-end run; it also requires the four role targets to be up and the six rules to be loaded.
 
 **Both are tested** ([ADR-0010](0010-testing-and-ci.md)): after the end-to-end run, a smoke test executes every dashboard panel query and fails if one returns no data, and `promtool check rules` validates the alert file.
 
@@ -178,6 +198,8 @@ Retries and scheduled deliveries: a new trace, linked to the request
 
 The readiness response is JSON, with the status and duration of each check. On the api's public port a failed readiness is a `503` problem document ([ADR-0006](0006-api-contract-and-three-layer-idempotency.md) §9) that carries the same list in its `checks` member.
 
+**On the admin port** a role registers its checks when it starts, and `/readyz` runs them on every request: `{"status":"ok"|"fail","checks":[{"name","status","duration_ms"}]}`, `200` when all pass and `503` otherwise. Each check gets `READINESS_CHECK_TIMEOUT` (1 s); one that has not answered by then has failed and does not hold the answer. A check's error text is not in the body. The gateway's three checks are `postgres`, `rabbitmq` (the connection is open) and `event_consumer` (the consumer loop is active); none passes before the service has connected.
+
 ### 8. Admin port
 
 Each service serves `/metrics`, `/healthz`, `/readyz` and `/debug/pprof/*` on a separate admin port (`:8081`), apart from the public API (`:8080`) and the gateway's WebSocket port (`:8082`).
@@ -232,4 +254,5 @@ Changes made after the design review, recorded in the [design review log](../ai/
 - Four dashboards and five untested alerts became one "Overview" dashboard with a panel smoke test and `promtool`-checked rules; metrics for leadership and stale events were replaced by reconciliation and oldest-queued-age metrics, and the alerts received first thresholds, with the two metrics the expiry rule needs. (D41, D74, D75)
 - Redaction gained a `Recipient` log type and a canary scan over logs, spans and metrics, because key-based redaction misses values outside named attributes. (D42)
 - The trace rule became hybrid: the first attempt of a non-scheduled notification sits under the request's trace, and retries and scheduled deliveries start linked traces. (D13)
+- In P5 the metrics, the summary, the dashboard, the alert rules and the gateway's readiness were built, and the points the table had left open were defined (the table above); `expired_total` is also counted by the worker for an expiry found at claim time, and the event publishers' and the gateway's disconnection counters were added. (D41, D74, D75, D77)
 - The summary dropped its `circuits` field and gained a defined `success_rate` and a separate `backlog_due` cache; RabbitMQ is scraped per object; `X-Request-ID` is validated; Jaeger is pinned to 2.x. (D39, D9, D35, D43)

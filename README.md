@@ -1,6 +1,6 @@
 # Event-Driven Notification System
 
-> **Work in progress.** The core path is implemented: a notification created through the API is stored, published, rate-limited and sent to the provider, notifications can be created in batches with two layers of duplicate prevention (`Idempotency-Key`, `dedupe_key`), they can be listed, cancelled and redriven, they can be created from versioned templates and scheduled for later delivery, every request is validated for its channel, with the SMS segment count reported, and a client can follow its notifications in real time over a WebSocket. The metrics summary, the dashboard, tracing and `make demo` follow in the phases of the [implementation plan](docs/plan/implementation-plan.md); [progress](docs/progress.md) shows where the work stands. This README grows with it.
+> **Work in progress.** The core path is implemented: a notification created through the API is stored, published, rate-limited and sent to the provider, notifications can be created in batches with two layers of duplicate prevention (`Idempotency-Key`, `dedupe_key`), they can be listed, cancelled and redriven, they can be created from versioned templates and scheduled for later delivery, every request is validated for its channel, with the SMS segment count reported, a client can follow its notifications in real time over a WebSocket, and the metrics are served as JSON, to Prometheus and on a Grafana dashboard with alert rules. Structured logging, tracing and `make demo` follow in the phases of the [implementation plan](docs/plan/implementation-plan.md); [progress](docs/progress.md) shows where the work stands. This README grows with it.
 
 A notification service written in Go that accepts SMS, Email and Push notifications through a REST API and delivers them asynchronously through an external provider. It is built around a Postgres outbox, a RabbitMQ dispatch broker with strict priority, a per-channel rate limit of at most 100 messages per second, retries classified by failure scope, and real-time status tracking.
 
@@ -270,6 +270,20 @@ curl -sS -X POST localhost:8080/v1/notifications/<id>/redrive \
 To try cancel and redrive on the mock profile, make the mock provider fail first with `curl -X PUT localhost:8090/admin/config -H 'Content-Type: application/json' -d '{"status":500}'` (a notification then fails after its retries), and set it back with `{"status":202}`.
 
 `PUT /admin/config` replaces the whole configuration and is strict (an unknown field or an out-of-range value is `400`). Besides the `{"status":N}` shorthand it takes `{"default": {rule}, "channels": {"sms": {rule}, "email": {rule}, "push": {rule}}}`; a channel without a rule uses `default`. A rule may set `status`, `fail_status`, `fail_rate`, `fail_first` (the first N requests of each `Idempotency-Key` fail), `retry_after` (sent on `429` and `503`), `location` (sent on `3xx`), `latency_ms`, `latency_jitter_ms`, `close_connection`, `hang` and `malformed_body`. For example, `{"default":{"fail_first":2,"fail_status":503,"retry_after":"1"}}` makes every notification fail twice and then succeed. `POST /admin/reset` restores the default (`202`, no faults). `GET /admin/report` adds a `statuses` count per channel (`"closed"` and `"hung"` for requests that got no answer).
+
+### Metrics, dashboard and alerts
+
+The figures as JSON, computed from the database (cached for 2 seconds):
+
+```
+curl -fsS localhost:8080/v1/metrics/summary
+```
+
+It lists, per lane (channel and priority), the queued count against its high-water mark and the due backlog; and per channel the attempts of the last 5 minutes by outcome, the `success_rate` (successes over all finished attempts except `aborted`; `null` without any), and the median and 95th percentile of the provider latency and of the end-to-end latency in milliseconds.
+
+- **Grafana:** http://localhost:3000, dashboard "Overview" (login `admin` / `admin`, Grafana's default; a local development stack only). Ingest, lane depth, backlog, attempts by outcome, latencies, circuit state, rate-limit wait, RabbitMQ queues, API requests.
+- **Prometheus:** http://localhost:9090. The six alert rules are under "Alerts" (there is no Alertmanager): relay down, `high` lane stalled, poison messages, expiry spike, circuit not closed, limiter fallback. `make check-rules` validates the rule file and runs its unit tests.
+- Each service serves `/metrics`, `/healthz` and `/readyz` on its admin port (8081), which is not published to the host; Prometheus scrapes it inside the Compose network.
 
 ### Real-time status updates
 
