@@ -141,6 +141,8 @@ WHERE id = $1 AND status = 'processing' AND attempt_count = $2;
 - **A late worker's write affects zero rows.** Its attempt row is still updated with the true outcome ([section 6](#6-tables)), so no information is lost.
 - **Late success (transition 12):** only a claim increments `attempt_count`. So `attempt_count = $n` means *"no newer attempt has started since mine"*. If the late worker succeeded and the row is in any state other than `processing` or `sent`, the message was delivered and the row moves to `sent`. This covers a row that the lease sweeper returned to `retrying`, that the relay republished (`queued`) or reconciled (`pending`), that exhausted its budget or expired (`failed`), or that the client cancelled in the meantime. A copy still in RabbitMQ is then dropped by its claim guard. In the most common stall scenario this prevents a duplicate send.
 - **The final write is retried.** If Postgres is unavailable when the provider has answered, the worker retries its final write with back-off for up to **60 seconds**: transition 4 first, and transition 12 if that affects zero rows. After that the result is lost to the row, the lease sweeper marks the attempt `unknown`, and the notification is retried; this is one of the windows in which a duplicate send can occur.
+- **Why repeating the write is safe.** Every final write is fenced by `attempt_count`. The repeat of a write whose commit succeeded but whose answer was lost finds the row changed and is not applied. The retries can outlast the lease: a success that lands after the lease sweeper took the row still moves it to `sent` through transition 12 unless a newer attempt has started; a failure that lands afterwards only corrects its attempt row.
+- **What transition 12 sets** (as implemented): `status`, `sent_at`, the provider fields, `version` and `updated_at`; it clears `failure_reason` (the row may come from `failed`), `lease_expires_at` and `queued_at` (on a row that was published again it would record a publish made after the attempt that succeeded). It leaves `attempt_count`, `failures` (the swept attempt keeps the budget it consumed; only redrive resets it), `due_at` and `expires_at`. The attempt row, `unknown` since the sweep, gets the true outcome in the same transaction. The repository function reports which transition applied and the status the row left; the worker logs a late success.
 - **The fencing token must be monotonic.** If redrive reset `attempt_count`, a token could repeat and a very old late worker could match a new attempt. That is why redrive resets `failures` and never `attempt_count`.
 
 ### 5. Retry decisions: one function
@@ -238,7 +240,7 @@ A late worker therefore overwrites `unknown` with the **true** outcome, includin
 | Index | Used by |
 |---|---|
 | `notifications (channel, priority, due_at) WHERE status IN ('pending','retrying')` | Relay lane selection |
-| `notifications (channel, priority, queued_at) WHERE status = 'queued'` | HWM count, oldest-queued age, reconciliation |
+| `notifications (channel, priority, queued_at) WHERE status = 'queued'` | HWM count, oldest-queued age, reconciliation (measured in P3: with 200,000 queued rows the planner reads them through the expiry index instead; [ADR-0003](0003-bounded-relay-buffer-and-sweepers.md) §3) |
 | `notifications (lease_expires_at) WHERE status = 'processing'` | Lease sweeper |
 | `notifications (expires_at) WHERE status IN ('pending','retrying','queued')` | Expiry pass |
 | `notifications (created_at DESC, id DESC)` | Listing and keyset pagination |

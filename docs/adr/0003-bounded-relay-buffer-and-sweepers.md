@@ -61,6 +61,26 @@ Recovers messages that were published but can no longer be consumed.
 | When recovery gives up | The recovery budget is 24 attempts at 5 s, about 2 minutes (`AMQP_RECOVERY_MAX_RETRIES`, `AMQP_RECOVERY_RETRY_INTERVAL`). If it is used up, the connection's state changes to `closed` with an error and the relay exits with a non-zero code. The container runtime restarts it, and the new process declares the topology and reconciles on its first connection ([ADR-0005](0005-service-topology-and-status-events.md)). |
 | Dependencies | Postgres and RabbitMQ only |
 
+**The statement and where it runs** (as implemented in P3):
+
+| Aspect | Rule |
+|---|---|
+| Statement | One statement: the `queued` rows are locked in `id` order and then updated. `status`, `queued_at` (cleared), `version` and `updated_at` change; `attempt_count`, `failures`, `due_at`, `expires_at` and the `dedupe_key` do not. |
+| Lock order | `id`, the order of the batch cancel, the only other statement that waits for several rows; without it the two deadlocked in the first round of their test. Every other writer holds at most one row while it waits (claim, cancel, redrive, final writes) or never waits (lane transaction, expiry pass, lease sweeper). |
+| Rows held by another transaction | Waited for, not skipped: a row skipped while a cancel holds it, whose transaction then rolls back, would stay `queued` with no copy in the broker. After the wait a row that is no longer `queued` is left alone. |
+| Where it runs | In the publishing loop's own goroutine, between two ticks, never while a lane transaction is open. The statement takes the rows that are `queued` in its snapshot; a lane that committed `queued` just after it started would be missed. With one relay and reconciliation serialized with the lanes that cannot happen. |
+| Timing | The publishing loop compares the connection's count of (re)connections with the count it has served, at every tick, so none is missed and several between two ticks are one trigger. A run starts at the first tick after its trigger; a deferred run at the first tick after the window ends (up to one tick, 100 ms, late). The window is measured from the start of the last successful run. A run that fails is retried at every tick and does not count as a run. |
+| `requeue-stale` | The same statement with `queued_at < now() − threshold`; `--all` is reconciliation itself. The command connects to Postgres only and serves no admin port, so it runs next to a live relay. It prints `requeue-stale: N notifications returned to pending` and exits 0; a usage error exits 2, a configuration or database error 1. The relay's Compose service names the binary as its entrypoint so that `docker-compose run --rm relay requeue-stale` reaches it. |
+
+**Measured on a large backlog** (P3; 200,000 `queued` rows next to 300,000 rows in other states, Postgres 18.7 with Compose's default settings, fresh statistics, a loaded machine):
+
+| Statement | Rows | Plan | Time, custom plan | Time, generic plan | Row locks held | WAL | Events in memory |
+|---|---|---|---|---|---|---|---|
+| Reconciliation | 200,000 | Expiry index filtered on `status = 'queued'`, sort by `id` (on disk, 6 MB), row locks, hash join back to the table, update | 2.7 s (2.8 to 3.1 s from Go) | 2.6 s (the statement has no parameters: one plan) | about 2.6 s | 454 MB | 26 MB |
+| `requeue-stale` (5 minutes) | about 155,000 | The same with the `queued_at` filter; identical in both modes | 2.2 s (2.5 to 3.5 s from Go) | 2.2 s | about 2 s | 410 MB | 21 MB |
+
+The high-water marks keep the real set at about 6,000 rows, where the same statement takes well under 100 ms. At 200,000 rows it is a three-second transaction: acceptable for an event as rare as a reconnection, not cheap. If the high-water marks are ever raised by an order of magnitude, the lever is to run it in chunks in `id` order (each lock then held for about 0.1 s, memory bounded); the single statement is kept because it is simpler and the set is bounded.
+
 The rule is deliberately coarse. After a reconnection the relay cannot know whether the broker kept its data, so it treats every `queued` row as possibly lost. The HWM keeps that set small (about 6,000 rows), and the claim guard makes the resulting duplicates harmless.
 
 **What reconciliation does not cover.** A message that disappears while the connection stays up is not detected automatically: a message dead-lettered to a poison queue ([ADR-0001](0001-rabbitmq-as-dispatch-broker.md)), or a publish wrongly recorded as `queued`. For these there are two tools and one bound:
@@ -120,7 +140,33 @@ Three statement classes of this system were correct and fast in `EXPLAIN` and sl
 | One relay tick (count and nine lanes) | about 6 s | about 40 ms |
 | One sweep of 500 expired leases | 42 to 48 s | about 0.2 s |
 
-This is not the generic-plan defect: custom and generic plan are equal here, and both are stale. It ends when autovacuum analyses the table, which invalidates the cached plans: 22 s after the insert in the one run measured, and in general within the autovacuum launcher's cycle (60 s by default) plus the time of the `ANALYZE`. It affects every cached statement of every role, and also the foreign-key checks that Postgres runs inside the claim's insert, which the application cannot plan differently by changing how it sends a statement. Three remedies were measured; the choice is **open issue 10** in [`progress.md`](../progress.md), and the table of their costs is there. Two cases stay slow under every plan until statistics are fresh, because the planner itself is misled: `CountQueuedByLane` with statistics from a steady state without a backlog (100 to 200 ms per tick), and the sweeper's `MarkRetrying` with 200,000 expired leases and statistics from a small table (about 30 ms per row).
+This is not the generic-plan defect: custom and generic plan are equal here, and both are stale. It ends when autovacuum analyses the table, which invalidates the cached plans: 22 s after the insert in the one run measured, and in general within the autovacuum launcher's cycle (60 s by default) plus the time of the `ANALYZE`. It affects every cached statement of every role, and also the foreign-key checks that Postgres runs inside the claim's insert, which the application cannot plan differently by changing how it sends a statement. Three remedies were measured, and the author chose the first (**D79**, below). Two cases stay slow under every plan until statistics are fresh, because the planner itself is misled: `CountQueuedByLane` with statistics from a steady state without a backlog (100 to 200 ms per tick), and the sweeper's `MarkRetrying` with 200,000 expired leases and statistics from a small table (about 30 ms per row).
+
+**D79: every pool plans with the current values.** `plan_cache_mode = force_custom_plan` is set on every Postgres pool the application opens (`store.OpenPool`, used by the api, the relay and the worker; a guard test fails when non-test code opens a pool any other way, and a test per role asserts the setting on a pooled connection). It is set in code as a startup parameter, so a `DATABASE_URL` works unchanged and one that names another mode does not decide. Postgres then plans every execution with the table's current size, also the foreign-key checks, which no change to how a statement is sent can reach. A statement without parameters is never re-planned under the setting, so the relay's count runs as an unnamed statement.
+
+**D79 is the general rule.** The listing (P2), the expiry pass and the idempotency-key cleanup (the first P3 pull request) were moved to unnamed statements one by one, each when its defect was found, before the rule existed. They stay as they are: an unnamed statement is planned with its values under any setting, so the two mechanisms do not conflict, and their tests (`TestList_RunsWithCustomPlans`, `TestExpiry_RunsWithCustomPlans`) keep guarding them.
+
+**Measured again on the real code** (the tree with D79 against the commit before it; the same sequence: statistics from about 50 rows, the statements executed 35 times, then 1,000,000 pending rows across the lanes and 550,000 rows in other states without an `ANALYZE`; autovacuum off on both tables for the run; a loaded machine):
+
+| | Before D79 | With D79 |
+|---|---|---|
+| One relay tick (count and nine lanes) | 5.8 to 6.8 s | 32 to 36 ms |
+| The count alone | 104 to 227 ms (sequential scan and sort) | 0.4 to 2.0 ms (index-only scan of the queued-lane index) |
+| Claim with its final write, first 10 messages | 260 to 607 ms | 1.0 to 1.4 ms |
+| The foreign-key check inside the claim | up to 87 ms (sequential scan; 3 of 20 checks) | 0.002 to 0.003 ms (primary key), all 20 |
+| A sweep of 500 expired leases (200,000 expired) | 41 to 44 s | 15 to 19 s |
+
+Every statement shows `generic_plans = 0` afterwards. The cost at steady state is about 0.1 to 0.2 ms per message and 0.2 to 0.3 ms per relay tick.
+
+**What D79 does not cover: a planner misled by stale statistics.** The sweep in the table is still slow: with statistics from a small table the planner picks the lease index for the per-row update, and that index now holds 200,000 entries (29 ms per row). The same class turned out to be broader than the two cases named above when the burst was repeated on the Compose stack. There the statistics were taken while the outbox was **empty** (everything sent), which is the normal idle state. With them, the custom plan of the claim, and of the relay's update to `queued`, looks the row up through the partial expiry index, which the statistics say is empty and which then holds every pending row:
+
+| First minute after 1,000,000 rows arrive (Compose, autovacuum off for the run) | Arrivals at the provider, per channel | Sent after 60 s |
+|---|---|---|
+| Before D79 | 0 to 25 per second for 8 s, then about 32 per second | 5,846 |
+| With D79, statistics from an empty outbox | about 35 per second (each claim about 290 ms) | 6,344 |
+| With D79, tables never analysed | 98 per second from the first second | 18,253 |
+
+So D79 removes the stale cached plans, and on a stack whose tables were analysed while idle the first minute of a large burst is still about a third of the configured rate, until autovacuum's `ANALYZE` (with default settings at most about a minute after the burst). Nothing is lost or repeated, and the logs show nothing: the only symptom is the slow provider. The remedy is at the level of statistics and is open issue 11 in [`progress.md`](../progress.md).
 
 ## Alternatives considered
 
@@ -162,5 +208,6 @@ Changes made after the design review, recorded in the [design review log](../ai/
 - The lease now accounts for the rate-limit wait after the claim, and the lease sweeper sets `finished_at` on the attempts it marks `unknown`. (D20)
 - Lanes are counted in Postgres over one broker queue per channel; "about 6,000 messages" became "about 6,000 distinct notifications; duplicates possible". (D7)
 - After experiment E4 (P0), the reconciliation trigger was named exactly (the connection's change from `reconnecting` to `open`), and the recovery budget of 24 attempts at 5 s was added. (D5)
+- In P3 reconciliation was implemented: its statement locks in `id` order, waits for held rows, runs serialized with the lane transactions, and was measured on 200,000 queued rows (section 3). D79 put `plan_cache_mode = force_custom_plan` on every pool; the repeat of the burst measurement on the real code confirmed it and showed what it does not cover (section 6).
 - In P3, after the expiry pass had been found slow under a cached generic plan, every periodic and per-message statement was measured under both plan modes (section 6). The eleven statements have the same plan either way and stay cached; the measurement also found that plans cached while a table was small stay in use after a burst until the next `ANALYZE`.
 - The rejection of unbounded publishing no longer cites memory pressure, which does not apply to quorum queues; unbounded backlog in Postgres is now listed as a known limitation. (D56)
