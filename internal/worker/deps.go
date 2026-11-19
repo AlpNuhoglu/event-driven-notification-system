@@ -142,6 +142,11 @@ type Response struct {
 	// RetryAfter is the response's Retry-After header, verbatim; empty when
 	// there is none.
 	RetryAfter string
+	// ErrorBody is the body of an answer that is not a 2xx (a bounded part
+	// of it; ErrorBodyCut reports that it was longer). It can quote the
+	// request and is never logged.
+	ErrorBody    string
+	ErrorBodyCut bool
 }
 
 // Store holds the transitions the worker performs (implemented by

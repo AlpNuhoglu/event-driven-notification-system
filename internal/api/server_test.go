@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -19,6 +20,7 @@ import (
 	spec "github.com/AlpNuhoglu/event-driven-notification-system/api"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/domain"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/platform/config"
+	"github.com/AlpNuhoglu/event-driven-notification-system/internal/platform/logging"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/store"
 )
 
@@ -29,6 +31,12 @@ func readErrorsDoc(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return string(b)
+}
+
+// testLogger is the role's logger as bootstrap builds it (the central
+// handler), at debug level, so that the tests see every line the api writes.
+func testLogger(w io.Writer) *slog.Logger {
+	return logging.New(w, logging.Options{Service: "api", Level: slog.LevelDebug})
 }
 
 // syncBuffer is a log sink that handlers may write to concurrently.
@@ -118,7 +126,7 @@ func newFakeAPI(t *testing.T, repo *fakeRepo) (*apiClient, *syncBuffer) {
 	h := NewHandler(Options{
 		Repository:   repo,
 		DB:           repo,
-		Logger:       slog.New(slog.NewJSONHandler(logs, nil)),
+		Logger:       testLogger(logs),
 		Retry:        testRetry(),
 		MaxBodyBytes: 1024,
 		DBTimeout:    1000 * time.Millisecond,
@@ -188,9 +196,10 @@ func TestStoreErrors(t *testing.T) {
 	for _, tt := range []struct {
 		err    error
 		status int
+		class  string
 	}{
-		{puddle.ErrClosedPool, http.StatusServiceUnavailable},
-		{errors.New("unexpected"), http.StatusInternalServerError},
+		{puddle.ErrClosedPool, http.StatusServiceUnavailable, "postgres pool closed"},
+		{errors.New("unexpected"), http.StatusInternalServerError, "error of type *errors.errorString"},
 	} {
 		c, logs := newFakeAPI(t, &fakeRepo{err: tt.err})
 		if res := c.post(validBody); res.status != tt.status {
@@ -199,8 +208,12 @@ func TestStoreErrors(t *testing.T) {
 		if res := c.get("/v1/notifications/" + id); res.status != tt.status {
 			t.Errorf("%v: get status %d, want %d", tt.err, res.status, tt.status)
 		}
-		if !strings.Contains(logs.String(), `"error":"`+tt.err.Error()+`"`) {
-			t.Errorf("%v: cause not in the log line: %s", tt.err, logs)
+		// The cause is logged by its class, never by its text.
+		if n := strings.Count(logs.String(), `"error":"`+tt.class+`"`); n != 2 {
+			t.Errorf("%v: %d lines with the cause's class, want 2: %s", tt.err, n, logs)
+		}
+		if strings.Contains(logs.String(), tt.err.Error()) {
+			t.Errorf("%v: the cause's text is in the log: %s", tt.err, logs)
 		}
 	}
 }

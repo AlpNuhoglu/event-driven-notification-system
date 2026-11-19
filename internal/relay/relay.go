@@ -19,6 +19,7 @@ import (
 
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/domain"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/events"
+	"github.com/AlpNuhoglu/event-driven-notification-system/internal/platform/logging"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/platform/tracing"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/queue"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/store"
@@ -245,7 +246,7 @@ func (r *Relay) cycle(ctx context.Context) error {
 			}
 			r.metrics.publishedLane(lane, len(evs))
 			for _, e := range evs {
-				r.events.Publish(e)
+				r.publish(ctx, e)
 			}
 		}
 	}
@@ -299,8 +300,17 @@ func (r *Relay) sweep(ctx context.Context) {
 	}
 	r.metrics.recoveredBySweeper(evs)
 	for _, e := range evs {
-		r.events.Publish(e)
+		r.publish(ctx, e)
 	}
+}
+
+// publish hands the event of a transition to the event publisher and logs
+// it (logging.Transition: info for a final outcome, debug otherwise). The
+// relay's contexts carry no correlation id, so the line carries the
+// notification's own, from its row (ADR-0009 §5).
+func (r *Relay) publish(ctx context.Context, e domain.StatusChanged) {
+	r.events.Publish(e)
+	logging.Transition(ctx, r.logger, e)
 }
 
 // RunExpiry runs the expiry pass (transition 10, ADR-0002 "Expiry", D12)
@@ -336,7 +346,7 @@ func (r *Relay) expire(ctx context.Context) {
 		}
 		r.metrics.expiredByPass(evs)
 		for _, e := range evs {
-			r.events.Publish(e)
+			r.publish(ctx, e)
 		}
 		if len(evs) < r.cfg.ExpiryBatch {
 			return

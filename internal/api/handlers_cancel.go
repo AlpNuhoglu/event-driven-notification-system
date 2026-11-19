@@ -10,6 +10,7 @@ import (
 
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/api/apigen"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/domain"
+	"github.com/AlpNuhoglu/event-driven-notification-system/internal/platform/logging"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/store"
 )
 
@@ -38,6 +39,7 @@ func (h *handlers) CancelNotification(ctx context.Context, req apigen.CancelNoti
 	}
 	if res.Applied {
 		h.events.Publish(ev)
+		logging.Transition(ctx, h.log, ev)
 	}
 	return apigen.CancelNotification200JSONResponse{
 		Body: apigen.CancelResult{
@@ -68,6 +70,7 @@ func (h *handlers) CancelBatch(ctx context.Context, req apigen.CancelBatchReques
 	}
 	for _, ev := range evs {
 		h.events.Publish(ev)
+		logging.Transition(ctx, h.log, ev)
 	}
 	return apigen.CancelBatch200JSONResponse{
 		Body: apigen.BatchCancelResult{
@@ -98,6 +101,7 @@ func (h *handlers) RedriveNotification(ctx context.Context, req apigen.RedriveNo
 		return nil, h.transitionProblem(err)
 	}
 	h.events.Publish(ev)
+	logging.Transition(ctx, h.log, ev)
 	return apigen.RedriveNotification200JSONResponse{
 		Body:    toNotification(n),
 		Headers: apigen.RedriveNotification200ResponseHeaders{XRequestID: stateFrom(ctx).correlationID},

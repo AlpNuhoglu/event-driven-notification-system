@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"log/slog"
 	"testing"
 	"time"
 
@@ -58,7 +57,7 @@ func newListAPI(t *testing.T, repo *listRepo) (*apiClient, *syncBuffer) {
 	h := NewHandler(Options{
 		Repository:   repo,
 		DB:           repo,
-		Logger:       slog.New(slog.NewJSONHandler(logs, nil)),
+		Logger:       testLogger(logs),
 		Retry:        testRetry(),
 		MaxBodyBytes: 1024,
 		DBTimeout:    1000 * time.Millisecond,

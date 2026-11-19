@@ -25,6 +25,11 @@ import (
 // maxBody bounds how much of a response body is read.
 const maxBody = 64 << 10
 
+// MaxErrorBody bounds how much of the body of an answer that is not a 2xx
+// is kept (Response.ErrorBody). It is several times what is stored (1 KB),
+// so that the values to remove from it are still whole when it is cut.
+const MaxErrorBody = 8 << 10
+
 // Config configures a Client.
 type Config struct {
 	// URL is the provider endpoint (PROVIDER_URL); absolute http or https.
@@ -71,6 +76,13 @@ type Response struct {
 	// RetryAfter is the response's Retry-After header, verbatim; empty when
 	// the response has none. The caller decides whether to use it.
 	RetryAfter string
+	// ErrorBody is the body of a response that is not a 2xx, at most
+	// MaxErrorBody bytes of it; ErrorBodyCut reports that the body was
+	// longer. It is the provider's own text and can quote the request: the
+	// caller removes the message's values from it before it stores it, and
+	// nothing logs it (ADR-0009 §4).
+	ErrorBody    string
+	ErrorBodyCut bool
 }
 
 // Client sends notifications to one provider.
@@ -221,6 +233,13 @@ func (c *Client) Send(ctx context.Context, r Request) Response {
 		}
 	case resp.StatusCode/100 == 2:
 		c.unexpected.WithLabelValues(string(r.Channel), c.cfg.Name, strconv.Itoa(resp.StatusCode)).Inc()
+	default:
+		// One byte more than is kept tells a longer body from one that fits.
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, MaxErrorBody+1))
+		if len(raw) > MaxErrorBody {
+			raw, out.ErrorBodyCut = raw[:MaxErrorBody], true
+		}
+		out.ErrorBody = string(raw)
 	}
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxBody))
 	out.Latency = time.Since(start)

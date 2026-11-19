@@ -394,6 +394,8 @@ func (p providerClient) Send(ctx context.Context, r Request) Response {
 		Latency:      res.Latency,
 		WroteRequest: res.WroteRequest,
 		RetryAfter:   res.RetryAfter,
+		ErrorBody:    res.ErrorBody,
+		ErrorBodyCut: res.ErrorBodyCut,
 	}
 }
 

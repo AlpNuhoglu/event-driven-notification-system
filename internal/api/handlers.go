@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/domain"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/events"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/platform/config"
+	"github.com/AlpNuhoglu/event-driven-notification-system/internal/platform/logging"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/store"
 )
 
@@ -55,6 +57,9 @@ type handlers struct {
 	// summary computes and caches the metrics summary.
 	summary *summaryService
 	metrics *Metrics
+	// log receives the lines of the notifications a request creates or
+	// changes, with the request's context (its correlation id).
+	log *slog.Logger
 }
 
 // createRules returns the rules a create request is validated by, with the
@@ -116,6 +121,11 @@ func (h *handlers) CreateNotification(ctx context.Context, _ apigen.CreateNotifi
 	switch res.Outcome {
 	case store.OutcomeCreated:
 		h.metrics.createdOne(n.Channel, n.Priority, sourceSingle)
+		// Creation is not a final outcome: debug (ADR-0009 §4).
+		h.log.LogAttrs(ctx, slog.LevelDebug, "notification created",
+			slog.String(logging.FieldNotificationID, created.Id.String()),
+			slog.String(logging.FieldChannel, string(n.Channel)),
+			slog.String(logging.FieldPriority, n.Priority.String()))
 		return apigen.CreateNotification202JSONResponse{
 			Body: created,
 			Headers: apigen.CreateNotification202ResponseHeaders{
@@ -212,6 +222,10 @@ func (h *handlers) CreateNotificationBatch(ctx context.Context, _ apigen.CreateN
 		if in.answer != nil {
 			in.answer.rejected = accepted.Rejected
 		}
+		h.log.LogAttrs(ctx, slog.LevelDebug, "notification batch created",
+			slog.String(logging.FieldBatchID, accepted.BatchId.String()),
+			slog.Int("accepted", len(accepted.Accepted)),
+			slog.Int("rejected", len(accepted.Rejected)))
 		return apigen.CreateNotificationBatch202JSONResponse{
 			Body: accepted,
 			Headers: apigen.CreateNotificationBatch202ResponseHeaders{

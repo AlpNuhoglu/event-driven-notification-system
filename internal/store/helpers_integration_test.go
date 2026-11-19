@@ -185,8 +185,18 @@ func checkTransition(t *testing.T, before, after Notification, ev domain.StatusC
 	if !after.UpdatedAt.After(before.UpdatedAt) {
 		t.Errorf("updated_at %v not after %v", after.UpdatedAt, before.UpdatedAt)
 	}
-	if !reflect.DeepEqual(ev, after.Event()) {
+	// The published members match the row. The correlation id is not one of
+	// them: transition 8 returns only the event's columns and leaves it
+	// empty; every other transition carries the row's.
+	published := func(e domain.StatusChanged) domain.StatusChanged { e.CorrelationID = ""; return e }
+	if !reflect.DeepEqual(published(ev), published(after.Event())) {
 		t.Errorf("event %+v does not match stored row %+v", ev, after.Event())
+	}
+	if ev.CorrelationID != "" && ev.CorrelationID != after.CorrelationID {
+		t.Errorf("event correlation id %q, row %q", ev.CorrelationID, after.CorrelationID)
+	}
+	if ev.CorrelationID == "" && after.CorrelationID != "" && want != domain.StatusPending {
+		t.Errorf("a transition to %s returned an event without the row's correlation id", want)
 	}
 	if !reflect.DeepEqual(immutableOf(before), immutableOf(after)) {
 		t.Errorf("immutable columns changed:\nbefore %+v\nafter  %+v", immutableOf(before), immutableOf(after))

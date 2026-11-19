@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/domain"
+	"github.com/AlpNuhoglu/event-driven-notification-system/internal/platform/logging"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/store"
 )
 
@@ -74,7 +75,11 @@ func (w *Worker) deliver(shutdown, ctx context.Context, m Message, slot time.Tim
 		return w.nextForSlot(slot)
 	}
 	processClaimed(span, c.Notification)
+	// From here on every line of this notification carries its correlation
+	// id, read from its row by the claim (ADR-0009 §5).
+	ctx = logging.WithCorrelationID(ctx, c.Notification.CorrelationID)
 	w.events.Publish(ev)
+	logging.Transition(ctx, w.log, ev)
 	if c.Expired {
 		processOutcome(span, processExpired)
 		return w.nextForSlot(slot)
@@ -103,18 +108,18 @@ func (w *Worker) claim(shutdown, ctx context.Context, id uuid.UUID) (store.Claim
 		c, ev, err := w.store.Claim(ctx, id, w.cfg.Lease, w.provider.Name())
 		if err == nil || errors.Is(err, store.ErrNotApplied) {
 			if tries > 1 {
-				w.log.Info("worker: claim succeeded after retries",
+				w.log.InfoContext(ctx, "worker: claim succeeded after retries",
 					slog.String("notification_id", id.String()), slog.Int("tries", tries))
 			}
 			return c, ev, issued, err
 		}
 		if tries == 1 {
-			w.log.Warn("worker: claim failed; retrying with back-off",
+			w.log.WarnContext(ctx, "worker: claim failed; retrying with back-off",
 				slog.String("notification_id", id.String()), slog.Any("error", err))
 		}
 		// WaitUntil returns at once if shutdown has already begun.
 		if w.clock.WaitUntil(shutdown, w.clock.Now().Add(backoff)) != nil {
-			w.log.Warn("worker: claim still failing at shutdown; message requeued",
+			w.log.WarnContext(ctx, "worker: claim still failing at shutdown; message requeued",
 				slog.String("notification_id", id.String()), slog.Int("tries", tries), slog.Any("error", err))
 			return c, ev, issued, err
 		}
@@ -236,7 +241,7 @@ func (w *Worker) call(ctx context.Context, n store.Notification) (r store.Attemp
 	defer func() {
 		if p := recover(); p != nil {
 			msg := fmt.Sprintf("panic: %T", p)
-			w.log.Error("worker: panic during send recovered",
+			w.log.ErrorContext(ctx, "worker: panic during send recovered",
 				slog.String("notification_id", n.ID.String()), slog.String("panic_type", fmt.Sprintf("%T", p)))
 			r = store.AttemptResult{Outcome: domain.OutcomeInternalError, Error: &msg}
 		}
@@ -249,7 +254,22 @@ func (w *Worker) call(ctx context.Context, n store.Notification) (r store.Attemp
 		To:             n.Recipient.Reveal(), // the recipient leaves the process here, and only here
 		Content:        n.Content,
 	})
-	return w.attemptResult(res)
+	r = w.attemptResult(res)
+	// What is stored in notification_attempts.error, and nowhere else: the
+	// transport error, or the body of an answer that is not a 2xx. Both are
+	// texts the application does not choose (a transport error quotes the
+	// URL, a provider can quote the request), so the message's own recipient
+	// and content are removed first and the result is cut to 1 KB (the
+	// value-based redaction of ADR-0009 §4). It is never logged.
+	text, cut := res.ErrorBody, res.ErrorBodyCut
+	if res.Err != nil {
+		text, cut = res.Err.Error(), false
+	}
+	if text != "" {
+		msg := domain.RedactProviderError(text, cut, n.Recipient, n.Content)
+		r.Error = &msg
+	}
+	return r
 }
 
 // attemptResult classifies a provider result (ADR-0007 section 2). Without a
@@ -263,10 +283,6 @@ func (w *Worker) attemptResult(res Response) store.AttemptResult {
 	}
 	if res.StatusCode != 0 {
 		r.HTTPStatus = &res.StatusCode
-	}
-	if res.Err != nil {
-		msg := res.Err.Error()
-		r.Error = &msg
 	}
 	if res.MessageID != "" {
 		r.ProviderMessageID = &res.MessageID
@@ -287,7 +303,13 @@ func (w *Worker) attemptResult(res Response) store.AttemptResult {
 func (w *Worker) complete(ctx context.Context, n store.Notification, r store.AttemptResult) {
 	w.metrics.attempted(r)
 	attemptOutcome(ctx, r.Outcome)
-	w.write(ctx, "final write", n, func(wctx context.Context) (store.Sent, domain.StatusChanged, error) {
+	// The line of the transition names the attempt's outcome and status
+	// code; never the provider's error text (ADR-0009 §4).
+	attrs := []slog.Attr{slog.String("outcome", string(r.Outcome))}
+	if r.HTTPStatus != nil {
+		attrs = append(attrs, slog.Int("http_status", *r.HTTPStatus))
+	}
+	w.write(ctx, "final write", n, attrs, func(wctx context.Context) (store.Sent, domain.StatusChanged, error) {
 		if r.Outcome == domain.OutcomeSuccess {
 			return w.store.CompleteSent(wctx, n.ID, n.AttemptCount, w.provider.Name(), r)
 		}
@@ -301,7 +323,8 @@ func (w *Worker) complete(ctx context.Context, n store.Notification, r store.Att
 func (w *Worker) abort(ctx context.Context, n store.Notification, delay time.Duration) {
 	w.metrics.aborted()
 	attemptOutcome(ctx, domain.OutcomeAborted)
-	w.write(ctx, "abort attempt", n, func(wctx context.Context) (store.Sent, domain.StatusChanged, error) {
+	attrs := []slog.Attr{slog.String("outcome", string(domain.OutcomeAborted))}
+	w.write(ctx, "abort attempt", n, attrs, func(wctx context.Context) (store.Sent, domain.StatusChanged, error) {
 		ev, err := w.store.AbortAttempt(wctx, n.ID, n.AttemptCount, delay)
 		return store.Sent{}, ev, err
 	})
@@ -329,7 +352,7 @@ func (w *Worker) abort(ctx context.Context, n store.Notification, delay time.Dur
 // does not cancel, bounded by the write margin, so a try that has started is
 // finished. Meanwhile the dispatch keeps its concurrency slot, like a claim
 // that is being retried.
-func (w *Worker) write(ctx context.Context, op string, n store.Notification,
+func (w *Worker) write(ctx context.Context, op string, n store.Notification, attrs []slog.Attr,
 	do func(context.Context) (store.Sent, domain.StatusChanged, error),
 ) {
 	id := slog.String("notification_id", n.ID.String())
@@ -343,11 +366,13 @@ func (w *Worker) write(ctx context.Context, op string, n store.Notification,
 		case err == nil:
 			w.events.Publish(ev)
 			if sent.Late {
-				w.log.Info("worker: late success applied: the lease had expired, no newer attempt had started",
+				attrs = append(attrs, slog.Bool("late", true), slog.String("from", string(sent.From)))
+				w.log.InfoContext(ctx, "worker: late success applied: the lease had expired, no newer attempt had started",
 					id, slog.Int("attempt_no", n.AttemptCount), slog.String("from", string(sent.From)))
 			}
+			logging.Transition(ctx, w.log, ev, attrs...)
 			if tries > 1 {
-				w.log.Info("worker: "+op+" succeeded after retries", id, slog.Int("tries", tries))
+				w.log.InfoContext(ctx, "worker: "+op+" succeeded after retries", id, slog.Int("tries", tries))
 			}
 			return
 		case errors.Is(err, store.ErrNotApplied):
@@ -355,15 +380,15 @@ func (w *Worker) write(ctx context.Context, op string, n store.Notification,
 			// processing and the result was not a success; or this is the
 			// repeat of a write that had committed. The attempt row holds
 			// the true outcome. Not an error.
-			w.log.Debug("worker: "+op+" not applied", id, slog.Int("tries", tries))
+			w.log.DebugContext(ctx, "worker: "+op+" not applied", id, slog.Int("tries", tries))
 			return
 		}
 		if tries == 1 {
-			w.log.Warn("worker: "+op+" failed; retrying with back-off", id, slog.Any("error", err))
+			w.log.WarnContext(ctx, "worker: "+op+" failed; retrying with back-off", id, slog.Any("error", err))
 		}
 		next := w.clock.Now().Add(backoff)
 		if !next.Before(deadline) || w.clock.WaitUntil(ctx, next) != nil {
-			w.log.Error("worker: "+op+" lost; the lease sweeper recovers the notification",
+			w.log.ErrorContext(ctx, "worker: "+op+" lost; the lease sweeper recovers the notification",
 				id, slog.Int("tries", tries), slog.Any("error", err))
 			return
 		}

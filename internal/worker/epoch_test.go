@@ -49,8 +49,9 @@ func TestEpoch_StaleAtTheAck(t *testing.T) {
 		t.Errorf("sent records %+v, provider sends %d; want the message sent once", sent, len(h.prov.sent()))
 	}
 	lines := logLines(t, h)
-	if l := linesWith(lines, msgAckStale); len(l) != 1 || l[0].Level != "INFO" {
-		t.Errorf("stale-ack lines %+v, want one at INFO", l)
+	// One line per delivery after a reconnection: debug (ADR-0009 §4).
+	if l := linesWith(lines, msgAckStale); len(l) != 1 || l[0].Level != "DEBUG" {
+		t.Errorf("stale-ack lines %+v, want one at DEBUG", l)
 	}
 	for _, l := range lines {
 		if l.Level == "ERROR" {
