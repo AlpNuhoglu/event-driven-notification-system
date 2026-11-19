@@ -107,8 +107,11 @@ check-rules: ## Validate and unit-test the Prometheus alert rules (needs Docker)
 load: ## Not implemented yet
 	@echo "load: not implemented yet; see docs/plan/implementation-plan.md" >&2; exit 1
 
-demo: ## Not implemented yet
-	@echo "demo: not implemented yet; see docs/plan/implementation-plan.md" >&2; exit 1
+demo: ## Send at most 10 notifications through the running stack and follow them (DEMO_ARGS="--count 3")
+	@if [ -z "$$(docker-compose ps --status running -q worker 2>/dev/null)" ]; then \
+		echo "demo: the stack is not running; start it with docker-compose up -d --wait, or make up-mock for the mock provider" >&2; exit 1; \
+	fi
+	@docker-compose exec -T worker demo $(DEMO_ARGS)
 
 up-mock: ## Start the stack with mockprovider as the provider
 	$(COMPOSE_MOCK) up -d --build --wait

@@ -8,7 +8,7 @@ COPY . .
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     go build -trimpath -ldflags="-s -w" -o /out/ \
-      ./cmd/api ./cmd/relay ./cmd/worker ./cmd/gateway ./cmd/migrate ./cmd/mockprovider
+      ./cmd/api ./cmd/relay ./cmd/worker ./cmd/gateway ./cmd/migrate ./cmd/mockprovider ./cmd/demo
 
 FROM scratch
 LABEL org.opencontainers.image.title="event-driven-notification-system" \
