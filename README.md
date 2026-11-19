@@ -1,6 +1,6 @@
 # Event-Driven Notification System
 
-> **Work in progress.** The core path is implemented: a notification created through the API is stored, published, rate-limited and sent to the provider, notifications can be created in batches with two layers of duplicate prevention (`Idempotency-Key`, `dedupe_key`), and they can be listed, cancelled and redriven. Per-channel content validation, templates, scheduling, the WebSocket gateway and the dashboards follow in the phases of the [implementation plan](docs/plan/implementation-plan.md); [progress](docs/progress.md) shows where the work stands. This README grows with it.
+> **Work in progress.** The core path is implemented: a notification created through the API is stored, published, rate-limited and sent to the provider, notifications can be created in batches with two layers of duplicate prevention (`Idempotency-Key`, `dedupe_key`), they can be listed, cancelled and redriven, and every request is validated for its channel, with the SMS segment count reported. Templates, scheduling, the WebSocket gateway and the dashboards follow in the phases of the [implementation plan](docs/plan/implementation-plan.md); [progress](docs/progress.md) shows where the work stands. This README grows with it.
 
 A notification service written in Go that accepts SMS, Email and Push notifications through a REST API and delivers them asynchronously through an external provider. It is built around a Postgres outbox, a RabbitMQ dispatch broker with strict priority, a per-channel rate limit of at most 100 messages per second, retries classified by failure scope, and real-time status tracking.
 
@@ -30,11 +30,50 @@ Within a few seconds the notification shows `"status":"sent"`; `sent` means the 
 
 **The mock profile** is for anything beyond a few requests. `make up-mock` starts the same stack plus `mockprovider`, a local fake provider, and points the worker at it, so nothing leaves your machine. `curl -fsS localhost:8090/admin/report` shows what the provider received (field names only, never values). `make down` stops the stack and removes its volumes.
 
-`make test` runs the tests (needs Go and Docker). `make test-e2e` starts the stack with the mock profile under its own Compose project, runs the end-to-end tests and `load-smoke` (a minute of SMS at the full rate, checked against the limit of 100 per second at the provider) against it, and removes it again (needs Go and Docker).
+`make test` runs the tests (needs Go and Docker); `make fuzz` runs the fuzz targets for 30 seconds each. `make test-e2e` starts the stack with the mock profile under its own Compose project, runs the end-to-end tests and `load-smoke` (a minute of SMS at the full rate, checked against the limit of 100 per second at the provider) against it, and removes it again (needs Go and Docker).
 
 ## API examples
 
-**Run these against the mock profile (`make up-mock`), not the default stack.** A batch sends one provider request per accepted item, and the default provider is a public URL that accepts 50 requests in total. With the mock profile nothing leaves your machine; `make down` removes the stack again. The full contract is served at `localhost:8080/openapi.yaml`, and every error code is listed in [`docs/errors.md`](docs/errors.md).
+**Run these against the mock profile (`make up-mock`), not the default stack.** A batch sends one provider request per accepted item, and the default provider is a public URL that accepts 50 requests in total. With the mock profile nothing leaves your machine; `make down` removes the stack again. **Interactive documentation is at `localhost:8080/docs`** (Swagger UI, embedded in the binary, so it works without an internet connection); the contract itself is at `localhost:8080/openapi.yaml`, and every error code is listed in [`docs/errors.md`](docs/errors.md).
+
+**Validation per channel.** A request is checked before anything is stored, and every invalid field is reported in one `422` answer:
+
+| Channel | `recipient` | `content` |
+|---|---|---|
+| `sms` | An E.164 number such as `+905551234567`. A national form such as `05551234567` is rejected, not normalised. | At most 10 SMS segments |
+| `email` | A single address such as `user@example.com`, without a display name | At most 100 KB |
+| `push` | A device token of 1 to 4,096 characters | At most 4 KB |
+
+```
+curl -sS -X POST localhost:8080/v1/notifications \
+  -H 'Content-Type: application/json' \
+  -d '{"channel":"sms","recipient":"05551234567","content":"hello"}'
+```
+
+```json
+{
+  "type": "https://github.com/AlpNuhoglu/event-driven-notification-system/blob/main/docs/errors.md#validation",
+  "title": "Validation failed",
+  "status": 422,
+  "detail": "1 field(s) are invalid.",
+  "correlation_id": "...",
+  "errors": [
+    {"field": "recipient", "code": "invalid_e164", "message": "recipient must be an E.164 number such as +905551234567"}
+  ]
+}
+```
+
+**An SMS reports what it costs.** The answer of an SMS carries its encoding and its number of segments. A message in the GSM-7 alphabet has 160 characters in one segment (153 per segment when it is longer). One character outside that alphabet, such as the Turkish `ş`, `ğ` or `ı`, puts the whole message into UCS-2, with 70 characters in one segment (67 per segment when longer):
+
+```
+curl -sS -X POST localhost:8080/v1/notifications \
+  -H 'Content-Type: application/json' \
+  -d '{"channel":"sms","recipient":"+905551234567","content":"Siparişiniz yola çıktı"}'
+```
+
+```json
+{"id": "...", "channel": "sms", "status": "pending", "sms": {"encoding": "UCS-2", "segments": 1}, "...": "..."}
+```
 
 **Create a batch** of up to 1,000 notifications. Every item is checked on its own: the valid ones are stored, the others are listed with their position in the request.
 

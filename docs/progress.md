@@ -4,9 +4,9 @@ The first file every session reads and the last one it updates. The phases and t
 
 ## Current phase
 
-**P2: API completeness** — in review (pull request 2 of 3, `p2/cancel-redrive-listing`). `p2/batch-and-idempotency` is merged.
+**P2: API completeness** — in review (pull request 3 of 3, `p2/validation`). `p2/batch-and-idempotency` and `p2/cancel-redrive-listing` are merged. Every exit criterion of the phase has been run; the phase is done when this pull request is merged.
 
-**Next step:** the author merges the `p2/cancel-redrive-listing` pull request. Then `p2/validation` from the updated `main`. Open issue 7 belongs to P3.
+**Next step:** the author merges the `p2/validation` pull request. Then P3 (delivery robustness) from the updated `main`; open issue 7 and D78 belong to it.
 
 **Rules of the phase (author):** the default webhook.site URL is not used in P2 at all (48 of its 50 requests are left); every manual check, test and example run goes through the mock profile (`make up-mock`). Request bodies stay strict: each endpoint accepts exactly the fields its schema names.
 
@@ -22,7 +22,7 @@ Status is one of: `not started`, `in progress`, `in review` (pull requests open)
 |---|---|---|---|---|
 | P0 | Repository skeleton and first-hour experiments | done | [#2](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/2) (`p0/skeleton`, merged), [#3](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/3) (`p0/experiments`, merged) | 2026-11-18 |
 | P1 | Core path | done | [#4](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/4) (`p1/schema-and-store`, merged), [#5](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/5) (`p1/relay-worker-provider`, merged), [#6](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/6) (`p1/compose-e2e`, merged) | 2026-11-19 |
-| P2 | API completeness | in review | [#7](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/7) (`p2/batch-and-idempotency`, merged), [#8](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/8) (`p2/cancel-redrive-listing`) | |
+| P2 | API completeness | in review | [#7](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/7) (`p2/batch-and-idempotency`, merged), [#8](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/8) (`p2/cancel-redrive-listing`, merged), PR3LINK (`p2/validation`) | |
 | P3 | Delivery robustness | not started | | |
 | P4 | Templates and scheduling | not started | | |
 | P5 | Real-time and observability | not started | | |
@@ -52,7 +52,7 @@ Filled in as each assumption is confirmed or refuted (ledger section J; mapping 
 |---|---|---|---|
 | U1 | confirmed | E5, now the permanent test `TestSend_SentExactlyOnce` of the provider client (`-count=20`); `experiments/e5` is deleted. | 2026-11-19 |
 | U2 | confirmed | Manual check on a **throwaway** free webhook.site URL (never the default one), 2026-11-18: requests 1 to 50 were answered `202`; request 51 and every later one `429` with `application/json` (`"Request limit exceeded…"`) and no `Retry-After` header. After the URL was deleted, and for a UUID that never existed, the answer is `404` with `application/json`. Real expiry after seven days was not waited for; a deleted URL stands in for it. Both codes are provider-scoped in ADR-0007 §2 (`429` throttled, `404` provider-fatal); the classification test is P3. **Until P3 the three-way classification treats both as `retryable`, so a capped or expired URL consumes retry budgets.** | 2026-11-18 |
-| U3 | open | | |
+| U3 | confirmed | `TestValidateRecipient_AssessmentNumber`: `+905551234567` is accepted by `IsPossibleNumber` (the default level) and also by `IsValidNumber` (`PHONE_VALIDATION=strict`), with `nyaruka/phonenumbers` v1.8.1. | 2026-11-19 |
 | U4 | confirmed | E4: the connection's `StateChanged{From: reconnecting, To: open}` is the reconnect event. The reconciliation tests of P3 build on it. | 2026-11-18 |
 | U5 | confirmed | E1: strict order and default priority 4. The client cannot send priority 0, so D7 now maps to 6, 5 and 4. In P1: `TestRelay_PrioritySetOnEveryMessage` reads the property of every published message. | 2026-11-19 |
 | U6 | confirmed | E2 | 2026-11-18 |
@@ -81,6 +81,54 @@ Newest entry first. One entry per session, in this form:
 - **Open issues:** new entries added to the table above.
 - **Next step:** the first thing the next session does.
 ```
+
+### 2026-11-19 — P2: validation, Swagger UI and the phase's exit criteria (pull request 3 of 3)
+
+- **By the author, at the start:** the twelve decisions of the previous pull request are accepted. **D16 is amended** (recorded in the ledger): a redrive that sends `expires_at` while the stored one is still in the future is refused, and that `409` carries the stored `expires_at`. Batch cancel is to lock its rows in a fixed order.
+- **Done:**
+  - **Per-channel validation** (ADR-0006 §5, D36), for the single create and every batch item: an SMS recipient in E.164 form checked with `nyaruka/phonenumbers` (`IsPossibleNumber`, or `IsValidNumber` with `PHONE_VALIDATION=strict`), an e-mail address that parses and equals the input, a push token of 1 to 4,096 characters; content of at most 10 SMS segments, 100 KB for e-mail, 4 KB for push.
+  - **SMS counting** (`internal/domain/sms.go`): GSM-7 in septets (160, then 153 per segment), UCS-2 in UTF-16 code units (70, then 67); an escape sequence and a surrogate pair are never split. The encoding and the segment count are stored and returned as `sms` in every representation of a notification.
+  - **Swagger UI at `/docs`,** embedded (`swagger-ui-dist` 5.35.0, vendored unchanged, its checksums in a test), with a Content-Security-Policy that allows nothing from another origin.
+  - **`make fuzz`:** three targets, 30 s each: the segment counter, the cursor decoder, the cursor round trip.
+  - **Batch cancel locks its rows in id order** (`ORDER BY id FOR UPDATE` in a CTE, then the update, one statement), and the `409` of an unneeded `expires_at` carries the stored value.
+  - **Contract coverage:** a table of every operation and status of the spec, each produced by a test and validated against the contract; a test fails when the spec has a pair the table does not.
+  - **Documents:** ADR-0006 §1, §5, §7, §8; `docs/errors.md`; the design review log, section 6 (two rows); the README (validation, SMS cost, the documentation page).
+- **Batch cancel, the attempt to make the unordered statement deadlock** (two cancels of a 1,000-row batch per round; half the rounds with single claims and cancels alongside):
+
+  | Statement | Scan orders of the two sessions | Rounds | Deadlocks (`40P01`) |
+  |---|---|---|---|
+  | unordered `UPDATE` | same plan (default settings), with and without rows moved by updates | 600 | 0 |
+  | unordered `UPDATE` | sequential scan against index scan, rows in their original places | 120 | 0 |
+  | unordered `UPDATE` | sequential scan against index scan, rows moved inside their pages by HOT updates | 600 | **43** (20 of 20 test runs failed) |
+  | ordered (CTE) | every setting above | 1,080 | 0 |
+
+  **Only a forced difference in scan order produced the deadlock;** with the same plan both sessions lock in physical order and the second waits. `TestCancelBatch_ConcurrentSameBatch` keeps both the plain case and the forced-order case (neither call fails, both answers add up to the batch, every row is cancelled by exactly one call, each version rises by one); `TestCancelBatch_ConcurrentHTTP` checks two concurrent requests (`200` twice, never a `500`). Recorded in the design review log, section 6.
+- **Found by the fuzz target:** the cursor decoder accepted a second spelling of a cursor (the base64 decoder skips carriage returns and line feeds). `DecodeCursor` now accepts a cursor only if encoding it again gives the input; the fuzzer's input is a seed and a regression test. Also in the review log.
+- **Tests:** table tests of the counter (the boundaries 160/161, 306/307, 70/71, 134/135; an escape sequence and a surrogate pair at a segment boundary, each with a case that needs more segments than the length suggests: 152 `a` + `€` + 152 `a` is 306 septets and 3 segments; 66 `ş` + an emoji + 66 `ş` is 134 code units and 3 segments; the largest contents that fit 10 segments and the smallest that need 11); the recipient rules per channel; validation over HTTP for single and batch, with the phone level from the options; `sms` in the create, read, list, cancel and redrive answers; the body limit on every endpoint that reads a body (exactly the limit is read, one byte more is `413`); `X-Request-ID` on all twelve operations (a valid id is echoed; an invalid, empty or doubled one is replaced, never an error); the documentation routes.
+- **Pull requests opened:** PR3LINK from `p2/validation`.
+- **Exit criteria of P2, all run on this branch:**
+  - `make test`: green, 20 packages, with the contract tests.
+  - `make fuzz`: no crashers. `FuzzCountSMS` 5,493,125 executions, `FuzzDecodeCursor` 8,644,331, `FuzzCursorRoundTrip` 9,026,847, 30 s each.
+  - `curl -fsS localhost:8080/docs`: the page; its four assets answer `200`. **With the network disconnected:** headless Chrome 157 with every host except `localhost` made unresolvable rendered the page with the title of the specification and all 12 operations (11 paths), no error banner, no console error and no reference to another host.
+  - `curl -fsS localhost:8080/openapi.yaml | head`: `openapi: 3.0.3` and the title.
+  - `make generate && git diff --exit-code`: no drift.
+  - **The README's API examples on the mock profile:** every `curl` of the README was run against `make up-mock` (quick start, validation, SMS cost, batch with its replay, batch read, `dedupe_key`, the listing with a cursor, attempts, cancel, batch cancel, redrive with and without `expires_at`); each gave the answer the README shows. `mockprovider` received 11 requests with the fields `channel`, `content`, `to`; the api's log held no recipient. **The default webhook.site URL received nothing in P2; 48 of its 50 requests are left.**
+  - Also run: `make test-e2e` with `load-smoke` (6,000 SMS in 61.2 s, 98.0/s, largest one-second window **99**), because validation now stands in front of the end-to-end requests.
+  - `gh pr checks` is reported on the pull request.
+- **Decisions taken** (within the latitude of the ledger and the ADRs; ADR-0006 is updated):
+  1. **Content limits are counted in bytes of UTF-8:** 102,400 for e-mail; for push, the ADR's "total payload ≤ 4 KB" is applied to the content (4,096 bytes), the only part of the payload a client supplies. The limits are constants, not configuration.
+  2. An e-mail address has at most 254 characters; a push token has no control characters. The general bound of `recipient` in the schema is the push token's 4,096.
+  3. The GSM-7 extension table also holds the form feed character, as in the standard; the ADR's list named nine characters.
+  4. **`/docs` and its assets are served next to the contract, not described by it;** `LICENSE` and `NOTICE` of Swagger UI are embedded but not served.
+  5. **`make fuzz` bounds the minimisation of a new input** (`-fuzzminimizetime 1000x`). With the default (up to 60 s per input) the SMS target spent its whole time box minimising long inputs: 41,224 executions in 30 s instead of 5.5 million.
+  6. A cursor has exactly one accepted spelling.
+  7. The stored `expires_at` is carried only by the `409` with `expires_at_not_allowed`.
+  8. The validation messages for a recipient contain the reserved example values (`+905551234567`, `user@example.com`), as ADR-0006 §9 shows; the tests that scan answers for leaked values remove these fixed texts first.
+  9. Two documented answers cannot be produced in a test and are listed as such in the coverage table: the `500` of `/healthz` and of `/openapi.yaml` (their handlers call nothing that can fail; the panic recovery behind them is tested on other operations).
+- **Not verified:** the documentation page's "Try it out" requests in a browser (the page was rendered, not operated); browsers other than Chrome; the fuzz targets beyond 30 s each; `IsValidNumber` against real numbering changes (it depends on the library's metadata).
+- **Delegation:** Sonnet, in three worktrees: the SMS counter with the fuzz targets, the recipient rules, the embedded Swagger UI. Opus, in the main tree: the concurrency tests of the batch cancel with the deadlock attempts, the D16 answer, then the wiring of validation into both create paths, the body-limit and `X-Request-ID` tests and the contract coverage table. The main loop wrote the briefs, the ordered batch-cancel statement and the contract changes; reviewed every diff; fixed the cursor decoder after the fuzz finding; found and bounded the minimisation stall of `make fuzz`; ran every exit criterion, the headless-browser check, the README examples and `make test-e2e` itself; and wrote the documents.
+- **Open issues:** none new. Issue 7 stays for P3.
+- **Next step:** after the merge, P3.
 
 ### 2026-11-19 — P2: cancel, redrive and listing (pull request 2 of 3)
 

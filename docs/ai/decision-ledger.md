@@ -14,6 +14,8 @@ Sources are review-turn findings: `T2 F1` means Turn 2, finding F1. "Author" mea
 
 **Amended on 2026-11-19, in P2, by the author's decision on open issue 8:** the new D78 (the relay's idempotency-key cleanup; implemented in P3).
 
+**Amended on 2026-11-19, in P2, by the author's decision:** D16 (a redrive that sends an `expires_at` it does not need is refused, and the `409` carries the stored value).
+
 ## Guiding rules
 
 | ID | Rule |
@@ -48,7 +50,7 @@ Sources are review-turn findings: `T2 F1` means Turn 2, finding F1. "Author" mea
 |---|---|---|---|
 | D14 | **Transition 12** (late success): `attempt_count = $n AND status IN ('pending','queued','retrying','failed','cancelled')`. Consequently `cancelled` and `failed` are **not strictly terminal**: they can move to `sent` through transition 12 only, when a late result proves the message was delivered. Clients may see `cancelled → sent`; this is documented. | 0004, 0006 | T4 F2, T7, ledger review |
 | D15 | **Cancel** is always allowed from `pending`, `queued` and `retrying`. Cancelling an already `cancelled` notification returns `200` (idempotent). From `processing`, `sent` or `failed` it returns `409` with the current status. If the notification has an attempt with outcome `unknown`, the response includes `"may_have_been_sent": true`. Dedupe index: `UNIQUE (dedupe_key) WHERE dedupe_key IS NOT NULL AND NOT (status = 'cancelled' AND attempt_count = 0)`. Every `ON CONFLICT` repeats this predicate. | 0004, 0006 | T4 F7, T7 (revised) |
-| D16 | **Redrive** only from `failed`: resets `failures` and `due_at`, **never** `attempt_count`. If the stored `expires_at <= now()`, the request must include a new `expires_at` (≥ now + 30 s), otherwise `409`. Otherwise the stored value is kept. | 0004, 0006 | T4 F6 |
+| D16 | **Redrive** only from `failed`: resets `failures` and `due_at`, **never** `attempt_count`. If the stored `expires_at <= now()`, the request must include a new `expires_at` (≥ now + 30 s), otherwise `409`. Otherwise the stored value is kept. **Amended in P2:** a redrive that sends `expires_at` while the stored one is still in the future is refused with `409` (`expires_at_not_allowed`); the problem document carries the stored `expires_at`. The stored value is never replaced and a request field is never silently ignored. | 0004, 0006 | T4 F6 |
 | D17 | `decideRetry(outcome, failures, maxFailures, expiresAt, retryAfter, profile, now, jitter float64) → Decision{Action, Delay, Reason, ConsumesBudget}`. `due_at = now() + delay` is computed in SQL; the caller passes the database `now()` read in the same transaction. One clock. | 0002, 0004, 0007 | T2 F6, T4 F3 |
 | D18 | The worker's final write is retried with back-off for up to **60 s**: transition 4 first, transition 12 if it affects zero rows. | 0004, 0005 | T5 F6 |
 | D19 | Database constraints: at most one `in_flight` attempt per notification (partial unique index); `status = 'failed'` ⇔ `failure_reason IS NOT NULL`; `status = 'sent'` ⇔ `sent_at IS NOT NULL`. Partial index on `batch_id WHERE batch_id IS NOT NULL`. UUIDv7 via `google/uuid`. | 0004 | T4 P2, N2, N3 |
