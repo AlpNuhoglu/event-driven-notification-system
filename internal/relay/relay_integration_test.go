@@ -85,10 +85,15 @@ func connect(t *testing.T, url string) *queue.Connection {
 	return c
 }
 
-// newRelay returns a relay on its own broker connection to url.
+// newRelay returns a relay on its own broker connection to url, with the
+// topology declared on that connection, as relay.Service does: until then
+// the connection does not count as open.
 func newRelay(t *testing.T, st *store.Store, url string, cfg Config) (*Relay, *queue.Connection, *recorder) {
 	t.Helper()
 	c := connect(t, url)
+	if err := c.DeclareTopology(consumerTimeout); err != nil {
+		t.Fatalf("declare: %v", err)
+	}
 	pub, err := queue.NewPublisher(c, cfg.BatchSize)
 	if err != nil {
 		t.Fatalf("publisher: %v", err)
@@ -186,11 +191,13 @@ func eventIDs(evs []domain.StatusChanged) map[uuid.UUID]bool {
 // client handing over each return before its confirm (U8).
 func TestRelay_UnroutablePublishStaysPending(t *testing.T) {
 	b := newBroker(t)
+	st, _ := newStore(t)
+	// The relay declares the topology on its connection; the binding is
+	// removed afterwards.
+	r, _, rec := newRelay(t, st, b.url, integrationConfig)
 	if err := b.admin.QueueUnbind(queue.DispatchQueue(domain.ChannelPush), "push", queue.DispatchExchange, nil); err != nil {
 		t.Fatal(err)
 	}
-	st, _ := newStore(t)
-	r, _, rec := newRelay(t, st, b.url, integrationConfig)
 
 	// A whole lane is unroutable; the lanes of the other channels are not.
 	push := create(t, st, domain.ChannelPush, domain.PriorityHigh, 5)

@@ -148,18 +148,40 @@ func (t *trace) get() []string {
 	return slices.Clone(t.calls)
 }
 
+// fakeMessage counts the acks and nacks that would reach the broker. Once
+// stale is set it models a delivery from an older connection epoch: Ack and
+// Nack send nothing, return ErrStale and are counted as refused.
 type fakeMessage struct {
-	id    uuid.UUID
-	prio  uint8
-	acks  atomic.Int32
-	nacks atomic.Int32
+	id      uuid.UUID
+	prio    uint8
+	stale   atomic.Bool
+	acks    atomic.Int32
+	nacks   atomic.Int32
+	refused atomic.Int32
 }
 
 func (m *fakeMessage) NotificationID() uuid.UUID { return m.id }
 func (m *fakeMessage) Priority() uint8           { return m.prio }
 func (m *fakeMessage) Epoch() uint64             { return 1 }
-func (m *fakeMessage) Ack() error                { m.acks.Add(1); return nil }
-func (m *fakeMessage) Nack() error               { m.nacks.Add(1); return nil }
+func (m *fakeMessage) Stale() bool               { return m.stale.Load() }
+
+func (m *fakeMessage) Ack() error {
+	if m.stale.Load() {
+		m.refused.Add(1)
+		return ErrStale
+	}
+	m.acks.Add(1)
+	return nil
+}
+
+func (m *fakeMessage) Nack() error {
+	if m.stale.Load() {
+		m.refused.Add(1)
+		return ErrStale
+	}
+	m.nacks.Add(1)
+	return nil
+}
 
 type reserveAnswer struct {
 	wait time.Duration

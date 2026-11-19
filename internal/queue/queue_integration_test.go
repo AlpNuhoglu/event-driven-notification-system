@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log/slog"
 	"slices"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -285,6 +286,9 @@ func TestPublisher_ConnectionLostDuringBatchIsError(t *testing.T) {
 	url, _ := setup(t)
 	proxy := testutil.NewProxy(t, url)
 	c := dial(t, proxy.URL(), 1000)
+	if err := c.DeclareTopology(consumerTimeout); err != nil {
+		t.Fatal(err)
+	}
 	pub := newPublisher(t, c, 10)
 
 	proxy.Pause()
@@ -324,11 +328,21 @@ func TestConnection_RecoveryThenGiveUp(t *testing.T) {
 	url := testutil.NewRabbitMQVhost(t)
 	proxy := testutil.NewProxy(t, url)
 	c := dial(t, proxy.URL(), 3)
-	if !c.IsOpen() {
-		t.Fatal("a new connection is not open")
+	if c.IsOpen() {
+		t.Fatal("a connection without the topology reports open")
 	}
-	if c.Epoch() != 0 {
-		t.Errorf("epoch %d, want 0", c.Epoch())
+	if n, _ := c.Opens(); n != 0 {
+		t.Fatalf("opens %d before the topology is declared, want 0", n)
+	}
+	if err := c.DeclareTopology(consumerTimeout); err != nil {
+		t.Fatal(err)
+	}
+	if !c.IsOpen() {
+		t.Fatal("a new connection with the topology is not open")
+	}
+	n, next := c.Opens()
+	if n != 1 || closed(next) {
+		t.Fatalf("opens %d (next closed %v) after the first declaration, want 1 and an open signal", n, closed(next))
 	}
 
 	proxy.Break()
@@ -337,6 +351,12 @@ func TestConnection_RecoveryThenGiveUp(t *testing.T) {
 	testutil.Eventually(t, c.IsOpen, waitTimeout)
 	if closed(c.GaveUp()) {
 		t.Fatal("GaveUp closed after a successful recovery")
+	}
+	if !closed(next) {
+		t.Error("the opens signal read before the loss is not closed after the recovery")
+	}
+	if n, _ := c.Opens(); n != 2 {
+		t.Errorf("opens %d after one recovery, want 2", n)
 	}
 
 	proxy.Break() // and never restored: 3 attempts, then recovery gives up
@@ -376,9 +396,15 @@ func newConsumer(t *testing.T, c *Connection) *Consumer {
 // returns Run's result.
 func runConsumer(t *testing.T, cons *Consumer, handle Handler) (stop func() error) {
 	t.Helper()
+	return runConsumerWith(t, cons, handle, nil)
+}
+
+// runConsumerWith is runConsumer with Run's resubscribed callback.
+func runConsumerWith(t *testing.T, cons *Consumer, handle Handler, resubscribed func()) (stop func() error) {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- cons.Run(ctx, handle) }()
+	go func() { done <- cons.Run(ctx, handle, resubscribed) }()
 	var once bool
 	var result error
 	stop = func() error {
@@ -415,8 +441,8 @@ func TestConsumer_DeliveryAckNack(t *testing.T) {
 	stop := runConsumer(t, cons, func(d Delivery) { got <- d })
 
 	d := recv(t, got)
-	if d.ID != m.ID || d.Priority != 6 || d.Epoch != c.Epoch() {
-		t.Fatalf("delivery id %s priority %d epoch %d, want %s 6 %d", d.ID, d.Priority, d.Epoch, m.ID, c.Epoch())
+	if d.ID != m.ID || d.Priority != 6 || d.Epoch != cons.Epoch() || d.Stale() {
+		t.Fatalf("delivery id %s priority %d epoch %d stale %v, want %s 6 %d false", d.ID, d.Priority, d.Epoch, d.Stale(), m.ID, cons.Epoch())
 	}
 	if err := d.Nack(); err != nil {
 		t.Fatal(err)
@@ -456,27 +482,244 @@ func TestConsumer_InvalidBodyGoesToPoisonQueue(t *testing.T) {
 	}
 }
 
-func TestConsumer_StreamEndIsError(t *testing.T) {
+// A delivery stream that ends because the channel is closed for good (here
+// closed under the consumer; the library does the same when recovery gives
+// up) ends Run with an error.
+func TestConsumer_ChannelClosedForGoodIsError(t *testing.T) {
 	url, c := setup(t)
 	cons := newConsumer(t, c)
 	done := make(chan error, 1)
-	go func() { done <- cons.Run(context.Background(), func(Delivery) {}) }()
-	// Deleting the queue makes the broker cancel the consumer.
+	go func() { done <- cons.Run(context.Background(), func(Delivery) {}, nil) }()
 	admin := raw(t, url)
 	testutil.Eventually(t, func() bool {
 		q, err := admin.QueueDeclarePassive(DispatchQueue(domain.ChannelSMS), true, false, false, false, nil)
 		return err == nil && q.Consumers == 1
 	}, waitTimeout)
-	if _, err := admin.QueueDelete(DispatchQueue(domain.ChannelSMS), false, false, false); err != nil {
+	if err := cons.ch.Close(); err != nil {
 		t.Fatal(err)
 	}
 	select {
 	case err := <-done:
 		if err == nil {
-			t.Error("Run returned nil after a server-side cancellation")
+			t.Error("Run returned nil after its channel was closed for good")
 		}
 	case <-time.After(waitTimeout): // bound on the test, not a wait for a state
-		t.Fatal("Run did not return after a server-side cancellation")
+		t.Fatal("Run did not return after its channel was closed for good")
+	}
+}
+
+// collect receives deliveries until want of them have arrived.
+func collect(t *testing.T, ch <-chan Delivery, want int) []Delivery {
+	t.Helper()
+	out := make([]Delivery, 0, want)
+	for len(out) < want {
+		out = append(out, recv(t, ch))
+	}
+	return out
+}
+
+func byID(ds []Delivery) map[uuid.UUID]Delivery {
+	out := map[uuid.UUID]Delivery{}
+	for _, d := range ds {
+		out[d.ID] = d
+	}
+	return out
+}
+
+// D76 without a connection loss: a channel error on the consumer's channel
+// makes the library reopen that channel, and delivery tags restart at 1
+// (experiment E4). The epoch advances once; the two deliveries held from
+// before are stale (Ack and Nack send nothing); both messages are delivered
+// again on a new subscription, with the new epoch, and acked. No answer
+// names a delivery of another session on the wire, the epoch advances no
+// further (a stale ack with an unknown tag would close the channel again),
+// and the queue ends empty.
+func TestConsumer_ChannelReopenAdvancesEpoch(t *testing.T) {
+	url, _ := setup(t)
+	proxy := testutil.NewProxy(t, url)
+	tap := proxy.Tap()
+	c := dial(t, proxy.URL(), 1000)
+	if err := c.DeclareTopology(consumerTimeout); err != nil {
+		t.Fatal(err)
+	}
+	msgs := []Message{msg(domain.ChannelSMS, domain.PriorityHigh), msg(domain.ChannelSMS, domain.PriorityHigh)}
+	if _, err := newPublisher(t, c, 2).PublishBatch(ctxT(t), msgs, confirmTimeout); err != nil {
+		t.Fatal(err)
+	}
+	cons := newConsumer(t, c)
+	got := make(chan Delivery, 10)
+	var resubscribed atomic.Int32
+	stop := runConsumerWith(t, cons, func(d Delivery) { got <- d }, func() { resubscribed.Add(1) })
+	held := collect(t, got, 2)
+	for _, d := range held {
+		if d.Epoch != 0 || d.Stale() {
+			t.Fatalf("first delivery: epoch %d stale %v, want 0 and false", d.Epoch, d.Stale())
+		}
+	}
+
+	// The broker answers 404 NOT_FOUND and closes the consumer's channel.
+	if err := cons.ch.PublishWithContext(ctxT(t), "no-such-exchange", "sms", false, false, amqp.Publishing{Body: []byte("x")}); err != nil {
+		t.Fatalf("publish to the missing exchange: %v", err)
+	}
+	again := collect(t, got, 2)
+	if !c.IsOpen() {
+		t.Error("the connection is not open: only the consumer's channel was reopened")
+	}
+	if e := cons.Epoch(); e != 1 {
+		t.Fatalf("epoch %d after the channel was reopened, want 1", e)
+	}
+	for _, d := range held {
+		if !d.Stale() {
+			t.Errorf("a delivery from before the reopen is not stale")
+		}
+		if err := d.Ack(); !errors.Is(err, ErrStale) {
+			t.Errorf("ack of a stale delivery: %v, want ErrStale", err)
+		}
+		if err := d.Nack(); !errors.Is(err, ErrStale) {
+			t.Errorf("nack of a stale delivery: %v, want ErrStale", err)
+		}
+	}
+	redelivered := byID(again)
+	for _, m := range msgs {
+		d, ok := redelivered[m.ID]
+		if !ok || d.Epoch != 1 || !d.d.Redelivered {
+			t.Fatalf("message %s again: %v, epoch %d, redelivered %v; want epoch 1, redelivered", m.ID, ok, d.Epoch, d.d.Redelivered)
+		}
+		if err := d.Ack(); err != nil {
+			t.Fatalf("ack after the reopen: %v", err)
+		}
+	}
+	if err := stop(); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if e := cons.Epoch(); e != 1 {
+		t.Errorf("epoch %d at the end, want 1: the channel was closed again", e)
+	}
+	if n := resubscribed.Load(); n < 1 {
+		t.Errorf("resubscribed called %d times, want at least 1", n)
+	}
+	if v := tap.Violations(); len(v) != 0 {
+		t.Errorf("answers on the wire that name no delivery of their session: %v", v)
+	}
+	acks := 0
+	for _, a := range tap.Answers() {
+		if a.Kind == "ack" {
+			acks++
+		}
+	}
+	if acks != 2 {
+		t.Errorf("%d acks on the wire, want 2: %+v", acks, tap.Answers())
+	}
+	if err := cons.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if n := ready(t, raw(t, url), DispatchQueue(domain.ChannelSMS)); n != 0 {
+		t.Errorf("queue holds %d messages, want 0", n)
+	}
+}
+
+// D8: the broker cancels a consumer whose delivery stays unacknowledged for
+// longer than the queue's x-consumer-timeout (experiment E6; here 1 s). The
+// consumer subscribes again on the same channel, the epoch advances, the held
+// delivery is stale, and the message is delivered again and acked.
+func TestConsumer_ServerCancelResubscribes(t *testing.T) {
+	const shortTimeout = 1_000 * time.Millisecond
+	url := testutil.NewRabbitMQVhost(t)
+	c := dial(t, url, 1000)
+	if err := c.DeclareTopology(shortTimeout); err != nil {
+		t.Fatal(err)
+	}
+	m := msg(domain.ChannelSMS, domain.PriorityNormal)
+	if _, err := newPublisher(t, c, 1).PublishBatch(ctxT(t), []Message{m}, confirmTimeout); err != nil {
+		t.Fatal(err)
+	}
+	cons := newConsumer(t, c)
+	got := make(chan Delivery, 10)
+	stop := runConsumer(t, cons, func(d Delivery) { got <- d })
+	held := recv(t, got)
+	if held.ID != m.ID || held.Epoch != 0 {
+		t.Fatalf("first delivery %s epoch %d", held.ID, held.Epoch)
+	}
+	// Not acked: after the timeout the broker cancels the consumer.
+	again := recv(t, got)
+	if again.ID != m.ID || again.Epoch != 1 || !again.d.Redelivered {
+		t.Fatalf("after the cancel: %s epoch %d redelivered %v; want %s, epoch 1, redelivered", again.ID, again.Epoch, again.d.Redelivered, m.ID)
+	}
+	if err := held.Ack(); !errors.Is(err, ErrStale) {
+		t.Errorf("ack of the cancelled consumer's delivery: %v, want ErrStale", err)
+	}
+	if err := again.Ack(); err != nil {
+		t.Fatal(err)
+	}
+	if err := stop(); err != nil {
+		t.Fatalf("Run after a server-side cancel and the stop: %v", err)
+	}
+	if err := cons.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if n := ready(t, raw(t, url), DispatchQueue(domain.ChannelSMS)); n != 0 {
+		t.Errorf("queue holds %d messages, want 0", n)
+	}
+}
+
+// D2: a broker that comes back empty at the same address (its vhost deleted
+// and created again) has the whole topology again as soon as the connection
+// reports open, and IsOpen is false from the loss until then.
+func TestConnection_TopologyDeclaredAgainOnEmptyBroker(t *testing.T) {
+	url := testutil.NewRabbitMQVhost(t)
+	proxy := testutil.NewProxy(t, url)
+	c := dial(t, proxy.URL(), 1000)
+	if err := c.DeclareTopology(consumerTimeout); err != nil {
+		t.Fatal(err)
+	}
+	n, next := c.Opens()
+
+	proxy.Break()
+	testutil.Eventually(t, func() bool { return !c.IsOpen() }, waitTimeout)
+	testutil.WipeRabbitMQVhost(t, url)
+	if testutil.RabbitMQQueueExists(t, url, DispatchQueue(domain.ChannelSMS)) {
+		t.Fatal("the wiped vhost still has the dispatch queue")
+	}
+	if c.IsOpen() || closed(next) {
+		t.Fatal("open, or a reconnection signalled, while the broker is unreachable")
+	}
+
+	// Sample IsOpen from the restore on: the first true must find the
+	// topology in place.
+	var sawTopologyMissing atomic.Bool
+	var firstOpen atomic.Bool
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for !firstOpen.Load() {
+			if c.IsOpen() {
+				for _, ch := range domain.Channels() {
+					if !testutil.RabbitMQQueueExists(t, url, DispatchQueue(ch)) || !testutil.RabbitMQQueueExists(t, url, PoisonQueue(ch)) {
+						sawTopologyMissing.Store(true)
+					}
+				}
+				firstOpen.Store(true)
+			}
+		}
+	}()
+	proxy.Restore(t)
+	testutil.Eventually(t, firstOpen.Load, waitTimeout)
+	<-done
+	if sawTopologyMissing.Load() {
+		t.Error("IsOpen was true before the topology existed on the recovered connection")
+	}
+	if !closed(next) {
+		t.Error("no reconnection signalled")
+	}
+	if got, _ := c.Opens(); got != n+1 {
+		t.Errorf("opens %d after one reconnection, want %d", got, n+1)
+	}
+	// The bindings too: a publish for each channel lands in its queue.
+	pub := newPublisher(t, c, 3)
+	msgs := []Message{msg(domain.ChannelSMS, domain.PriorityLow), msg(domain.ChannelEmail, domain.PriorityLow), msg(domain.ChannelPush, domain.PriorityLow)}
+	published, err := pub.PublishBatch(ctxT(t), msgs, confirmTimeout)
+	if err != nil || len(published) != 3 {
+		t.Fatalf("publish after the wipe: %v, %d published", err, len(published))
 	}
 }
 

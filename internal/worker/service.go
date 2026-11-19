@@ -28,7 +28,8 @@ import (
 // RabbitMQ and Redis, wires the role with NewRole and runs it until ctx is
 // cancelled. It returns an error when Postgres or RabbitMQ cannot be reached
 // at start, when the broker connection's recovery gives up and when a
-// consumer's delivery stream ends unexpectedly, so that the process exits
+// consumer's channel is closed for good (a server-side cancellation is
+// followed by a new subscription instead, D8), so that the process exits
 // with a non-zero code (ADR-0005). An unreachable Redis is only a warning:
 // the rate limit then uses the in-process fallback (D25). The connections are
 // closed after the role has stopped.
@@ -266,7 +267,7 @@ func (r *Role) Run(ctx context.Context) error {
 	for _, u := range r.units {
 		consumers.Go(func() {
 			push := func(d queue.Delivery) { u.worker.Push(delivery{d}) }
-			if err := u.consumer.Run(consumeCtx, push); err != nil {
+			if err := u.consumer.Run(consumeCtx, push, u.worker.DropStale); err != nil {
 				consumerErrs <- fmt.Errorf("worker role %s: %w", u.channel, err)
 			}
 		})
@@ -313,8 +314,17 @@ const lowestPriority uint8 = 4
 
 func (m delivery) NotificationID() uuid.UUID { return m.d.ID }
 func (m delivery) Epoch() uint64             { return m.d.Epoch }
-func (m delivery) Ack() error                { return m.d.Ack() }
-func (m delivery) Nack() error               { return m.d.Nack() }
+func (m delivery) Stale() bool               { return m.d.Stale() }
+func (m delivery) Ack() error                { return staleAs(m.d.Ack()) }
+func (m delivery) Nack() error               { return staleAs(m.d.Nack()) }
+
+// staleAs maps the queue's ErrStale to the worker's.
+func staleAs(err error) error {
+	if errors.Is(err, queue.ErrStale) {
+		return fmt.Errorf("%w: %w", ErrStale, err)
+	}
+	return err
+}
 
 func (m delivery) Priority() uint8 {
 	if m.d.Priority == 0 {

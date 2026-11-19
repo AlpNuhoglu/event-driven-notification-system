@@ -24,8 +24,9 @@ import (
 //     slot + tolerance (nextForSlot, awaitSlot);
 //   - the ack comes after the claim commits and before the send (deliver);
 //   - from the moment it takes a delivery from the buffer, this goroutine
-//     alone owns it, and answers it exactly once: one ack, or one nack
-//     (deliver), never both.
+//     alone owns it, and answers it at most once: one ack, or one nack
+//     (deliver), never both; none if the delivery is from an older
+//     connection epoch by then (D76).
 func (w *Worker) dispatch(shutdown, ctx context.Context, m Message, slot time.Time) {
 	defer func() { <-w.sem }()
 	defer func() {
@@ -49,13 +50,16 @@ func (w *Worker) deliver(shutdown, ctx context.Context, m Message, slot time.Tim
 	c, ev, claimStart, err := w.claim(shutdown, ctx, m.NotificationID())
 	if err != nil && !errors.Is(err, store.ErrNotApplied) {
 		// The claim never succeeded and shutdown has begun. The only nack
-		// of a taken delivery.
+		// of a taken delivery; none for a delivery that the connection's
+		// reset made stale meanwhile, e.g. during a long claim retry (D76).
 		w.nack(m)
 		return nil
 	}
 	// The claim has committed, or matched zero rows: the database owns the
 	// work now. The only ack of a taken delivery: after the claim, before
-	// the send. (P3 adds: not for a delivery from an older epoch, D76.)
+	// the send. A delivery from an older connection epoch is not acked (the
+	// check is part of the ack); its claim stands and the send goes ahead
+	// (D76).
 	w.ack(m)
 	if err != nil {
 		// store.ErrNotApplied: a duplicate, cancelled, expired or not-due row.

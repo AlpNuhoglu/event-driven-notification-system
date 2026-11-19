@@ -148,6 +148,47 @@ func NewRabbitMQVhost(t testing.TB) string {
 	return u.String()
 }
 
+// WipeRabbitMQVhost deletes the vhost of amqpURL (a URL from
+// NewRabbitMQVhost) with everything in it and creates it again, empty, with
+// the same permissions: a broker that comes back at the same address without
+// its data. The broker closes the vhost's connections when it deletes it.
+func WipeRabbitMQVhost(t testing.TB, amqpURL string) {
+	t.Helper()
+	s := sharedRabbit(t)
+	vhost := vhostOf(t, amqpURL)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	if err := s.api(ctx, http.MethodDelete, "/api/vhosts/"+vhost, ""); err != nil {
+		t.Fatalf("delete vhost: %v", err)
+	}
+	if err := s.api(ctx, http.MethodPut, "/api/vhosts/"+vhost, ""); err != nil {
+		t.Fatalf("create vhost: %v", err)
+	}
+	perms := `{"configure":".*","write":".*","read":".*"}`
+	if err := s.api(ctx, http.MethodPut, "/api/permissions/"+vhost+"/"+url.PathEscape(s.user), perms); err != nil {
+		t.Fatalf("set permissions: %v", err)
+	}
+}
+
+// RabbitMQQueueExists reports whether the vhost of amqpURL has the queue.
+func RabbitMQQueueExists(t testing.TB, amqpURL, queue string) bool {
+	t.Helper()
+	s := sharedRabbit(t)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	_, err := s.call(ctx, http.MethodGet, "/api/queues/"+url.PathEscape(vhostOf(t, amqpURL))+"/"+url.PathEscape(queue), "")
+	return err == nil
+}
+
+func vhostOf(t testing.TB, amqpURL string) string {
+	t.Helper()
+	u, err := url.Parse(amqpURL)
+	if err != nil {
+		t.Fatalf("parse amqp url: %v", err)
+	}
+	return strings.TrimPrefix(u.Path, "/")
+}
+
 // RabbitMQQueue returns the management API's description of a queue in the
 // vhost of amqpURL (a URL from NewRabbitMQVhost): its type, durability and
 // arguments, among other fields.
@@ -186,6 +227,7 @@ type Proxy struct {
 	flow   chan struct{} // closed while traffic from the broker to the client flows
 	toBkr  atomic.Int64  // bytes forwarded from the client to the broker
 	closed bool
+	tap    *AMQPTap // records AMQP frames when set (Tap)
 }
 
 // NewProxy starts a proxy in front of the broker of amqpURL and returns it;
@@ -301,7 +343,13 @@ func (p *Proxy) serve(client net.Conn) {
 	}
 	p.conns[client] = struct{}{}
 	p.conns[broker] = struct{}{}
+	tap := p.tap
 	p.mu.Unlock()
+	var fromClient, fromBroker *stream
+	if tap != nil {
+		id := tap.newConn()
+		fromClient, fromBroker = tap.stream(id, true), tap.stream(id, false)
+	}
 
 	done := make(chan struct{})
 	var once sync.Once
@@ -318,7 +366,7 @@ func (p *Proxy) serve(client net.Conn) {
 	}
 	go func() { // client -> broker
 		defer stop()
-		_, _ = io.Copy(countingWriter{broker, &p.toBkr}, client)
+		_, _ = io.Copy(countingWriter{broker, &p.toBkr, fromClient}, client)
 	}()
 	go func() { // broker -> client, held back while paused
 		defer stop()
@@ -331,6 +379,9 @@ func (p *Proxy) serve(client net.Conn) {
 				case <-done:
 					return
 				}
+				// Recorded before the client can read it, so before any
+				// answer to it.
+				fromBroker.write(buf[:n])
 				if _, werr := client.Write(buf[:n]); werr != nil {
 					return
 				}
@@ -351,11 +402,13 @@ func (p *Proxy) flowSignal() <-chan struct{} {
 }
 
 type countingWriter struct {
-	w io.Writer
-	n *atomic.Int64
+	w   io.Writer
+	n   *atomic.Int64
+	tap *stream // nil unless the proxy taps AMQP
 }
 
 func (c countingWriter) Write(b []byte) (int, error) {
+	c.tap.write(b)
 	n, err := c.w.Write(b)
 	c.n.Add(int64(n))
 	return n, err
