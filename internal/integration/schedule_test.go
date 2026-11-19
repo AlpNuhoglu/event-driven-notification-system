@@ -30,12 +30,25 @@ const (
 	// may be sent at most: the relay's tick, the broker and the worker take
 	// a few tens of milliseconds on an idle system.
 	scheduleLateBound = 2_000 * time.Millisecond
+	// scheduleCancelLead is how far ahead the cancelled notification and
+	// its witness are scheduled. Nothing has to happen within it: the test
+	// waits for it to pass before the relay starts.
+	scheduleCancelLead = 100 * time.Millisecond
 )
 
 // apiServer serves the API role's handler on this test's database with the
-// configuration's limits, as api.Service wires it.
+// configuration's limits, as api.Service wires it, with one difference: its
+// clock stands still, at the database's time when the server is made. The
+// tests choose a scheduled_at ahead of the database's clock and the API
+// judges it against its own. With a running clock there, a request that
+// arrives after its scheduled_at (a stalled host, or a host whose clock is
+// ahead of the database's container) is answered "in the past, so now" and
+// stores no scheduled_at. With this one, a time chosen after the server was
+// made is in the future whenever its request arrives; when a row is due is
+// decided by the database's clock, as always.
 func (e *env) apiServer(cfg config.Config) *httptest.Server {
 	e.t.Helper()
+	madeAt := e.dbNow()
 	srv := httptest.NewServer(api.NewHandler(api.Options{
 		Repository:           store.New(e.pool, store.ProfilesFrom(cfg.Retry)),
 		DB:                   e.pool,
@@ -45,6 +58,7 @@ func (e *env) apiServer(cfg config.Config) *httptest.Server {
 		ExpiresAtMinLead:     cfg.API.ExpiresAtMinLead,
 		ScheduledAtTolerance: cfg.API.SchedulePastTolerance,
 		ScheduledAtMaxAhead:  cfg.API.ScheduleMaxHorizon,
+		Now:                  func() time.Time { return madeAt },
 	}))
 	e.t.Cleanup(func() {
 		srv.Client().CloseIdleConnections()
@@ -166,11 +180,14 @@ func TestE2E_ScheduledIsSentAtItsTimeNotBefore(t *testing.T) {
 		return false
 	}, waitTimeout)
 	if roundsBefore == 0 {
-		t.Fatal("the notification was never observed before its scheduled_at")
+		t.Fatalf("the notification was never observed before its scheduled_at: the host took more than the lead of %s to create it and read it once", scheduleLead)
 	}
 
 	e.waitStatus(id, domain.StatusSent)
 	n := e.get(id)
+	if n.SentAt != nil {
+		t.Logf("observed pending %d times before its scheduled_at; sent %s after it (bound %s)", roundsBefore, n.SentAt.Sub(when), scheduleLateBound)
+	}
 	if n.ScheduledAt == nil || !n.ScheduledAt.Equal(when) || !n.DueAt.Equal(when) {
 		t.Fatalf("scheduled_at %v, due_at %v; want both %v", n.ScheduledAt, n.DueAt, when)
 	}
@@ -191,18 +208,27 @@ func TestE2E_ScheduledIsSentAtItsTimeNotBefore(t *testing.T) {
 	}
 }
 
-// A scheduled notification cancelled before its time never reaches the
-// provider. A second notification, due just after the first, shows that the
-// relay has passed the first one's time: the relay publishes in due order, so
-// once the second is sent, the first would have been published too.
+// A scheduled notification that was cancelled is not published when its
+// time has come. A second notification, due just after the first, shows that
+// the relay has passed the first one's time: the relay publishes in due
+// order, so once the second is sent, the first would have been published
+// too.
+//
+// Nothing here races the clock. The relay starts only after the database's
+// clock has passed the time of both notifications, and the test waits for
+// that. Until then nothing can publish the first one, so it is pending when
+// it is cancelled however slow the host is, and it is due by the clock,
+// cancelled, at the relay's first look. (With the relay running from the
+// start, the cancel had to arrive within the lead, and a host that stalled
+// for longer failed the test with a 409.) That a scheduled notification
+// stays pending while the relay runs before its time is the test above.
 func TestE2E_ScheduledCancelledIsNeverSent(t *testing.T) {
 	e := newEnv(t)
 	cfg := e.config(nil)
 	_, w := e.startWorker(cfg, 0)
-	e.startRelay(cfg)
 	srv := e.apiServer(cfg)
 
-	when := e.dbNow().Add(scheduleLead).Truncate(time.Microsecond).UTC()
+	when := e.dbNow().Add(scheduleCancelLead).Truncate(time.Microsecond).UTC()
 	cancelled := e.createScheduled(srv, when)
 	status, body := e.call(srv, http.MethodPost, "/v1/notifications/"+cancelled.String()+"/cancel", "")
 	if status != http.StatusOK {
@@ -212,15 +238,17 @@ func TestE2E_ScheduledCancelledIsNeverSent(t *testing.T) {
 	if err := json.Unmarshal(body["may_have_been_sent"], &mayHaveBeenSent); err != nil || mayHaveBeenSent {
 		t.Errorf("may_have_been_sent %s", body["may_have_been_sent"])
 	}
-	witness := e.createScheduled(srv, when.Add(time.Millisecond))
+	witnessAt := when.Add(time.Millisecond)
+	witness := e.createScheduled(srv, witnessAt)
+
+	// Both are due by the database's clock before the relay first looks.
+	testutil.Eventually(t, func() bool { return e.dbNow().After(witnessAt) }, waitTimeout)
+	e.startRelay(cfg)
 
 	e.waitStatus(witness, domain.StatusSent)
 	n := e.get(cancelled)
 	if n.Status != domain.StatusCancelled || n.AttemptCount != 0 || n.QueuedAt != nil {
 		t.Errorf("cancelled notification: status %s, attempt_count %d, queued_at %v", n.Status, n.AttemptCount, n.QueuedAt)
-	}
-	if !n.UpdatedAt.Before(when) {
-		t.Errorf("cancelled at %v, not before its scheduled_at %v", n.UpdatedAt, when)
 	}
 	if a := e.attempts(cancelled); len(a) != 0 {
 		t.Errorf("attempts of the cancelled notification: %+v", a)
