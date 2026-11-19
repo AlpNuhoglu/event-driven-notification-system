@@ -597,7 +597,7 @@ func TestList_ExplainUsesIndex(t *testing.T) {
 // is there, so the check can see cached statements.
 func TestList_RunsWithCustomPlans(t *testing.T) {
 	url := testutil.NewMigratedDatabase(t)
-	pool, err := pgxpool.New(context.Background(), url+"&pool_max_conns=1")
+	pool, err := OpenPool(context.Background(), url+"&pool_max_conns=1")
 	if err != nil {
 		t.Fatal(err)
 	}

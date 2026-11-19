@@ -56,7 +56,7 @@ type cancelAPI struct {
 func newCancelAPI(t *testing.T) *cancelAPI {
 	t.Helper()
 	evs := &eventLog{}
-	a := newTestAPIOn(t, testutil.NewPool(t), &syncBuffer{}, func(o *Options) {
+	a := newTestAPIOn(t, testutil.NewPool(t, store.OpenPool), &syncBuffer{}, func(o *Options) {
 		o.Events = evs
 		o.ExpiresAtMinLead = itMinLead
 	})

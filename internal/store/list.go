@@ -109,8 +109,8 @@ func (s *Store) ListNotifications(ctx context.Context, f ListFilter) ([]Notifica
 
 // customPlanDB runs a statement with pgx.QueryExecModeDescribeExec: the
 // unnamed statement, which Postgres plans with the bound values every time
-// and which never enters pgx's statement cache. Two kinds of statement need
-// it:
+// and which never enters pgx's statement cache. Three kinds of statement
+// need it:
 //
 //   - The listing: its optional filters ("$n IS NULL OR col = $n") make the
 //     row estimate of a generic plan meaningless, and the EXPLAIN check showed
@@ -121,6 +121,10 @@ func (s *Store) ListNotifications(ctx context.Context, f ListFilter) ([]Notifica
 //     (an outage), that plan joins the batch against every expired row. With
 //     200,000 expired keys one delete of 1,000 took 12 s while holding its
 //     row locks; planned with the values it takes 4 ms.
+//   - The relay's queued count (relay.go): every pool runs with
+//     plan_cache_mode = force_custom_plan (PoolConfig, D79), but Postgres
+//     never re-plans a cached statement without parameters, so the count
+//     would keep a plan made while the table was small.
 //
 // QueryRow passes through unchanged.
 type customPlanDB struct{ db.DBTX }

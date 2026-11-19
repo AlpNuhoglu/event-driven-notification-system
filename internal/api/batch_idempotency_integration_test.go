@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/AlpNuhoglu/event-driven-notification-system/internal/store"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/testutil"
 )
 
@@ -229,7 +230,7 @@ func TestIdempotencyKey_Replay(t *testing.T) {
 
 func TestIdempotencyKey_ExpiredKeyIsTakenOver(t *testing.T) {
 	const ttl = 50 * time.Millisecond
-	a := newTestAPIOn(t, testutil.NewPool(t), &syncBuffer{}, func(o *Options) { o.IdempotencyKeyTTL = ttl })
+	a := newTestAPIOn(t, testutil.NewPool(t, store.OpenPool), &syncBuffer{}, func(o *Options) { o.IdempotencyKeyTTL = ttl })
 	first := a.postKey(pathCreate, validBody, "key-expiring", "")
 	if first.status != http.StatusAccepted {
 		t.Fatalf("first: %d", first.status)
@@ -525,7 +526,7 @@ func TestBatch_StatusCountsMove(t *testing.T) {
 }
 
 func TestBatch_Thousand(t *testing.T) {
-	a := newTestAPIOn(t, testutil.NewPool(t), &syncBuffer{}, func(o *Options) { o.MaxBodyBytes = itBigBody })
+	a := newTestAPIOn(t, testutil.NewPool(t, store.OpenPool), &syncBuffer{}, func(o *Options) { o.MaxBodyBytes = itBigBody })
 	items := make([]string, 1001)
 	for i := range items {
 		items[i] = item(fmt.Sprintf(`,"dedupe_key":"bulk-%04d"`, i))

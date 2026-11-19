@@ -43,7 +43,7 @@ var (
 
 func newTestStore(t *testing.T, profiles Profiles) (*Store, *pgxpool.Pool) {
 	t.Helper()
-	pool := testutil.NewPool(t)
+	pool := testutil.NewPool(t, OpenPool)
 	return New(pool, profiles), pool
 }
 

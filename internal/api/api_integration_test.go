@@ -42,7 +42,7 @@ type testAPI struct {
 
 func newTestAPI(t *testing.T) *testAPI {
 	t.Helper()
-	pool := testutil.NewPool(t)
+	pool := testutil.NewPool(t, store.OpenPool)
 	return newTestAPIOn(t, pool, &syncBuffer{})
 }
 
@@ -286,7 +286,7 @@ func TestGet_UnknownAndInvalidID(t *testing.T) {
 // Validation through the real handler: status and codes; nothing is stored.
 func TestCreate_Validation(t *testing.T) {
 	// The body limit admits a recipient of the largest size and one more.
-	a := newTestAPIOn(t, testutil.NewPool(t), &syncBuffer{}, func(o *Options) { o.MaxBodyBytes = 2 * itMaxBody })
+	a := newTestAPIOn(t, testutil.NewPool(t, store.OpenPool), &syncBuffer{}, func(o *Options) { o.MaxBodyBytes = 2 * itMaxBody })
 	tests := []struct {
 		name   string
 		body   string
@@ -438,7 +438,7 @@ func deadPool(t *testing.T) *pgxpool.Pool {
 		t.Fatal(err)
 	}
 	u.Path = "/db_" + strings.ReplaceAll(uuid.NewString(), "-", "")
-	pool, err := pgxpool.New(context.Background(), u.String())
+	pool, err := store.OpenPool(context.Background(), u.String())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -447,7 +447,7 @@ func deadPool(t *testing.T) *pgxpool.Pool {
 }
 
 func TestUnavailable(t *testing.T) {
-	closed := testutil.NewPool(t)
+	closed := testutil.NewPool(t, store.OpenPool)
 	closed.Close()
 	for name, pool := range map[string]*pgxpool.Pool{"missing database": deadPool(t), "closed pool": closed} {
 		a := newTestAPIOn(t, pool, &syncBuffer{})
@@ -496,7 +496,7 @@ func otherChannel(c string) string {
 // contains the recipient or the content.
 func TestNoPersonalDataInLogsOrErrors(t *testing.T) {
 	logs := &syncBuffer{}
-	a := newTestAPIOn(t, testutil.NewPool(t), logs)
+	a := newTestAPIOn(t, testutil.NewPool(t, store.OpenPool), logs)
 	down := newTestAPIOn(t, deadPool(t), logs)
 	const content = "canary-content-7d1f2c"
 	body := func(channel, recipient string) string {

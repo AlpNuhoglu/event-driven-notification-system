@@ -18,8 +18,13 @@ type Lane struct {
 
 // QueuedCounts returns the number of queued notifications per lane. Lanes
 // without queued rows are absent from the map.
+//
+// The count runs as the unnamed statement (customPlanDB): it has no
+// parameters, and Postgres reuses the one plan of such a prepared statement
+// under every plan_cache_mode, so a plan cached while the table was small
+// would outlive a burst until the next ANALYZE (D79).
 func (s *Store) QueuedCounts(ctx context.Context) (map[Lane]int, error) {
-	rows, err := s.q.CountQueuedByLane(ctx)
+	rows, err := s.custom.CountQueuedByLane(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("count queued: %w", err)
 	}
