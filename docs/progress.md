@@ -22,7 +22,7 @@ Status is one of: `not started`, `in progress`, `in review` (pull requests open)
 |---|---|---|---|---|
 | P0 | Repository skeleton and first-hour experiments | done | [#2](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/2) (`p0/skeleton`, merged), [#3](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/3) (`p0/experiments`, merged) | 2026-11-18 |
 | P1 | Core path | done | [#4](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/4) (`p1/schema-and-store`, merged), [#5](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/5) (`p1/relay-worker-provider`, merged), [#6](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/6) (`p1/compose-e2e`, merged) | 2026-11-19 |
-| P2 | API completeness | in review | [#7](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/7) (`p2/batch-and-idempotency`, merged), PR2LINK (`p2/cancel-redrive-listing`) | |
+| P2 | API completeness | in review | [#7](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/7) (`p2/batch-and-idempotency`, merged), [#8](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/8) (`p2/cancel-redrive-listing`) | |
 | P3 | Delivery robustness | not started | | |
 | P4 | Templates and scheduling | not started | | |
 | P5 | Real-time and observability | not started | | |
@@ -101,7 +101,7 @@ Newest entry first. One entry per session, in this form:
   - status query, frequent status (22 %): the same on the first page, and after a cursor an `Index Scan` on `notifications_created_idx` with `status` as a filter (the test accepts either listing index for a frequent status);
   - no `Sort`, no sequential scan and no bitmap node in any of them.
   - **Finding:** under a **generic** plan the status query is a bitmap scan of the whole status followed by a sort. Both listing statements therefore always run with a custom plan; `TestList_RunsWithCustomPlans` checks that they never enter the prepared-statement cache (with `GetNotification` as the control that the check can see cached statements). Recorded in the design review log, section 6.
-- **Pull requests opened:** PR2LINK from `p2/cancel-redrive-listing`.
+- **Pull requests opened:** [#8](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/8) from `p2/cancel-redrive-listing`.
 - **Exit criteria** (the ones that apply): `make test` green with the contract tests; `make generate` twice without a change; `make lint` with 0 issues; the three named race tests green with `-count=20` (the delegate's run) and again here with `-count=5` and `-count=3` around the mutations. `make fuzz` and the Swagger UI check belong to `p2/validation`.
 - **Mutation checks** (each restored byte-identically, checksums of the SQL and the generated files compared; the tests pass again afterwards):
   - **`TestCancel_RacesWithClaim`:** the guard `status IN ('pending', 'retrying', 'queued')` removed from `CancelNotification`. The test failed 5 of 5, in "claim first", "both waiting, claim queued first" and "concurrent" (both sides won). `TestCancel_WhileProcessingReturns409` failed as well.
