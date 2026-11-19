@@ -27,7 +27,7 @@ func TestCompleteSent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sent != (Sent{From: domain.StatusProcessing}) {
+	if transitionOf(sent) != (Sent{From: domain.StatusProcessing}) {
 		t.Errorf("sent = %+v, want transition 4 from processing", sent)
 	}
 	after := get(t, s, n.ID)

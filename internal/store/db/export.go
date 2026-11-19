@@ -3,10 +3,11 @@
 // sqlc does not generate it, the generated files are never edited, and the
 // generator keeps the SQL texts unexported.
 //
-// export.go exports the two listing queries' SQL as the code executes them, so that
-// the plan test (TestList_ExplainUsesIndex in the parent package) prepares
-// and explains the very text the repository runs, not a copy that could
-// drift from it.
+// export.go exports the SQL of the two listing queries and of the relay's
+// two gauge queries as the code executes them, so that the plan tests
+// (TestList_ExplainUsesIndex and TestGauges_PlansReadOnlyUnfinishedRows in the
+// parent package) prepare and explain the very text the repository runs, not
+// a copy that could drift from it.
 package db
 
 // ListNotificationsSQL is the text of the ListNotifications query.
@@ -15,3 +16,9 @@ const ListNotificationsSQL = listNotifications
 // ListNotificationsByStatusSQL is the text of the ListNotificationsByStatus
 // query.
 const ListNotificationsByStatusSQL = listNotificationsByStatus
+
+// QueuedLaneGaugesSQL is the text of the QueuedLaneGauges query.
+const QueuedLaneGaugesSQL = queuedLaneGauges
+
+// BacklogLaneGaugesSQL is the text of the BacklogLaneGauges query.
+const BacklogLaneGaugesSQL = backlogLaneGauges
