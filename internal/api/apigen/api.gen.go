@@ -268,6 +268,19 @@ type Attempt struct {
 	StartedAt         time.Time `json:"started_at"`
 }
 
+// AttemptCounts Attempts finished in the window, by outcome; every outcome is listed, also when zero. `in_flight` is not an outcome of a finished attempt.
+type AttemptCounts struct {
+	Aborted       int64 `json:"aborted"`
+	InternalError int64 `json:"internal_error"`
+	Permanent     int64 `json:"permanent"`
+	ProviderFatal int64 `json:"provider_fatal"`
+	Retryable     int64 `json:"retryable"`
+	Success       int64 `json:"success"`
+	Throttled     int64 `json:"throttled"`
+	Unknown       int64 `json:"unknown"`
+	Unreachable   int64 `json:"unreachable"`
+}
+
 // AttemptList defines model for AttemptList.
 type AttemptList struct {
 	Data []Attempt `json:"data"`
@@ -333,6 +346,23 @@ type CancelResult struct {
 
 // Channel defines model for Channel.
 type Channel string
+
+// ChannelSummary defines model for ChannelSummary.
+type ChannelSummary struct {
+	// Attempts Attempts finished in the window, by outcome; every outcome is listed, also when zero. `in_flight` is not an outcome of a finished attempt.
+	Attempts AttemptCounts `json:"attempts"`
+	Channel  Channel       `json:"channel"`
+
+	// EndToEndLatencyMs Milliseconds; both values are `null` when there is nothing to measure in the window.
+	EndToEndLatencyMs Percentiles `json:"end_to_end_latency_ms"`
+
+	// ProviderLatencyMs Milliseconds; both values are `null` when there is nothing to measure in the window.
+	ProviderLatencyMs Percentiles `json:"provider_latency_ms"`
+
+	// SuccessRate `success` divided by all attempts finished in the window except
+	// `aborted` (which sent nothing); `null` when there are none.
+	SuccessRate *float64 `json:"success_rate"`
+}
 
 // Check defines model for Check.
 type Check struct {
@@ -461,6 +491,37 @@ type Health struct {
 // HealthStatus defines model for Health.Status.
 type HealthStatus string
 
+// LaneSummary defines model for LaneSummary.
+type LaneSummary struct {
+	// BacklogDue Notifications of the lane in `pending` or `retrying` whose due time has passed.
+	BacklogDue int64   `json:"backlog_due"`
+	Channel    Channel `json:"channel"`
+
+	// Hwm The lane's high-water mark (`LANE_HWM_HIGH`, `LANE_HWM_NORMAL`, `LANE_HWM_LOW`).
+	Hwm      int32    `json:"hwm"`
+	Priority Priority `json:"priority"`
+
+	// Queued Notifications of the lane in state `queued`.
+	Queued int64 `json:"queued"`
+}
+
+// MetricsSummary defines model for MetricsSummary.
+type MetricsSummary struct {
+	// Channels All three channels, in the order `sms`, `email`, `push`.
+	Channels []ChannelSummary `json:"channels"`
+
+	// GeneratedAt When the figures were computed (UTC); a cached answer shows an older time.
+	GeneratedAt time.Time `json:"generated_at"`
+
+	// Lanes All nine lanes, `sms`, `email`, `push` by `high`, `normal`, `low`.
+	Lanes []LaneSummary `json:"lanes"`
+
+	// Window The window of the attempt figures, as a duration (`SUMMARY_WINDOW`).
+	//
+	// Example: 5m
+	Window string `json:"window"`
+}
+
 // Notification defines model for Notification.
 type Notification struct {
 	AttemptCount int32               `json:"attempt_count"`
@@ -510,6 +571,12 @@ type NotificationList struct {
 // `unknown`: the attempt ended without a known result, so the message
 // may have been delivered.
 type Outcome string
+
+// Percentiles Milliseconds; both values are `null` when there is nothing to measure in the window.
+type Percentiles struct {
+	P50 *float64 `json:"p50"`
+	P95 *float64 `json:"p95"`
+}
 
 // Priority defines model for Priority.
 type Priority string
@@ -777,6 +844,18 @@ type CancelBatchParams struct {
 	Traceparent *TraceParent `json:"traceparent,omitempty"`
 }
 
+// GetMetricsSummaryParams defines parameters for GetMetricsSummary.
+type GetMetricsSummaryParams struct {
+	// XRequestID Correlation id. Accepted when it is at most 128 characters of
+	// `[A-Za-z0-9._-]`; otherwise it is ignored and a new id is generated.
+	// An invalid value is not an error.
+	XRequestID *XRequestID `json:"X-Request-ID,omitempty"`
+
+	// Traceparent W3C Trace Context. Stored with the notification when it is well
+	// formed; otherwise ignored. An invalid value is not an error.
+	Traceparent *TraceParent `json:"traceparent,omitempty"`
+}
+
 // ListNotificationsParams defines parameters for ListNotifications.
 type ListNotificationsParams struct {
 	Status   *Status   `form:"status,omitempty" json:"status,omitempty"`
@@ -1025,6 +1104,9 @@ type ServerInterface interface {
 	// CancelBatch Cancel the notifications of a batch
 	// (POST /v1/batches/{id}/cancel)
 	CancelBatch(w http.ResponseWriter, r *http.Request, id BatchID, params CancelBatchParams)
+	// GetMetricsSummary Delivery metrics of the last few minutes
+	// (GET /v1/metrics/summary)
+	GetMetricsSummary(w http.ResponseWriter, r *http.Request, params GetMetricsSummaryParams)
 	// ListNotifications List notifications
 	// (GET /v1/notifications)
 	ListNotifications(w http.ResponseWriter, r *http.Request, params ListNotificationsParams)
@@ -1252,6 +1334,66 @@ func (siw *ServerInterfaceWrapper) CancelBatch(w http.ResponseWriter, r *http.Re
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.CancelBatch(w, r, id, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetMetricsSummary operation middleware
+func (siw *ServerInterfaceWrapper) GetMetricsSummary(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetMetricsSummaryParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "X-Request-ID" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("X-Request-ID")]; found {
+		var XRequestID XRequestID
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-Request-ID", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "X-Request-ID", valueList[0], &XRequestID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-Request-ID", Err: err})
+			return
+		}
+
+		params.XRequestID = &XRequestID
+
+	}
+
+	// ------------- Optional header parameter "traceparent" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("traceparent")]; found {
+		var Traceparent TraceParent
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "traceparent", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "traceparent", valueList[0], &Traceparent, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "traceparent", Err: err})
+			return
+		}
+
+		params.Traceparent = &Traceparent
+
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetMetricsSummary(w, r, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -2557,6 +2699,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/notifications/batch", wrapper.CreateNotificationBatch)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/batches/{id}", wrapper.GetBatch)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/v1/batches/{id}/cancel", wrapper.CancelBatch)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/v1/metrics/summary", wrapper.GetMetricsSummary)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/healthz", wrapper.GetHealthz)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/readyz", wrapper.GetReadyz)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/openapi.yaml", wrapper.GetOpenAPISpec)
@@ -2942,6 +3085,68 @@ type CancelBatch503ApplicationProblemPlusJSONResponse struct {
 }
 
 func (response CancelBatch503ApplicationProblemPlusJSONResponse) VisitCancelBatchResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(503)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetMetricsSummaryRequestObject struct {
+	Params GetMetricsSummaryParams
+}
+
+type GetMetricsSummaryResponseObject interface {
+	VisitGetMetricsSummaryResponse(w http.ResponseWriter) error
+}
+
+type GetMetricsSummary200ResponseHeaders struct {
+	XRequestID string
+}
+
+type GetMetricsSummary200JSONResponse struct {
+	Body    MetricsSummary
+	Headers GetMetricsSummary200ResponseHeaders
+}
+
+func (response GetMetricsSummary200JSONResponse) VisitGetMetricsSummaryResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-ID", fmt.Sprint(response.Headers.XRequestID))
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetMetricsSummary500ApplicationProblemPlusJSONResponse struct {
+	InternalErrorApplicationProblemPlusJSONResponse
+}
+
+func (response GetMetricsSummary500ApplicationProblemPlusJSONResponse) VisitGetMetricsSummaryResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetMetricsSummary503ApplicationProblemPlusJSONResponse struct {
+	UnavailableApplicationProblemPlusJSONResponse
+}
+
+func (response GetMetricsSummary503ApplicationProblemPlusJSONResponse) VisitGetMetricsSummaryResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response); err != nil {
@@ -4717,6 +4922,9 @@ type StrictServerInterface interface {
 	// CancelBatch Cancel the notifications of a batch
 	// (POST /v1/batches/{id}/cancel)
 	CancelBatch(ctx context.Context, request CancelBatchRequestObject) (CancelBatchResponseObject, error)
+	// GetMetricsSummary Delivery metrics of the last few minutes
+	// (GET /v1/metrics/summary)
+	GetMetricsSummary(ctx context.Context, request GetMetricsSummaryRequestObject) (GetMetricsSummaryResponseObject, error)
 	// ListNotifications List notifications
 	// (GET /v1/notifications)
 	ListNotifications(ctx context.Context, request ListNotificationsRequestObject) (ListNotificationsResponseObject, error)
@@ -4922,6 +5130,32 @@ func (sh *strictHandler) CancelBatch(w http.ResponseWriter, r *http.Request, id 
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(CancelBatchResponseObject); ok {
 		if err := validResponse.VisitCancelBatchResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetMetricsSummary operation middleware
+func (sh *strictHandler) GetMetricsSummary(w http.ResponseWriter, r *http.Request, params GetMetricsSummaryParams) {
+	var request GetMetricsSummaryRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetMetricsSummary(ctx, request.(GetMetricsSummaryRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetMetricsSummary")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetMetricsSummaryResponseObject); ok {
+		if err := validResponse.VisitGetMetricsSummaryResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

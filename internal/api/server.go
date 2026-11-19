@@ -37,6 +37,7 @@ type Repository interface {
 	canceller
 	lister
 	templater
+	summarizer
 }
 
 // Pinger checks that the database answers (readiness).
@@ -103,6 +104,16 @@ type Options struct {
 	// PhoneValidation is the level of the check of an SMS recipient
 	// (PHONE_VALIDATION); domain.PhonePossible when empty.
 	PhoneValidation domain.PhoneValidation
+	// SummaryWindow, SummaryCacheTTL and SummaryBacklogTTL are the window of
+	// the metrics summary, the lifetime of its cached answer and the lifetime
+	// of its cached due backlog (SUMMARY_WINDOW, SUMMARY_CACHE_TTL,
+	// SUMMARY_BACKLOG_CACHE_TTL); the Default values when zero.
+	SummaryWindow     time.Duration
+	SummaryCacheTTL   time.Duration
+	SummaryBacklogTTL time.Duration
+	// LaneHWM is the high-water mark each priority's lanes report in the
+	// summary (LANE_HWM_*); DefaultLaneHWM when nil.
+	LaneHWM map[domain.Priority]int
 }
 
 // NewHandler returns the API's http.Handler.
@@ -125,6 +136,18 @@ func NewHandler(o Options) http.Handler {
 	if o.Now == nil {
 		o.Now = time.Now
 	}
+	if o.SummaryWindow <= 0 {
+		o.SummaryWindow = DefaultSummaryWindow
+	}
+	if o.SummaryCacheTTL <= 0 {
+		o.SummaryCacheTTL = DefaultSummaryCacheTTL
+	}
+	if o.SummaryBacklogTTL <= 0 {
+		o.SummaryBacklogTTL = DefaultSummaryBacklogTTL
+	}
+	if o.LaneHWM == nil {
+		o.LaneHWM = DefaultLaneHWM
+	}
 	if o.Events == nil {
 		o.Events = events.Nop{}
 	}
@@ -146,6 +169,10 @@ func NewHandler(o Options) http.Handler {
 		},
 		now:  o.Now,
 		spec: spec.OpenAPI(),
+		summary: &summaryService{
+			src: o.Repository, now: o.Now, window: o.SummaryWindow, cacheTTL: o.SummaryCacheTTL,
+			backlogTTL: o.SummaryBacklogTTL, dbTimeout: o.DBTimeout, hwm: o.LaneHWM,
+		},
 	}
 	strict := apigen.NewStrictHandlerWithOptions(h, nil, apigen.StrictHTTPServerOptions{
 		RequestErrorHandlerFunc:  requestError,

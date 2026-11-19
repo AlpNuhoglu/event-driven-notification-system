@@ -52,6 +52,8 @@ type handlers struct {
 	// and now the clock that judges them.
 	schedule scheduleRules
 	now      func() time.Time
+	// summary computes and caches the metrics summary.
+	summary *summaryService
 }
 
 // createRules returns the rules a create request is validated by, with the
