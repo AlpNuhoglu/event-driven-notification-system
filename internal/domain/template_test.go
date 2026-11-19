@@ -162,7 +162,10 @@ func TestTemplateRender_Variables(t *testing.T) {
 		{"long numeric code", map[string]string{"req": `12345678901234567890123`}, "[12345678901234567890123|]", nil},
 		{"decimal keeps its text", map[string]string{"req": `1.50`}, "[1.50|]", nil},
 		{"exponent keeps its text", map[string]string{"req": `1e3`, "opt": `-0`}, "[1e3|-0]", nil},
-		{"true", map[string]string{"req": `true`, "opt": `false`}, "[true|false]", nil},
+		{"true is the text true", map[string]string{"req": `true`, "opt": `true`}, "[true|true]", nil},
+		{"false prints nothing", map[string]string{"req": `true`, "opt": `false`}, "[true|]", nil},
+		{"false is a given value, not a missing one", map[string]string{"req": `false`}, "[|]", nil},
+		{"the number 0 is the text 0", map[string]string{"req": `0`}, "[0|]", nil},
 		{"whitespace around value", map[string]string{"req": " \"x\" "}, "[x|]", nil},
 		{"missing required", map[string]string{"opt": `"y"`}, "", []VariableError{{"req", VariableMissing}}},
 		{"undeclared extra", map[string]string{"req": `"x"`, "fist_name": `"y"`}, "", []VariableError{{"fist_name", VariableUnknown}}},
@@ -191,6 +194,48 @@ func TestTemplateRender_Variables(t *testing.T) {
 				t.Fatalf("Render = %q, %v; want %q, %v", out, problems, c.want, c.problems)
 			}
 		})
+	}
+}
+
+// A boolean variable in an if (D40 as amended): false is the empty string, so
+// a client that sends false gets the else branch, like one that leaves an
+// optional variable out or sends "". Only an empty value is false: the number
+// 0 and the string "false" are texts that are not empty.
+func TestTemplateRender_BooleanInIf(t *testing.T) {
+	cases := []struct {
+		name string
+		flag string // the JSON value; "" leaves the variable out
+		want string
+	}{
+		{"true", `true`, "yes"},
+		{"false", `false`, "no"},
+		{"omitted optional", ``, "no"},
+		{"empty string", `""`, "no"},
+		{"the number 0 is not empty", `0`, "yes"},
+		{"the string false is not empty", `"false"`, "yes"},
+	}
+	for _, ch := range []Channel{ChannelSMS, ChannelEmail, ChannelPush} {
+		ifElse := mustCompile(t, ch, `{{ if .flag }}yes{{ else }}no{{ end }}`, nil, []string{"flag"})
+		for _, c := range cases {
+			t.Run(string(ch)+"/"+c.name, func(t *testing.T) {
+				vars := map[string]json.RawMessage{}
+				if c.flag != "" {
+					vars["flag"] = json.RawMessage(c.flag)
+				}
+				got, problems, err := ifElse.Render(vars)
+				if err != nil || len(problems) > 0 || got != c.want {
+					t.Fatalf("Render(flag=%s) = %q, %v, %v; want %q", c.flag, got, problems, err, c.want)
+				}
+			})
+		}
+	}
+	// What follows from it: false prints nothing, and default applies to it.
+	printed := mustCompile(t, ChannelSMS, `[{{ .flag }}][{{ .flag | default "off" }}]`, []string{"flag"}, nil)
+	for flag, want := range map[string]string{`false`: "[][off]", `true`: "[true][true]", `0`: "[0][0]"} {
+		got, problems, err := printed.Render(map[string]json.RawMessage{"flag": json.RawMessage(flag)})
+		if err != nil || len(problems) > 0 || got != want {
+			t.Errorf("Render(flag=%s) = %q, %v, %v; want %q", flag, got, problems, err, want)
+		}
 	}
 }
 

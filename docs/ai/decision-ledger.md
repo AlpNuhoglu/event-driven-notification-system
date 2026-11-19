@@ -16,6 +16,8 @@ Sources are review-turn findings: `T2 F1` means Turn 2, finding F1. "Author" mea
 
 **Amended on 2026-11-19, in P2, by the author's decision:** D16 (a redrive that sends an `expires_at` it does not need is refused, and the `409` carries the stored value).
 
+**Amended on 2026-11-19, in P4, by the author's decision:** D40 (a `false` template variable converts to the empty string, so that `{{ if .flag }}` is false for a client that sent `false`).
+
 ## Guiding rules
 
 | ID | Rule |
@@ -84,7 +86,7 @@ Sources are review-turn findings: `T2 F1` means Turn 2, finding F1. "Author" mea
 | D37 | WebSocket: the gateway **registers the subscription first, then reads Postgres and sends a snapshot** (`status_changed` with current `version`); for a batch subscription, one event per notification (≤ 1,000). Gateway has read-only Postgres access. `OriginPatterns` from configuration; bounded per-connection send queue, connection closed when full. Event queue has `x-max-length` and a short `x-message-ttl`. The `last_version` map is removed; the client rule (ignore `version ≤ known`) remains. | 0005, 0006, 0009 | T5 F7, N3, T6 F1, F7, T7 |
 | D38 | Swagger UI assets embedded (`go:embed`); works offline. | 0006 | T6 N1 |
 | D39 | Metrics summary: `circuits` field removed (circuit state comes from the worker's `circuit_state` metric); `backlog_due` cached separately for 10 s; all outcomes listed and the `success_rate` denominator defined. **Postgres is the api's only required dependency**; its event publisher (D11) is optional and never affects readiness. | 0009, 0005, architecture | T9 F8, N1, T12, ledger review |
-| D40 | Templates: variables accept string, number and boolean (converted to string via `json.Number`); objects and arrays → `422`. Per-version `optional_variables` (missing → empty string). FuncMap: **`default` and `truncate` only** (`upper`/`lower` removed). Allow-list checks **function names** (all 19 builtins rejected) and rejects templates that define more than one template. Body ≤ 64 KB. Declared but unused variable → rejected at creation. Existing name → `409`. Parsed templates are cached **per request**, not process-wide. A past `scheduled_at` within the 30 s tolerance is stored as `NULL`. | 0008, 0006, 0010 | T8 F1–F6, N3, P1 |
+| D40 | Templates: variables accept string, number and boolean (converted to string via `json.Number`); objects and arrays → `422`. **Amended in P4 by the author:** JSON `false` converts to the empty string and `true` stays `true`, because with `false` as the text `false` a template's `{{ if .flag }}` took the true branch for a client that sent `false` and sent a wrong message silently; so `{{ .flag }}` prints nothing for `false`, the number `0` is the text `0` and is not empty, and `default` applies to a `false` value. Per-version `optional_variables` (missing → empty string). FuncMap: **`default` and `truncate` only** (`upper`/`lower` removed). Allow-list checks **function names** (all 19 builtins rejected) and rejects templates that define more than one template. Body ≤ 64 KB. Declared but unused variable → rejected at creation. Existing name → `409`. Parsed templates are cached **per request**, not process-wide. A past `scheduled_at` within the 30 s tolerance is stored as `NULL`. | 0008, 0006, 0010 | T8 F1–F6, N3, P1 |
 
 ## E. Observability
 

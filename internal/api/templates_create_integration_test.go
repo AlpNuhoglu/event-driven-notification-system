@@ -430,6 +430,56 @@ func TestTemplatePreview(t *testing.T) {
 	}
 }
 
+// A boolean variable (D40 as amended): false is the empty string. The preview
+// and the create take the same branch of an if for true, false, an optional
+// variable that is left out and the empty string; false prints nothing and
+// default applies to it; the number 0 is the text 0.
+func TestTemplate_BooleanVariables(t *testing.T) {
+	a := newTestAPIOn(t, testutil.NewPool(t, store.OpenPool), &syncBuffer{})
+	a.mkTemplate(t, "promo", "sms", `Order ready.{{ if .gift }} A gift is included.{{ else }} No gift.{{ end }}`, nil, []string{"gift"})
+	a.mkTemplate(t, "flags", "push", `[{{ .flag }}][{{ .flag | default "off" }}]`, []string{"flag"}, nil)
+
+	for _, tt := range []struct {
+		name, variables, want string
+	}{
+		{"true", `{"gift":true}`, "Order ready. A gift is included."},
+		{"false", `{"gift":false}`, "Order ready. No gift."},
+		{"omitted optional", `{}`, "Order ready. No gift."},
+		{"empty string", `{"gift":""}`, "Order ready. No gift."},
+		{"the number 0 is not empty", `{"gift":0}`, "Order ready. A gift is included."},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			res := a.do(http.MethodPost, "/v1/templates/promo/preview", `{"variables":`+tt.variables+`}`, nil)
+			wantStatus(t, res, http.StatusOK)
+			if got := res.object(t)["content"]; got != tt.want {
+				t.Errorf("preview: %q, want %q", got, tt.want)
+			}
+			res = a.do(http.MethodPost, "/v1/notifications",
+				fromTemplate("sms", "+905551234567", `{"name":"promo","variables":`+tt.variables+`}`), nil)
+			wantStatus(t, res, http.StatusAccepted)
+			id, _ := res.object(t)["id"].(string)
+			if row := a.tplRow(t, id); row.content != tt.want {
+				t.Errorf("stored content: %q, want %q", row.content, tt.want)
+			}
+		})
+	}
+
+	// false prints nothing and default applies to it; it is stored as sent.
+	res := a.do(http.MethodPost, "/v1/templates/flags/preview", `{"variables":{"flag":false}}`, nil)
+	wantStatus(t, res, http.StatusOK)
+	if got := res.object(t)["content"]; got != "[][off]" {
+		t.Errorf("preview of false: %q, want [][off]", got)
+	}
+	res = a.do(http.MethodPost, "/v1/notifications",
+		fromTemplate("push", "device-token-1", `{"name":"flags","variables":{"flag":false}}`), nil)
+	wantStatus(t, res, http.StatusAccepted)
+	id, _ := res.object(t)["id"].(string)
+	row := a.tplRow(t, id)
+	if row.content != "[][off]" || row.vars["flag"] != false {
+		t.Errorf("row: content %q, template_vars %v; want [][off] and flag false as sent", row.content, row.vars)
+	}
+}
+
 // Variable values and rendered content reach no log line and no error
 // answer.
 func TestTemplateCreate_NoValuesInLogsOrErrors(t *testing.T) {

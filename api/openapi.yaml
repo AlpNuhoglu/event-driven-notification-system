@@ -526,10 +526,15 @@ paths:
 
         **Behaviour of the engine an author will meet.**
 
-        1. Every variable reaches the template as a string, so `{{ if .flag }}`
-           tests for a non-empty value: the JSON values `false` and `0` are the
-           strings `false` and `0` and count as true. Leave an optional
-           variable out (or send `""`) to take the `else` branch.
+        1. Every variable reaches the template as a string, and
+           `{{ if .flag }}` tests whether that string is empty. The JSON value
+           `false` is the empty string, so `false`, `""` and an optional
+           variable that is left out all take the `else` branch; `true` is
+           the text `true`. It follows that `{{ .flag }}` prints nothing for
+           `false`, and that `default` applies to a `false` value
+           (`{{ .flag | default "off" }}` prints `off`). A number keeps its
+           text: `0` is the text `0`, which is not empty and takes the `if`
+           branch, and so does the string `"false"`.
         2. An e-mail body must be HTML that ends in plain text context: a body
            that ends inside a tag, an attribute, a comment or a `<script>` is
            refused (`unsafe_html`).
@@ -1388,9 +1393,10 @@ components:
       description: |
         The values of the template's variables, by name. Absent means none.
         A value is a JSON string, number or boolean and is converted to a
-        string: a number keeps its digits as sent (`482913` stays `482913`),
-        and `true`, `false` and `0` are non-empty strings, so they count as
-        true in an `if`. At most 1,024 characters per value after conversion,
+        string: a number keeps its digits as sent (`482913` stays `482913`,
+        and `0` is the text `0`), `true` is the text `true`, and `false` is
+        the empty string, so a template's `{{ if .flag }}` takes its `else`
+        branch for `false`. At most 1,024 characters per value after conversion,
         without U+0000. Every required variable must be given and every given
         variable must be declared. How a template uses its variables is
         described under `POST /v1/templates`.

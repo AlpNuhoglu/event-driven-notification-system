@@ -160,7 +160,7 @@ curl -sS -X POST localhost:8080/v1/templates/otp/preview \
 {"content": "Doğrulama kodunuz 482913", "encoding": "UCS-2", "segments": 1}
 ```
 
-**Create a notification from a template** with `template` in place of `content` (also as an item of a batch). Variable values are strings, numbers or booleans; a number keeps its digits as sent. A missing or misspelt variable is a `422` that names the variable (`template.variables.<name>`).
+**Create a notification from a template** with `template` in place of `content` (also as an item of a batch). Variable values are strings, numbers or booleans; a number keeps its digits as sent, and `false` is the empty string, so `{{ if .flag }}` takes its `else` branch for it. A missing or misspelt variable is a `422` that names the variable (`template.variables.<name>`).
 
 ```
 curl -sS -X POST localhost:8080/v1/notifications \

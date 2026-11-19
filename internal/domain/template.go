@@ -311,7 +311,9 @@ func (t *Template) Render(variables map[string]json.RawMessage) (content string,
 }
 
 // convertTemplateValue converts one JSON value to its string form, or names
-// the problem. Numbers keep their literal text.
+// the problem. Numbers keep their literal text (so 0 is the text "0", which
+// is not empty). true is "true" and false is the empty string: a template
+// tests a variable with {{ if }}, which asks whether the string is empty.
 func convertTemplateValue(raw json.RawMessage) (string, VariableProblem) {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
@@ -329,7 +331,11 @@ func convertTemplateValue(raw json.RawMessage) (string, VariableProblem) {
 	case json.Number:
 		s = v.String()
 	case bool:
-		s = strconv.FormatBool(v)
+		// false is the empty string (D40 as amended): {{ if .flag }} then
+		// takes the else branch for a client that sent false. s stays "".
+		if v {
+			s = "true"
+		}
 	default: // null, object, array
 		return "", VariableInvalidType
 	}
