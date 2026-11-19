@@ -292,6 +292,15 @@ func (k *EventConsumer) Active() bool {
 	return k.active.Load()
 }
 
+// Connected reports whether the connection to the broker is open: false
+// after a lost connection and for good once recovery has given up. During a
+// reconnection attempt it can read true before the queue is subscribed
+// again (the library clears its closed flag when the attempt begins), so
+// Active, not Connected, says that events arrive.
+func (k *EventConsumer) Connected() bool {
+	return !k.conn.IsClosed()
+}
+
 // Queue returns the name of the current event queue (the broker names it;
 // it changes with every new subscription), or "" when there is none.
 func (k *EventConsumer) Queue() string {

@@ -28,6 +28,8 @@ const (
 	waitTimeout  = 10_000 * time.Millisecond
 	longInterval = 600_000 * time.Millisecond // a ping interval no test reaches
 	writeTimeout = 10_000 * time.Millisecond
+	// readinessTimeout bounds one readiness check.
+	readinessTimeout = 5_000 * time.Millisecond
 )
 
 func discard() *slog.Logger { return slog.New(slog.DiscardHandler) }
