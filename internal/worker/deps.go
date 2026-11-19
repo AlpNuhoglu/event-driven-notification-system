@@ -132,7 +132,7 @@ type Response struct {
 // *store.Store).
 type Store interface {
 	Claim(ctx context.Context, id uuid.UUID, lease time.Duration, provider string) (store.Claim, domain.StatusChanged, error)
-	CompleteSent(ctx context.Context, id uuid.UUID, attemptNo int, provider string, r store.AttemptResult) (domain.StatusChanged, error)
+	CompleteSent(ctx context.Context, id uuid.UUID, attemptNo int, provider string, r store.AttemptResult) (store.Sent, domain.StatusChanged, error)
 	CompleteFailure(ctx context.Context, id uuid.UUID, attemptNo int, r store.AttemptResult, jitter float64) (domain.StatusChanged, error)
 	AbortAttempt(ctx context.Context, id uuid.UUID, attemptNo int, delay time.Duration) (domain.StatusChanged, error)
 }

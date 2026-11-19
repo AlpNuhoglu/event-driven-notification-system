@@ -104,7 +104,7 @@ func (a *cancelAPI) claim(t *testing.T, id uuid.UUID, lease time.Duration) store
 func (a *cancelAPI) toSent(t *testing.T, id uuid.UUID) {
 	t.Helper()
 	a.claim(t, id, itLease)
-	if _, err := a.store.CompleteSent(ctxT(t), id, 1, itProvider, store.AttemptResult{Outcome: domain.OutcomeSuccess}); err != nil {
+	if _, _, err := a.store.CompleteSent(ctxT(t), id, 1, itProvider, store.AttemptResult{Outcome: domain.OutcomeSuccess}); err != nil {
 		t.Fatal(err)
 	}
 }

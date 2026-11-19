@@ -23,9 +23,12 @@ func TestCompleteSent(t *testing.T) {
 		Outcome: domain.OutcomeSuccess, HTTPStatus: ptr(202), Latency: 37 * time.Millisecond,
 		ProviderMessageID: ptr("pm-1"),
 	}
-	ev, err := s.CompleteSent(ctxT(t), n.ID, 1, "webhook", r)
+	sent, ev, err := s.CompleteSent(ctxT(t), n.ID, 1, "webhook", r)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if sent != (Sent{From: domain.StatusProcessing}) {
+		t.Errorf("sent = %+v, want transition 4 from processing", sent)
 	}
 	after := get(t, s, n.ID)
 	checkTransition(t, before, after, ev, domain.StatusSent)
@@ -43,7 +46,7 @@ func TestCompleteSent(t *testing.T) {
 
 func TestCompleteSent_RejectsNonSuccess(t *testing.T) {
 	s, _ := newTestStore(t, zeroDelay)
-	if _, err := s.CompleteSent(ctxT(t), uuid.New(), 1, "p", AttemptResult{Outcome: domain.OutcomeRetryable}); err == nil {
+	if _, _, err := s.CompleteSent(ctxT(t), uuid.New(), 1, "p", AttemptResult{Outcome: domain.OutcomeRetryable}); err == nil {
 		t.Error("expected an error")
 	}
 	if _, err := s.CompleteFailure(ctxT(t), uuid.New(), 1, AttemptResult{Outcome: domain.OutcomeSuccess}, 0); err == nil {
@@ -199,7 +202,7 @@ func TestFencing_LateWriteAffectsZeroRows(t *testing.T) {
 		write   func(ctx context.Context, s *Store, id uuid.UUID, r AttemptResult) error
 	}{
 		{"success", domain.OutcomeSuccess, func(ctx context.Context, s *Store, id uuid.UUID, r AttemptResult) error {
-			_, err := s.CompleteSent(ctx, id, 1, testProvider, r)
+			_, _, err := s.CompleteSent(ctx, id, 1, testProvider, r)
 			return err
 		}},
 		{"failure", domain.OutcomeRetryable, func(ctx context.Context, s *Store, id uuid.UUID, r AttemptResult) error {

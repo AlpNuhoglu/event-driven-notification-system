@@ -298,7 +298,7 @@ func TestClaim_NotClaimable(t *testing.T) {
 		}},
 		{"sent", zeroDelay, func(t *testing.T, s *Store, _ *pgxpool.Pool, id uuid.UUID) {
 			claim(t, s, id)
-			if _, err := s.CompleteSent(ctxT(t), id, 1, testProvider, AttemptResult{Outcome: domain.OutcomeSuccess}); err != nil {
+			if _, _, err := s.CompleteSent(ctxT(t), id, 1, testProvider, AttemptResult{Outcome: domain.OutcomeSuccess}); err != nil {
 				t.Fatal(err)
 			}
 		}},
