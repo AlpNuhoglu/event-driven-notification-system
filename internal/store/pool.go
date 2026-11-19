@@ -3,8 +3,11 @@ package store
 import (
 	"context"
 	"fmt"
+	"strings"
 
+	"github.com/exaring/otelpgx"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // PlanCacheMode is the plan_cache_mode of every connection the application
@@ -30,9 +33,48 @@ func ReadOnly(cfg *pgxpool.Config) {
 	cfg.ConnConfig.RuntimeParams["default_transaction_read_only"] = "on"
 }
 
+// WithTracerProvider makes the pool's statement spans use tp instead of the
+// global tracer provider.
+func WithTracerProvider(tp trace.TracerProvider) PoolOption {
+	return func(cfg *pgxpool.Config) {
+		cfg.ConnConfig.Tracer = queryTracer(tp)
+	}
+}
+
+// queryTracer is the otelpgx tracer of every pool (ADR-0009 §6). It records
+// a span for a statement only inside a span that is being recorded (a
+// request, a delivery), so the relay's and the sweepers' polling statements
+// start no traces of their own. A span is named after the sqlc query
+// ("LockDueLane") and carries the statement text with its placeholders;
+// the arguments are never recorded (otelpgx records them only when asked
+// to, and the tracing package's exporter drops any that appear), and the
+// acquisition of a connection from the pool gets no span. An error text is
+// removed by the exporter too: a database error can quote a value.
+func queryTracer(tp trace.TracerProvider) *otelpgx.Tracer {
+	return otelpgx.NewTracer(
+		otelpgx.WithTracerProvider(tp),
+		otelpgx.WithSpanNameCtxFunc(querySpanName),
+		otelpgx.WithDisableAcquireTracer(),
+	)
+}
+
+// querySpanName is the name of the sqlc query a statement carries in its
+// "-- name: X :kind" comment, or its SQL operation ("SELECT") without one.
+func querySpanName(ctx context.Context, stmt string) string {
+	if rest, ok := strings.CutPrefix(stmt, sqlcNamePrefix); ok {
+		if name, _, ok := strings.Cut(rest, " "); ok && name != "" {
+			return name
+		}
+	}
+	return otelpgx.SQLOperationName(ctx, stmt)
+}
+
+const sqlcNamePrefix = "-- name: "
+
 // PoolConfig parses databaseURL into the configuration of a role's pool:
 // the URL's own settings, with plan_cache_mode set to PlanCacheMode as a
-// startup parameter, and then each option applied. The parameters are set in
+// startup parameter and statement tracing through the global tracer
+// provider (WithTracerProvider replaces it), and then each option applied. The parameters are set in
 // code, after the URL is parsed, so a DATABASE_URL works unchanged whatever
 // it contains, and a URL (or PGOPTIONS) that sets plan_cache_mode itself
 // does not decide: Postgres applies the startup parameters after the
@@ -43,6 +85,7 @@ func PoolConfig(databaseURL string, opts ...PoolOption) (*pgxpool.Config, error)
 		return nil, fmt.Errorf("parse database url: %w", err)
 	}
 	cfg.ConnConfig.RuntimeParams["plan_cache_mode"] = PlanCacheMode
+	cfg.ConnConfig.Tracer = queryTracer(nil)
 	for _, opt := range opts {
 		opt(cfg)
 	}
