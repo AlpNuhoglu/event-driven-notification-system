@@ -207,6 +207,7 @@ Every non-2xx answer the server can produce is a problem document, including the
 |---|---|
 | Client → server | `{"action": "subscribe", "notification_ids": [...], "batch_id": "..."}` and `{"action": "unsubscribe", ...}` |
 | Server → client | `{"type": "status_changed", "id", "batch_id", "status", "version", "failure_reason", "updated_at"}` |
+| Server → client, for a request it cannot serve | `{"type": "error", "code", "message"}` |
 
 - The gateway builds these messages from the `notification.status_changed` events that api, relay and worker publish after each transition ([ADR-0005](0005-service-topology-and-status-events.md)).
 - **Snapshot on subscribe.** After registering a subscription, the gateway sends the current state of each subscribed notification as a `status_changed` message with its current `version`; for a batch, one message per notification ([ADR-0005](0005-service-topology-and-status-events.md)). A client can therefore create a notification, read its `id` from the `202` response and subscribe afterwards without missing anything.
@@ -215,6 +216,29 @@ Every non-2xx answer the server can produce is a problem document, including the
 - **Origin check:** cross-origin connections are accepted only from the origins listed in configuration.
 - **Slow clients:** each connection has a bounded send queue; when it is full, the gateway closes the connection.
 - Delivery is best-effort; `GET` remains authoritative.
+
+**Details settled when the gateway was built (P5):**
+
+| Topic | Rule |
+|---|---|
+| Endpoint | `GET /v1/ws` on the gateway's port (`:8082`). Requests are JSON text frames. |
+| Request | `action` is `subscribe` or `unsubscribe`. `notification_ids` and `batch_id` are both optional, and at least one must be present; a `null` member counts as absent, and an empty `notification_ids` alone is not a request. A member the gateway does not know is ignored. An id repeated in one request counts once. |
+| Ids | Only the canonical form of 36 characters, in either case. The other spellings that UUID parsers accept (`urn:uuid:…`, braces, 32 digits without hyphens) are `invalid_id`. |
+| `status_changed` | Every member is always present; `batch_id` and `failure_reason` are `null` when there is none. Snapshots and live events have the same form. |
+| Limit | A subscribe request is all or nothing: one that would take the connection over the limit registers nothing; one that reaches it exactly is accepted. Subscribing again to something already subscribed does not count twice and sends its snapshot again. |
+| Unknown id | A subscription to an id that does not exist is registered and gets no snapshot. |
+| Snapshot | One message per notification; a notification named by id and through its batch in one request is sent once. |
+| Unsubscribe | Removes what is subscribed and ignores the rest. It is not answered. An event that was already queued for the connection can still arrive. |
+| No acknowledgement | Neither request is acknowledged. The snapshot is the answer to a subscribe. |
+| Errors | The connection stays open. **A message never repeats anything the client sent;** it names a member and, for a list, the index. |
+| Close statuses | 1013 (try again later) when the send queue is full; 1001 (going away) at shutdown; 1009 for a request larger than 1,000 ids need. A client that does not answer a ping is disconnected without a close frame. |
+
+| `code` | When |
+|---|---|
+| `invalid_message` | Not a JSON object, an unknown or missing `action`, a member of the wrong type, neither `notification_ids` nor `batch_id`, a binary frame |
+| `invalid_id` | An element of `notification_ids`, or `batch_id`, is not a UUID in the canonical form |
+| `too_many_subscriptions` | The request would exceed the limit; nothing was subscribed |
+| `snapshot_unavailable` | The current state could not be read from Postgres. The subscription is registered and live events arrive. |
 
 ### 11. Idempotency in three layers
 

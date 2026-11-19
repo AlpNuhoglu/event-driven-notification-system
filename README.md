@@ -1,6 +1,6 @@
 # Event-Driven Notification System
 
-> **Work in progress.** The core path is implemented: a notification created through the API is stored, published, rate-limited and sent to the provider, notifications can be created in batches with two layers of duplicate prevention (`Idempotency-Key`, `dedupe_key`), they can be listed, cancelled and redriven, they can be created from versioned templates and scheduled for later delivery, and every request is validated for its channel, with the SMS segment count reported. The WebSocket gateway and the dashboards follow in the phases of the [implementation plan](docs/plan/implementation-plan.md); [progress](docs/progress.md) shows where the work stands. This README grows with it.
+> **Work in progress.** The core path is implemented: a notification created through the API is stored, published, rate-limited and sent to the provider, notifications can be created in batches with two layers of duplicate prevention (`Idempotency-Key`, `dedupe_key`), they can be listed, cancelled and redriven, they can be created from versioned templates and scheduled for later delivery, every request is validated for its channel, with the SMS segment count reported, and a client can follow its notifications in real time over a WebSocket. The metrics summary, the dashboard, tracing and `make demo` follow in the phases of the [implementation plan](docs/plan/implementation-plan.md); [progress](docs/progress.md) shows where the work stands. This README grows with it.
 
 A notification service written in Go that accepts SMS, Email and Push notifications through a REST API and delivers them asynchronously through an external provider. It is built around a Postgres outbox, a RabbitMQ dispatch broker with strict priority, a per-channel rate limit of at most 100 messages per second, retries classified by failure scope, and real-time status tracking.
 
@@ -12,7 +12,7 @@ A notification service written in Go that accepts SMS, Email and Push notificati
 docker-compose up
 ```
 
-For a shell you get back, use `docker-compose up -d --wait`. This starts four application containers (`migrate` runs once and exits, then `api`, `relay` and `worker` keep running) and six infrastructure containers (Postgres, RabbitMQ, Redis, Prometheus, Grafana, Jaeger). If a host port is taken on your machine, set `API_PORT`, `GRAFANA_PORT`, `PROMETHEUS_PORT` or `JAEGER_UI_PORT`, for example `API_PORT=18080 docker-compose up`.
+For a shell you get back, use `docker-compose up -d --wait`. This starts five application containers (`migrate` runs once and exits, then `api`, `relay`, `worker` and `gateway` keep running) and six infrastructure containers (Postgres, RabbitMQ, Redis, Prometheus, Grafana, Jaeger). The API listens on port 8080 and the WebSocket gateway on 8082. If a host port is taken on your machine, set `API_PORT`, `GATEWAY_PORT`, `GRAFANA_PORT`, `PROMETHEUS_PORT` or `JAEGER_UI_PORT`, for example `API_PORT=18080 docker-compose up`.
 
 Create a notification and read it back:
 
@@ -270,6 +270,32 @@ curl -sS -X POST localhost:8080/v1/notifications/<id>/redrive \
 To try cancel and redrive on the mock profile, make the mock provider fail first with `curl -X PUT localhost:8090/admin/config -H 'Content-Type: application/json' -d '{"status":500}'` (a notification then fails after its retries), and set it back with `{"status":202}`.
 
 `PUT /admin/config` replaces the whole configuration and is strict (an unknown field or an out-of-range value is `400`). Besides the `{"status":N}` shorthand it takes `{"default": {rule}, "channels": {"sms": {rule}, "email": {rule}, "push": {rule}}}`; a channel without a rule uses `default`. A rule may set `status`, `fail_status`, `fail_rate`, `fail_first` (the first N requests of each `Idempotency-Key` fail), `retry_after` (sent on `429` and `503`), `location` (sent on `3xx`), `latency_ms`, `latency_jitter_ms`, `close_connection`, `hang` and `malformed_body`. For example, `{"default":{"fail_first":2,"fail_status":503,"retry_after":"1"}}` makes every notification fail twice and then succeed. `POST /admin/reset` restores the default (`202`, no faults). `GET /admin/report` adds a `statuses` count per channel (`"closed"` and `"hung"` for requests that got no answer).
+
+### Real-time status updates
+
+The gateway serves a WebSocket at `ws://localhost:8082/v1/ws`. A client subscribes to notification ids, to a batch id, or to both, and receives the current state of each notification at once (a snapshot) and then every status change as it happens. Because of the snapshot, a client can create a notification first and subscribe afterwards without missing anything.
+
+With any WebSocket client, for example [`websocat`](https://github.com/vi/websocat) (not part of this repository):
+
+```
+websocat ws://localhost:8082/v1/ws
+{"action":"subscribe","notification_ids":["<id>"]}
+{"action":"subscribe","batch_id":"<batch_id>"}
+{"action":"unsubscribe","notification_ids":["<id>"]}
+```
+
+Every message from the server about a notification has this form, for the snapshot and for live events alike:
+
+```json
+{"type":"status_changed","id":"…","batch_id":null,"status":"sent","version":4,"failure_reason":null,"updated_at":"2026-11-19T20:00:00.123456Z"}
+```
+
+- **Apply the version rule:** ignore a message whose `version` is not greater than the one you already know for that notification. Events come from several services and can arrive out of order, and the snapshot can arrive after a newer event.
+- A batch subscription sends one message per notification of the batch and counts as one subscription; a connection can hold 1,000 subscriptions.
+- A request the gateway cannot serve is answered with `{"type":"error","code":"…","message":"…"}` and the connection stays open. The codes are `invalid_message`, `invalid_id`, `too_many_subscriptions` and `snapshot_unavailable`.
+- Updates are best-effort: an event can be lost, for example while RabbitMQ restarts. `GET /v1/notifications/{id}` is always authoritative.
+- A client that reads too slowly is disconnected with close status 1013; it reconnects, subscribes again and gets a fresh snapshot.
+- A browser page from another origin is refused unless its host matches `WS_ORIGIN_PATTERNS` (see `.env.example`).
 
 ## Documentation
 
