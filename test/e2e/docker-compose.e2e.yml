@@ -4,6 +4,15 @@
 # and .env.example stay as they are. Durations are in milliseconds, like
 # every duration set by a test.
 services:
+  relay:
+    environment:
+      # Reconciliation runs at most once per this window (60 seconds by
+      # default); a reconnection inside it is deferred to its end. The chaos
+      # scenarios of chaos_test.go restart and wipe the broker a few seconds
+      # after the start-up reconciliation and after each other, so with the
+      # default every one of them would wait up to a minute for its run.
+      RECONCILE_MIN_INTERVAL: 1000ms
+
   worker:
     environment:
       # The circuit that a provider_fatal answer (401, 403, 404, 410, 3xx)

@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"sync"
 	"testing"
 	"time"
 
@@ -17,9 +16,6 @@ import (
 const (
 	// defaultLoadSmokeCount is about one minute of sending at 98 msg/s.
 	defaultLoadSmokeCount = 6000
-	// loadSmokeClients is the number of concurrent clients that create the
-	// notifications.
-	loadSmokeClients = 8
 	// pacingRate is the default RATE_LIMIT_PER_SECOND of the stack; it only
 	// sizes the drain deadline.
 	pacingRate = 98
@@ -165,46 +161,7 @@ func TestLoadSmoke(t *testing.T) {
 // concurrent clients and returns their ids in creation order.
 func createSMS(t *testing.T, s *stack, count int) []string {
 	t.Helper()
-	ids := make([]string, count)
-	next := make(chan int)
-	var (
-		mu       sync.Mutex
-		failures int
-		firstErr error
-		wg       sync.WaitGroup
-	)
-	start := time.Now()
-	for range loadSmokeClients {
-		wg.Go(func() {
-			for i := range next {
-				n, _, err := s.create(createRequest{
-					Channel: "sms", Recipient: fakePhone, Content: "load-smoke", Priority: "normal",
-				})
-				if err != nil {
-					mu.Lock()
-					failures++
-					if firstErr == nil {
-						firstErr = err
-					}
-					mu.Unlock()
-					continue
-				}
-				ids[i] = n.ID
-			}
-		})
-	}
-	for i := range count {
-		next <- i
-	}
-	close(next)
-	wg.Wait()
-	elapsed := time.Since(start)
-	if failures > 0 {
-		t.Fatalf("%d of %d creates failed; first error: %v", failures, count, firstErr)
-	}
-	t.Logf("load-smoke: created %d sms in %.1f s (%.0f/s) with %d clients",
-		count, elapsed.Seconds(), float64(count)/elapsed.Seconds(), loadSmokeClients)
-	return ids
+	return createN(t, s, createRequest{Channel: "sms", Recipient: fakePhone, Content: "load-smoke", Priority: "normal"}, count, "load-smoke")
 }
 
 // sampleIndexes returns up to n indexes spread evenly over [0, count),
