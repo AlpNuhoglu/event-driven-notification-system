@@ -15,7 +15,12 @@
 # .env.example. The container ports stay the same. The admin port 8081 of the
 # application services is not published.
 x-app: &app
-  build: .
+  build:
+    context: .
+    # The version every log line and span reports. make passes the commit;
+    # a plain "docker-compose up" builds an image that reports "dev".
+    args:
+      GIT_SHA: ${GIT_SHA:-dev}
   image: event-driven-notification-system:local
   env_file:
     - path: .env

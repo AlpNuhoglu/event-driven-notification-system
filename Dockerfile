@@ -5,9 +5,15 @@ ENV CGO_ENABLED=0
 COPY go.mod go.su[m] ./
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
 COPY . .
+# The build's git SHA, written as "version" on every log line. .git is not
+# in the build context, so it is passed in: --build-arg GIT_SHA=<sha>
+# (make image does); a build without it reports "dev".
+ARG GIT_SHA=dev
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    go build -trimpath -ldflags="-s -w" -o /out/ \
+    go build -trimpath \
+      -ldflags="-s -w -X github.com/AlpNuhoglu/event-driven-notification-system/internal/platform/logging.Version=${GIT_SHA}" \
+      -o /out/ \
       ./cmd/api ./cmd/relay ./cmd/worker ./cmd/gateway ./cmd/migrate ./cmd/mockprovider ./cmd/demo
 
 FROM scratch

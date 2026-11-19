@@ -21,6 +21,7 @@ import (
 
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/platform/config"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/platform/health"
+	"github.com/AlpNuhoglu/event-driven-notification-system/internal/platform/logging"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/platform/tracing"
 )
 
@@ -121,7 +122,10 @@ func serve(ctx context.Context, ln net.Listener, role string, stdout, stderr io.
 // serveService serves the health handler on ln and runs svc, if any, until
 // ctx is done or one of them ends on its own; then it stops both.
 func serveService(ctx context.Context, ln net.Listener, role string, cfg config.Config, svc Service, stdout, stderr io.Writer) int {
-	logger := slog.New(slog.NewJSONHandler(stdout, nil)).With("role", role)
+	// LOG_LEVEL has been validated by the configuration; an empty value (no
+	// configuration) is info.
+	level, _ := logging.ParseLevel(cfg.Observability.LogLevel)
+	logger := logging.New(stdout, logging.Options{Service: role, Level: level})
 	// The role's service registers its dependency checks on readiness when
 	// it starts; /readyz of the admin port runs them (ADR-0009 §7).
 	readiness := health.NewReadiness(cfg.Observability.ReadinessCheckTimeout)

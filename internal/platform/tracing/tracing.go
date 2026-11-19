@@ -18,7 +18,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
-	"runtime/debug"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -32,6 +31,7 @@ import (
 	"go.opentelemetry.io/otel/trace/noop"
 
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/platform/config"
+	"github.com/AlpNuhoglu/event-driven-notification-system/internal/platform/logging"
 )
 
 // modulePath is the import path of this module. The tracers of its packages
@@ -275,26 +275,11 @@ func lowerHex(s string) bool {
 }
 
 // roleResource describes the process: service.name is the role,
-// service.version the build's VCS revision (or module version).
+// service.version the build's version, the one every log line carries
+// (logging.Version: the git SHA the image was built from, else "dev").
 func roleResource(role string) *resource.Resource {
 	return resource.NewSchemaless(
 		attribute.String("service.name", role),
-		attribute.String("service.version", buildVersion()),
+		attribute.String("service.version", logging.Version),
 	)
-}
-
-func buildVersion() string {
-	info, ok := debug.ReadBuildInfo()
-	if !ok {
-		return "unknown"
-	}
-	for _, s := range info.Settings {
-		if s.Key == "vcs.revision" && s.Value != "" {
-			return s.Value
-		}
-	}
-	if info.Main.Version != "" {
-		return info.Main.Version
-	}
-	return "unknown"
 }
