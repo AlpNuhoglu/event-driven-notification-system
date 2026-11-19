@@ -121,8 +121,12 @@ func serve(ctx context.Context, ln net.Listener, role string, stdout, stderr io.
 // ctx is done or one of them ends on its own; then it stops both.
 func serveService(ctx context.Context, ln net.Listener, role string, cfg config.Config, svc Service, stdout, stderr io.Writer) int {
 	logger := slog.New(slog.NewJSONHandler(stdout, nil)).With("role", role)
+	// The role's service registers its dependency checks on readiness when
+	// it starts; /readyz of the admin port runs them (ADR-0009 §7).
+	readiness := health.NewReadiness(cfg.Observability.ReadinessCheckTimeout)
+	ctx = health.WithReadiness(ctx, readiness)
 	srv := &http.Server{
-		Handler:           AdminHandler(),
+		Handler:           adminHandler(readiness),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	errc := make(chan error, 1)
@@ -167,11 +171,16 @@ func serveService(ctx context.Context, ln net.Listener, role string, cfg config.
 	return code
 }
 
-// AdminHandler is the handler of every role's admin port: /healthz, /readyz
-// and /metrics, the Prometheus handler over the default gatherer, on which the
-// roles register their metrics (ADR-0009 §8).
+// AdminHandler is the handler of a role's admin port without dependency
+// checks: /healthz, /readyz and /metrics, the Prometheus handler over the
+// default gatherer, on which the roles register their metrics (ADR-0009 §8).
+// A running role serves the same with its checks of readiness.
 func AdminHandler() http.Handler {
-	return health.AdminHandler(promhttp.HandlerFor(prometheus.DefaultGatherer, promhttp.HandlerOpts{}))
+	return adminHandler(health.NewReadiness(0))
+}
+
+func adminHandler(readiness *health.Readiness) http.Handler {
+	return health.AdminHandler(promhttp.HandlerFor(prometheus.DefaultGatherer, promhttp.HandlerOpts{}), readiness)
 }
 
 // serviceExit maps the error a Service returned to an exit code. Ending

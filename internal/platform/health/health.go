@@ -10,28 +10,30 @@ import (
 	"time"
 )
 
-// Handler serves GET /healthz and GET /readyz. Both always report ok in this
-// phase. Any other path is answered with 404, any other method with 405.
+// Handler serves GET /healthz and GET /readyz without any dependency check:
+// both report ok while the process serves. Any other path is answered with
+// 404, any other method with 405.
 func Handler() http.Handler {
-	return healthMux()
+	return healthMux(NewReadiness(0))
 }
 
-// AdminHandler is the handler of the admin port (ADR-0009 §8): Handler's
-// endpoints and GET /metrics, served by metrics.
-func AdminHandler(metrics http.Handler) http.Handler {
-	mux := healthMux()
+// AdminHandler is the handler of the admin port (ADR-0009 §8): GET /healthz
+// (liveness: the process serves, no dependency is checked), GET /readyz
+// (the checks of readiness, 503 when one fails) and GET /metrics, served by
+// metrics.
+func AdminHandler(metrics http.Handler, readiness *Readiness) http.Handler {
+	mux := healthMux(readiness)
 	mux.Handle("GET /metrics", metrics)
 	return mux
 }
 
-func healthMux() *http.ServeMux {
-	ok := func(w http.ResponseWriter, _ *http.Request) {
+func healthMux(readiness *Readiness) *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
-	}
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", ok)
-	mux.HandleFunc("GET /readyz", ok)
+	})
+	mux.Handle("GET /readyz", readiness)
 	return mux
 }
 

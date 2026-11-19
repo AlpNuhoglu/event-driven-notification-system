@@ -89,9 +89,10 @@ func TestAdminPortServesMetrics(t *testing.T) {
 		t.Errorf("GET /metrics after the switch lacks limiter_fallback_active 1:\n%s", body)
 	}
 
-	for _, path := range []string{"/healthz", "/readyz"} {
+	// Without dependency checks both answer ok; /readyz lists its checks.
+	for path, want := range map[string]string{"/healthz": `{"status":"ok"}`, "/readyz": `{"status":"ok","checks":[]}`} {
 		code, ctype, body := get(t, http.MethodGet, base+path)
-		if code != http.StatusOK || ctype != "application/json" || body != `{"status":"ok"}` {
+		if code != http.StatusOK || ctype != "application/json" || strings.TrimSpace(body) != want {
 			t.Errorf("GET %s: status %d, content type %q, body %q", path, code, ctype, body)
 		}
 	}

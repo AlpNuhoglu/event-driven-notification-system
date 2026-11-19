@@ -15,6 +15,7 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/domain"
+	"github.com/AlpNuhoglu/event-driven-notification-system/internal/platform/health"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/queue"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/store"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/testutil"
@@ -319,5 +320,78 @@ func publishEvent(t *testing.T, amqpURL string, e domain.StatusChanged) {
 	if err := ch.PublishWithContext(ctxT(t), queue.EventsExchange, e.RoutingKey(), false, false,
 		amqp.Publishing{ContentType: "application/json", Type: queue.EventType, Body: body}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// readyChecks runs the registry and returns each check's status by name.
+func readyChecks(r *health.Readiness) map[string]string {
+	ctx, cancel := context.WithTimeout(context.Background(), waitTimeout)
+	defer cancel()
+	out := map[string]string{}
+	for _, c := range r.Run(ctx).Checks {
+		out[c.Name] = c.Status
+	}
+	return out
+}
+
+// The gateway's readiness (ADR-0009 §7): Postgres answers, the connection
+// to RabbitMQ is open, and the event consumer is active. Before the service
+// has connected, nothing is ready. With the broker connection broken, the
+// two broker checks fail and Postgres stays ok; after it is back they pass
+// again. With Postgres gone, its check fails and the broker's stay ok.
+func TestReadiness_FollowsPostgresRabbitMQAndTheConsumer(t *testing.T) {
+	r := health.NewReadiness(readinessTimeout)
+	ready := registerReadiness(r)
+	want := func(postgres, rabbitmq, consumer string) func() bool {
+		return func() bool {
+			got := readyChecks(r)
+			return got[checkPostgres] == postgres && got[checkRabbitMQ] == rabbitmq && got[checkEventConsumer] == consumer
+		}
+	}
+	const ok, fail = health.StatusOK, health.StatusFail
+	if got := readyChecks(r); len(got) != 3 || !want(fail, fail, fail)() {
+		t.Fatalf("before the service has connected: %v, want three failed checks", got)
+	}
+
+	pool, err := store.OpenPoolWith(ctxT(t), testutil.NewMigratedDatabase(t), store.ReadOnly)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ready.postgres.Store(&pinger{pool})
+	if got := readyChecks(r); !want(ok, fail, fail)() {
+		t.Fatalf("with Postgres only: %v", got)
+	}
+
+	proxy := testutil.NewProxy(t, testutil.NewRabbitMQVhost(t))
+	events, err := queue.DialEvents(proxy.URL(), recoveryWait, 1000,
+		queue.EventQueueConfig{MaxLength: 100, MessageTTL: eventQueueTTL}, discard())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = events.Close() })
+	ready.events.Store(&eventState{events})
+	// Connected, and subscribed, but the consumer loop does not run yet.
+	if got := readyChecks(r); !want(ok, ok, fail)() {
+		t.Fatalf("before the consumer loop runs: %v, want the consumer check failed", got)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- events.Run(ctx, func(domain.StatusChanged) {}) }()
+	t.Cleanup(func() {
+		cancel()
+		if err := <-done; err != nil {
+			t.Errorf("the consumer loop ended with %v", err)
+		}
+	})
+	testutil.Eventually(t, want(ok, ok, ok), waitTimeout)
+
+	proxy.Break()
+	testutil.Eventually(t, want(ok, fail, fail), waitTimeout)
+	proxy.Restore(t)
+	testutil.Eventually(t, want(ok, ok, ok), waitTimeout)
+
+	pool.Close()
+	if got := readyChecks(r); !want(fail, ok, ok)() {
+		t.Fatalf("with the pool closed: %v, want the postgres check failed", got)
 	}
 }

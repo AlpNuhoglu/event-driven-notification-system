@@ -163,10 +163,12 @@ type Templates struct {
 
 // Observability configures logging and tracing.
 type Observability struct {
-	LogLevel         string
-	OTLPEndpoint     string
-	TracesSampler    string
-	TracesSamplerArg float64
+	LogLevel string
+	// ReadinessCheckTimeout bounds each dependency check of /readyz.
+	ReadinessCheckTimeout time.Duration
+	OTLPEndpoint          string
+	TracesSampler         string
+	TracesSamplerArg      float64
 }
 
 // Config is the complete service configuration.
@@ -425,10 +427,11 @@ func (l *loader) load() Config {
 		MaxOutputBytes: l.int64v("TEMPLATE_MAX_OUTPUT_BYTES", 524288),
 	}
 	c.Observability = Observability{
-		LogLevel:         l.oneOf("LOG_LEVEL", "info", "debug", "info", "warn", "error"),
-		OTLPEndpoint:     l.str("OTEL_EXPORTER_OTLP_ENDPOINT", "http://jaeger:4317"),
-		TracesSampler:    l.str("OTEL_TRACES_SAMPLER", "parentbased_traceidratio"),
-		TracesSamplerArg: l.float("OTEL_TRACES_SAMPLER_ARG", 1.0, 0, 1, false),
+		LogLevel:              l.oneOf("LOG_LEVEL", "info", "debug", "info", "warn", "error"),
+		ReadinessCheckTimeout: l.dur("READINESS_CHECK_TIMEOUT", time.Second),
+		OTLPEndpoint:          l.str("OTEL_EXPORTER_OTLP_ENDPOINT", "http://jaeger:4317"),
+		TracesSampler:         l.str("OTEL_TRACES_SAMPLER", "parentbased_traceidratio"),
+		TracesSamplerArg:      l.float("OTEL_TRACES_SAMPLER_ARG", 1.0, 0, 1, false),
 	}
 	return c
 }
