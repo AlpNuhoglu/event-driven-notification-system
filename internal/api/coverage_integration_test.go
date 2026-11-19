@@ -224,6 +224,11 @@ func coverageCases() []coverageCase {
 		c("createTemplateVersion", 500, post(fail, "/v1/templates/cov/versions", versionBody("x"), nil)),
 		c("createTemplateVersion", 503, post(dead, "/v1/templates/cov/versions", versionBody("x"), nil)),
 
+		c("listTemplates", 200, get(live, "/v1/templates?limit=5")),
+		c("listTemplates", 400, get(live, "/v1/templates?limit=0")),
+		c("listTemplates", 500, get(fail, "/v1/templates")),
+		c("listTemplates", 503, get(dead, "/v1/templates")),
+
 		c("getTemplate", 200, func(_ *testing.T, e *coverageEnv) response {
 			e.send(e.real.apiClient, http.MethodPost, "/v1/templates", tplBody("cov-get", "sms", "hello"), nil)
 			return e.send(e.real.apiClient, http.MethodGet, "/v1/templates/cov-get", "", nil)
@@ -442,6 +447,7 @@ func TestRequestID_EveryOperation(t *testing.T) {
 		{"cancelBatch", http.MethodPost, "/v1/batches/" + batchID + "/cancel", ""},
 		{"createTemplate", http.MethodPost, "/v1/templates", tplBody("rid-tpl", "sms", "hello")},
 		{"createTemplateVersion", http.MethodPost, "/v1/templates/rid-tpl/versions", versionBody("bye")},
+		{"listTemplates", http.MethodGet, "/v1/templates", ""},
 		{"getTemplate", http.MethodGet, "/v1/templates/rid-tpl", ""},
 		{"getTemplateVersion", http.MethodGet, "/v1/templates/rid-tpl/versions/1", ""},
 		{"previewTemplate", http.MethodPost, "/v1/templates/rid-tpl/preview", ""},

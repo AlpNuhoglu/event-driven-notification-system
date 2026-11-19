@@ -144,19 +144,20 @@ template_versions  (template_name, version, body_tpl, variables text[], optional
 |---|---|---|
 | `POST` | `/v1/templates` | Create a template (version 1); `409` if the name exists |
 | `POST` | `/v1/templates/{name}/versions` | Add a version |
+| `GET` | `/v1/templates` | List the templates (added in P4 by the author's decision) |
 | `GET` | `/v1/templates/{name}` | Template with its latest version |
 | `GET` | `/v1/templates/{name}/versions/{version}` | A specific version |
 | `POST` | `/v1/templates/{name}/preview` | **Dry run:** render with the given variables and return `{content, encoding, segments}`. Nothing is stored. |
 | `POST` | `/v1/templates/{name}/deactivate` | Deactivate |
 | `POST` | `/v1/templates/{name}/activate` | Reactivate |
 
-- **One representation.** Every endpoint except the preview answers the template with one of its versions as one flat object: `name`, `channel`, `is_active`, `latest_version`, `created_at`, `updated_at`, and of the version shown `version`, `body`, `variables`, `optional_variables`, `version_created_at`. The two creates answer `201` with `Location`.
+- **One representation.** Every endpoint except the list and the preview answers the template with one of its versions as one flat object: `name`, `channel`, `is_active`, `latest_version`, `created_at`, `updated_at`, and of the version shown `version`, `body`, `variables`, `optional_variables`, `version_created_at`. The two creates answer `201` with `Location`.
 - **Creating** takes `{name, channel, body, variables, optional_variables}`, a new version `{body, variables, optional_variables}`; the channel of a new version is the template's. The body is compiled before it is stored, and a rejection is one field error of a `422` whose code is the engine's reason (`function_not_allowed`, `construct_not_allowed`, `multiple_templates`, `invalid_call`, `template_syntax`, `unsafe_html`, `undeclared_variable`, `unused_variable`, …) with the construct, function or variable and the line; the parser's own message and the submitted text are never echoed ([`errors.md`](../errors.md)).
 - **`409`** for a name that exists is the problem type `template-exists`. `404` for an unknown name or version; a name that does not match the pattern cannot exist and is a `404` without a database call. A `{version}` that is not a positive integer is a `400`.
 - **Preview** takes `{version, variables}`, both optional, and answers what a create would: the same errors, named without the `template.` prefix, and the rendered-text errors on `content`. **An inactive template can be previewed** (and read): only creating a notification from it is refused. `encoding` and `segments` are `null` unless the template's channel is `sms`.
 - `deactivate` and `activate` take no body and can be repeated; a repeat changes nothing, `updated_at` included.
 - The `Idempotency-Key` header does not apply to these endpoints ([ADR-0006](0006-api-contract-and-three-layer-idempotency.md) §2): the name is the template's own protection against a repeated create.
-- There is no endpoint that lists templates ([future work](../future-work.md)).
+- **The list** (`GET /v1/templates`) is ordered by name and paged with a keyset cursor on the name, with `limit` as for notifications (1 to 200, default 50) and the same strictness about parameters ([ADR-0006](0006-api-contract-and-three-layer-idempotency.md) §8). Each item has the name, the channel, the latest version and the active flag; inactive templates are listed. The order is ASCII order (`COLLATE "C"`, with an index of that collation), so it is the same whatever the database's default collation is. The cursor is opaque: the base64url form of the last name, with exactly one accepted spelling. A template created while a client pages appears if its name sorts after the cursor and never otherwise.
 
 ### Scheduling
 

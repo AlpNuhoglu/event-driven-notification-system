@@ -43,3 +43,13 @@ SELECT EXISTS (SELECT 1 FROM templates WHERE name = @name);
 -- Writes only when the value changes, so a repeat leaves updated_at alone.
 UPDATE templates SET is_active = @is_active, updated_at = now()
 WHERE name = @name AND is_active IS DISTINCT FROM @is_active;
+
+-- name: ListTemplates :many
+-- One page of the listing, by name in ASCII order (COLLATE "C", served by
+-- templates_name_c_idx). @after is empty for the first page: every name sorts
+-- after the empty string.
+SELECT name, channel, is_active, latest_version, created_at, updated_at
+FROM templates
+WHERE name COLLATE "C" > @after::text
+ORDER BY name COLLATE "C"
+LIMIT @n;

@@ -161,6 +161,49 @@ func (q *Queries) InsertTemplateVersion(ctx context.Context, arg InsertTemplateV
 	return err
 }
 
+const listTemplates = `-- name: ListTemplates :many
+SELECT name, channel, is_active, latest_version, created_at, updated_at
+FROM templates
+WHERE name COLLATE "C" > $1::text
+ORDER BY name COLLATE "C"
+LIMIT $2
+`
+
+type ListTemplatesParams struct {
+	After string
+	N     int32
+}
+
+// One page of the listing, by name in ASCII order (COLLATE "C", served by
+// templates_name_c_idx). @after is empty for the first page: every name sorts
+// after the empty string.
+func (q *Queries) ListTemplates(ctx context.Context, arg ListTemplatesParams) ([]Template, error) {
+	rows, err := q.db.Query(ctx, listTemplates, arg.After, arg.N)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Template
+	for rows.Next() {
+		var i Template
+		if err := rows.Scan(
+			&i.Name,
+			&i.Channel,
+			&i.IsActive,
+			&i.LatestVersion,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockTemplate = `-- name: LockTemplate :one
 SELECT latest_version FROM templates WHERE name = $1 FOR UPDATE
 `

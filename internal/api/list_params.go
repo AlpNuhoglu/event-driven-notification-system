@@ -265,11 +265,11 @@ const routeListNotifications = http.MethodGet + " " + pathNotifications
 
 // undefinedQueryProblem is the 400 for a request with a query string to an
 // operation under /v1/ that defines no query parameter (every one but the
-// listing): a parameter the API does not define is rejected, never ignored,
+// two listings): a parameter the API does not define is rejected, never ignored,
 // like an unknown field of a body. It returns nil when route is not such an
 // operation or the query string is empty.
 func undefinedQueryProblem(route, rawQuery string) *problem {
-	if rawQuery == "" || route == routeListNotifications || !strings.Contains(route, " /v1/") {
+	if rawQuery == "" || route == routeListNotifications || route == routeListTemplates || !strings.Contains(route, " /v1/") {
 		return nil
 	}
 	q, err := url.ParseQuery(rawQuery)

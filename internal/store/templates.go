@@ -219,3 +219,39 @@ func fromLatestRow(r db.GetTemplateLatestRow) VersionedTemplate {
 		},
 	}
 }
+
+// ListTemplates returns one page of templates by name in ASCII order (the
+// "C" collation, whatever the database's default), starting after the name
+// after (empty for the first page), and whether more templates follow. It
+// reads limit + 1 rows to know. limit must be MinListLimit to MaxListLimit.
+// Inactive templates are listed too. It is a keyset read: a template created
+// meanwhile appears if its name sorts after the cursor and never otherwise.
+func (s *Store) ListTemplates(ctx context.Context, after string, limit int) (items []Template, more bool, err error) {
+	if limit < MinListLimit || limit > MaxListLimit {
+		return nil, false, fmt.Errorf("store: list limit %d outside %d to %d", limit, MinListLimit, MaxListLimit)
+	}
+	n, err := toInt32(limit + 1)
+	if err != nil {
+		return nil, false, fmt.Errorf("list templates: %w", err)
+	}
+	rows, err := s.q.ListTemplates(ctx, db.ListTemplatesParams{After: after, N: n})
+	if err != nil {
+		return nil, false, fmt.Errorf("list templates: %w", err)
+	}
+	if len(rows) > limit {
+		more = true
+		rows = rows[:limit]
+	}
+	items = make([]Template, len(rows))
+	for i, r := range rows {
+		items[i] = Template{
+			Name:          r.Name,
+			Channel:       domain.Channel(r.Channel),
+			IsActive:      r.IsActive,
+			LatestVersion: int(r.LatestVersion),
+			CreatedAt:     r.CreatedAt,
+			UpdatedAt:     r.UpdatedAt,
+		}
+	}
+	return items, more, nil
+}
