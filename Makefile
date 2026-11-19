@@ -118,7 +118,7 @@ FUZZTIME     ?= 30s
 FUZZMINIMIZE ?= 1000x
 
 fuzz: ## Run each fuzz target for FUZZTIME (default 30s)
-	@for t in FuzzCountSMS FuzzDecodeCursor FuzzCursorRoundTrip FuzzParseRetryAfter; do \
+	@for t in FuzzCountSMS FuzzDecodeCursor FuzzCursorRoundTrip FuzzParseRetryAfter FuzzCompileTemplate; do \
 		echo "fuzz: $$t for $(FUZZTIME)"; \
 		go test -run '^$$' -fuzz "^$$t$$" -fuzztime $(FUZZTIME) -fuzzminimizetime $(FUZZMINIMIZE) ./internal/domain/ || exit 1; \
 	done
