@@ -1,0 +1,4 @@
+go test fuzz v1
+string("0{{define \"body\"}}{{end}}")
+bool(true)
+string("d")
