@@ -1,6 +1,6 @@
 # Event-Driven Notification System
 
-> **Work in progress.** The core path is implemented: a notification created through the API is stored, published, rate-limited and sent to the provider, notifications can be created in batches with two layers of duplicate prevention (`Idempotency-Key`, `dedupe_key`), they can be listed, cancelled and redriven, and every request is validated for its channel, with the SMS segment count reported. Templates, scheduling, the WebSocket gateway and the dashboards follow in the phases of the [implementation plan](docs/plan/implementation-plan.md); [progress](docs/progress.md) shows where the work stands. This README grows with it.
+> **Work in progress.** The core path is implemented: a notification created through the API is stored, published, rate-limited and sent to the provider, notifications can be created in batches with two layers of duplicate prevention (`Idempotency-Key`, `dedupe_key`), they can be listed, cancelled and redriven, they can be created from versioned templates, and every request is validated for its channel, with the SMS segment count reported. Scheduling, the WebSocket gateway and the dashboards follow in the phases of the [implementation plan](docs/plan/implementation-plan.md); [progress](docs/progress.md) shows where the work stands. This README grows with it.
 
 A notification service written in Go that accepts SMS, Email and Push notifications through a REST API and delivers them asynchronously through an external provider. It is built around a Postgres outbox, a RabbitMQ dispatch broker with strict priority, a per-channel rate limit of at most 100 messages per second, retries classified by failure scope, and real-time status tracking.
 
@@ -133,6 +133,55 @@ curl -sS -X POST localhost:8080/v1/notifications \
 }
 ```
 
+**Templates.** A template is created once, for one channel, and notifications are then created from it with their own variables. It is rendered when the notification is created: the rendered text is checked like a `content` (an SMS template can render to more than 10 segments, and is refused then) and stored, and the notification records which version produced it. An e-mail template escapes its variables as HTML; SMS and push templates do not. A template may use `{{ .name }}`, `if` / `else` and the functions `default` and `truncate`; the full rules are in the description of `POST /v1/templates` at `localhost:8080/docs`.
+
+```
+curl -sS -X POST localhost:8080/v1/templates \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"otp","channel":"sms","body":"Your code is {{ .code }}. It expires in {{ .minutes | default \"5\" }} minutes.","variables":["code"],"optional_variables":["minutes"]}'
+```
+
+Versions are immutable: new content is a new version, and a notification uses the latest version unless it pins one with `"version"`.
+
+```
+curl -sS -X POST localhost:8080/v1/templates/otp/versions \
+  -H 'Content-Type: application/json' \
+  -d '{"body":"Doğrulama kodunuz {{ .code }}","variables":["code"]}'
+```
+
+**Preview** a template: it is rendered with the given variables and nothing is stored. For an SMS template the answer shows what the text costs.
+
+```
+curl -sS -X POST localhost:8080/v1/templates/otp/preview \
+  -H 'Content-Type: application/json' -d '{"variables":{"code":482913}}'
+```
+
+```json
+{"content": "Doğrulama kodunuz 482913", "encoding": "UCS-2", "segments": 1}
+```
+
+**Create a notification from a template** with `template` in place of `content` (also as an item of a batch). Variable values are strings, numbers or booleans; a number keeps its digits as sent. A missing or misspelt variable is a `422` that names the variable (`template.variables.<name>`).
+
+```
+curl -sS -X POST localhost:8080/v1/notifications \
+  -H 'Content-Type: application/json' \
+  -d '{"channel":"sms","recipient":"+905551234567","template":{"name":"otp","variables":{"code":482913}}}'
+curl -sS -X POST localhost:8080/v1/notifications \
+  -H 'Content-Type: application/json' \
+  -d '{"channel":"sms","recipient":"+905551234567","template":{"name":"otp","version":1,"variables":{"code":482913,"minutes":10}}}'
+```
+
+```json
+{"id": "...", "channel": "sms", "status": "pending", "sms": {"encoding": "UCS-2", "segments": 1}, "template": {"name": "otp", "version": 2}, "...": "..."}
+```
+
+**Deactivate** a template: no new notification can use it, also with a pinned version (`422`, `template_inactive`); notifications already created are not affected. `activate` reverses it. A request with an `Idempotency-Key` that was answered before the deactivation still gets its stored answer when it is retried.
+
+```
+curl -sS -X POST localhost:8080/v1/templates/otp/deactivate
+curl -sS -X POST localhost:8080/v1/templates/otp/activate
+```
+
 **List notifications**, newest first, with single-valued filters (`status`, `channel`, `priority`, `batch_id`, `created_from`, `created_to`) and a cursor. `limit` is 1 to 200 (50 by default); pass `next_cursor` back as `cursor` until it is `null`. There is no total count. A parameter the API does not define, or an invalid value, is a `400`: a misspelled filter never returns an unfiltered list.
 
 ```
@@ -194,7 +243,7 @@ To try cancel and redrive on the mock profile, make the mock provider fail first
 Added in the phases named in the implementation plan:
 
 - How to create and configure your own webhook.site URL
-- API examples for templates and scheduling, and `make demo`
+- API examples for scheduling, and `make demo`
 - Requirements map with evidence
 - Interpretations of the assessment and known limitations
 - Load-test results
