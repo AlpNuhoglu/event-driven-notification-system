@@ -41,8 +41,8 @@ func TestServeAndShutdown(t *testing.T) {
 	if !strings.Contains(out, `"service started"`) || !strings.Contains(out, `"service stopped"`) {
 		t.Errorf("unexpected log output: %q", out)
 	}
-	if !strings.Contains(out, `"role":"api"`) {
-		t.Errorf("missing role attribute: %q", out)
+	if !strings.Contains(out, `"service":"api","version":"dev"`) {
+		t.Errorf("missing service and version fields: %q", out)
 	}
 }
 
@@ -220,5 +220,35 @@ func TestRunCommands(t *testing.T) {
 	}
 	if se.String() != "usage: relay [healthcheck | fix [--all]]\n" {
 		t.Errorf("stderr = %q", se.String())
+	}
+}
+
+// The role's logger is the central handler at the level of LOG_LEVEL: a
+// debug line is written only with LOG_LEVEL=debug, and every line carries
+// service and version.
+func TestRunService_LoggerFollowsLogLevel(t *testing.T) {
+	for _, tt := range []struct {
+		level     string
+		wantDebug bool
+	}{{"debug", true}, {"info", false}, {"", false}} {
+		var so, se bytes.Buffer
+		env := lookupWith(map[string]string{"ADMIN_ADDR": "127.0.0.1:0", "LOG_LEVEL": tt.level})
+		svc := func(_ context.Context, _ config.Config, logger *slog.Logger) error {
+			logger.Debug("debug line")
+			logger.Info("info line")
+			return nil
+		}
+		if code := RunService(context.Background(), "worker", nil, env, &so, &se, svc); code != 0 {
+			t.Fatalf("LOG_LEVEL=%q: exit code %d, stderr %q", tt.level, code, se.String())
+		}
+		out := so.String()
+		if got := strings.Contains(out, `"msg":"debug line"`); got != tt.wantDebug {
+			t.Errorf("LOG_LEVEL=%q: debug line written %v, want %v: %s", tt.level, got, tt.wantDebug, out)
+		}
+		for line := range strings.Lines(strings.TrimSpace(out)) {
+			if !strings.Contains(line, `"service":"worker","version":"dev"`) {
+				t.Errorf("LOG_LEVEL=%q: line without service and version: %s", tt.level, line)
+			}
+		}
 	}
 }

@@ -12,6 +12,10 @@ SQLC          = go run github.com/sqlc-dev/sqlc/cmd/sqlc@$(SQLC_VERSION)
 OAPI_CODEGEN  = go run github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@$(OAPI_CODEGEN_VERSION)
 MIGRATE       = go run -tags postgres github.com/golang-migrate/migrate/v4/cmd/migrate@$(MIGRATE_VERSION)
 
+# The commit the images are built from: the version in every log line and
+# span. docker-compose reads it as a build argument (docker-compose.yml).
+export GIT_SHA ?= $(shell git rev-parse HEAD 2>/dev/null || echo dev)
+
 COMPOSE_MOCK = docker-compose -f docker-compose.yml -f docker-compose.mock.yml
 
 # make test-e2e runs the stack under its own Compose project, so it never
@@ -78,7 +82,7 @@ tools: ## Print the version of each pinned tool
 	$(MIGRATE) -version
 
 image: ## Build the container image notifications:dev
-	docker build -t notifications:dev .
+	docker build --build-arg GIT_SHA=$(GIT_SHA) -t notifications:dev .
 
 test-e2e: ## Compose stack with the mock override, e2e tests and load-smoke (needs Go and Docker)
 	@rm -rf e2e-logs; \
