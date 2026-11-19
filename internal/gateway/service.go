@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/domain"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/platform/config"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/platform/health"
@@ -63,6 +65,9 @@ func Service(ctx context.Context, cfg config.Config, logger *slog.Logger) error 
 	ready.events.Store(&eventState{events})
 
 	g := New(OptionsFrom(cfg.Events, store.New(pool, nil), logger))
+	if err := RegisterMetrics(prometheus.DefaultRegisterer, g); err != nil {
+		return fmt.Errorf("gateway metrics: %w", err)
+	}
 	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", cfg.Ports.GatewayAddr)
 	if err != nil {
 		return fmt.Errorf("gateway listen: %w", err)

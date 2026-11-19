@@ -114,6 +114,9 @@ type Options struct {
 	// LaneHWM is the high-water mark each priority's lanes report in the
 	// summary (LANE_HWM_*); DefaultLaneHWM when nil.
 	LaneHWM map[domain.Priority]int
+	// Metrics receives the api's metrics; nil means metrics that are not
+	// registered anywhere.
+	Metrics *Metrics
 }
 
 // NewHandler returns the API's http.Handler.
@@ -154,6 +157,12 @@ func NewHandler(o Options) http.Handler {
 	if o.PhoneValidation == "" {
 		o.PhoneValidation = domain.PhonePossible
 	}
+	if o.Metrics == nil {
+		o.Metrics, _ = NewMetrics(nil) // cannot fail without a registry
+	}
+	// The final transitions the API makes (cancel) are counted on their way
+	// to the publisher.
+	o.Events = o.Metrics.finished.Publisher(o.Events)
 	h := &handlers{
 		repo:      o.Repository,
 		db:        o.DB,
@@ -173,6 +182,7 @@ func NewHandler(o Options) http.Handler {
 			src: o.Repository, now: o.Now, window: o.SummaryWindow, cacheTTL: o.SummaryCacheTTL,
 			backlogTTL: o.SummaryBacklogTTL, dbTimeout: o.DBTimeout, hwm: o.LaneHWM,
 		},
+		metrics: o.Metrics,
 	}
 	strict := apigen.NewStrictHandlerWithOptions(h, nil, apigen.StrictHTTPServerOptions{
 		RequestErrorHandlerFunc:  requestError,
@@ -187,7 +197,7 @@ func NewHandler(o Options) http.Handler {
 	docs := swaggerui.Handler()
 	mux.Handle("GET /docs", docs)
 	mux.Handle("GET /docs/{asset}", docs)
-	return &frame{next: &router{mux: mux}, logger: o.Logger, maxBodyBytes: o.MaxBodyBytes}
+	return &frame{next: &router{mux: mux}, logger: o.Logger, maxBodyBytes: o.MaxBodyBytes, metrics: o.Metrics}
 }
 
 // createGuard runs before the generated code decodes a create request: it
@@ -209,10 +219,14 @@ type createGuard struct {
 // so the request parsed by validateCreate is handed on in the context and
 // the typed response is written here.
 func (g createGuard) CreateNotification(w http.ResponseWriter, r *http.Request, params apigen.CreateNotificationParams) {
+	answer := &createAnswer{}
+	w, counted := g.h.metrics.trackCreate(w, r, answer)
+	defer counted()
 	body, ok := readJSONBody(w, r)
 	if !ok {
 		return
 	}
+	answer.body = body
 	req, p := validateCreate(body, g.h.createRules())
 	if p != nil {
 		if rep, rp := g.replayForClockErrors(r, body, p); rp != nil {
@@ -272,10 +286,14 @@ func (g createGuard) replayForClockErrors(r *http.Request, body []byte, validati
 // method with the validated input in the context and writes its typed
 // response, as the generated strict wrapper does.
 func (g createGuard) CreateNotificationBatch(w http.ResponseWriter, r *http.Request, params apigen.CreateNotificationBatchParams) {
+	answer := &createAnswer{batch: true}
+	w, counted := g.h.metrics.trackCreate(w, r, answer)
+	defer counted()
 	body, ok := readJSONBody(w, r)
 	if !ok {
 		return
 	}
+	answer.body = body
 	in, p := validateBatch(body, g.h.createRules())
 	if p != nil {
 		writeProblem(w, r, p)
@@ -286,7 +304,7 @@ func (g createGuard) CreateNotificationBatch(w http.ResponseWriter, r *http.Requ
 		writeProblem(w, r, p)
 		return
 	}
-	ctx := withCreateInput(r.Context(), createInput{key: key, batch: in})
+	ctx := withCreateInput(r.Context(), createInput{key: key, batch: in, answer: answer})
 	resp, err := g.h.CreateNotificationBatch(ctx, apigen.CreateNotificationBatchRequestObject{Params: params})
 	if err != nil {
 		responseError(w, r, err)
@@ -334,6 +352,9 @@ type createInput struct {
 	single *createRequest
 	// batch is the validated batch (batch requests only).
 	batch batchInput
+	// answer receives the items a stored batch still rejected, for the
+	// metrics (batch requests only; nil otherwise).
+	answer *createAnswer
 }
 
 type createInputKey struct{}
@@ -496,14 +517,17 @@ func (g *problemGuard) Write(b []byte) (int, error) {
 func (g *problemGuard) Unwrap() http.ResponseWriter { return g.ResponseWriter }
 
 // frame is the outermost layer: it limits the body, establishes the
-// correlation id and trace parent, turns a panic into a 500 problem and logs
-// one line per request. The line has the method, the route template (never
-// the raw path), the status, the duration and the correlation id; never a
-// header value, a recipient, a content or a body.
+// correlation id and trace parent, turns a panic into a 500 problem, logs
+// one line per request and counts it (http_requests_total and
+// http_request_duration_seconds, by route template). The line has the
+// method, the route template (never the raw path), the status, the duration
+// and the correlation id; never a header value, a recipient, a content or a
+// body.
 type frame struct {
 	next         http.Handler
 	logger       *slog.Logger
 	maxBodyBytes int64
+	metrics      *Metrics
 }
 
 func (f *frame) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -523,7 +547,10 @@ func (f *frame) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				writeProblem(rec, r, newProblem(kindInternal, ""))
 			}
 		}
-		f.log(r, st, rec.status(), time.Since(start))
+		d := time.Since(start)
+		f.log(r, st, rec.status(), d)
+		pattern, _ := st.snapshot()
+		f.metrics.observeRequest(pattern, r.Method, rec.status(), d)
 	}()
 	f.next.ServeHTTP(rec, r)
 }

@@ -111,12 +111,26 @@ type requestState struct {
 	mu    sync.Mutex
 	route string
 	cause error
+	// problem is the last problem written (writeProblem), for the metrics.
+	problem *problem
 }
 
 func (s *requestState) setRoute(route string) {
 	s.mu.Lock()
 	s.route = route
 	s.mu.Unlock()
+}
+
+func (s *requestState) setProblem(p *problem) {
+	s.mu.Lock()
+	s.problem = p
+	s.mu.Unlock()
+}
+
+func (s *requestState) lastProblem() *problem {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.problem
 }
 
 func (s *requestState) setCause(err error) {

@@ -198,6 +198,7 @@ func writeProblem(w http.ResponseWriter, r *http.Request, p *problem) {
 	if p.cause != nil {
 		st.setCause(p.cause)
 	}
+	st.setProblem(p)
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(p.body(st.correlationID)); err != nil {
 		// The document has only strings and integers; encoding cannot fail.
