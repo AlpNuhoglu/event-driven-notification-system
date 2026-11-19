@@ -160,9 +160,18 @@ func TestIdleKeyDoesNotAccumulateBurst(t *testing.T) {
 	if first < before {
 		t.Errorf("slot %d is before now %d", first, before)
 	}
+	// The second slot is exactly one interval after the first: the ten idle
+	// minutes bought no burst. On a machine so slow that the second call
+	// itself arrives later than that, the slot is the call's own time on the
+	// Redis clock, which is still at least one interval after the first.
+	beforeSecond := redisNowUS(t, rdb)
 	_, second := mustReserve(t, l, domain.ChannelSMS)
-	if second-first != l.intervalUS {
-		t.Errorf("second slot is %dus after the first, want %dus", second-first, l.intervalUS)
+	afterSecond := redisNowUS(t, rdb)
+	want := first + l.intervalUS
+	late := second > want && second >= beforeSecond && second <= afterSecond
+	if second != want && !late {
+		t.Errorf("second slot is %dus after the first, want %dus (or the time of a call later than that, in [%d, %d])",
+			second-first, l.intervalUS, beforeSecond-first, afterSecond-first)
 	}
 }
 
