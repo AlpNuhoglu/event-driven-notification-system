@@ -4,19 +4,26 @@ The first file every session reads and the last one it updates. The phases and t
 
 ## Current phase
 
-**P4: templates and scheduling** — in progress. P3 is done: its three pull requests and the follow-up `p3/isopen-race` are merged.
+**P4: templates and scheduling** — in progress: the first of its two pull requests, `p4/templates`, is in review. P3 is done: its three pull requests and the follow-up `p3/isopen-race` are merged.
 
-**Next step:** the `p4/templates` pull request; after its merge, `p4/scheduling` from the updated `main`.
+**Next step:** the author merges `p4/templates`; then `p4/scheduling` from the updated `main`.
 
-**How P3 is split** (the plan names the three branches, not their contents):
+**How P4 is split** (the plan names the two branches):
+
+| Pull request | Contents |
+|---|---|
+| `p4/templates` (in review) | Template tables and store, the template engine with the allow-list walker, the seven template endpoints, notifications created from templates (single, batch, with `Idempotency-Key`), the Compose template scenario, `FuzzCompileTemplate`. Also: open issue 11 moved to the P6 tuning list, the log level of a channel closed with `CONNECTION_FORCED`. Mutation checks: the function-name check, the one-template rule. |
+| `p4/scheduling` (next, from the updated `main`) | `scheduled_at` (the 30-second tolerance stored as `NULL`, the 30-day horizon), the `expires_at` rule on create, the scheduled-delivery scenario. |
+
+**Rules of the phase (author):** the allow-list walker is read line by line by the main loop; the mock profile only, the default webhook.site URL is not used (48 of its 50 requests are left).
+
+**How P3 was split** (the plan names the three branches, not their contents):
 
 | Pull request | Contents |
 |---|---|
 | `p3/classification-and-retry` (merged) | The classification table, `decideRetry` in full, `Retry-After`, the worker's wiring, `mockprovider` fault injection, the expiry pass (transition 10), the idempotency-key cleanup (D78). Exit criterion: `5xx` → retries → `sent`. |
 | `p3/breaker-and-fallback` (merged) | The circuit breaker with the abort path and the doubling of the throttle delay, the Redis-down fallback limiter with `/metrics` on the admin port, open issue 7 (the claim during a Postgres outage, with the 25-nack check), the measurement of the hot-path statements under both plan modes. Exit criteria: `401` → circuit open with `failures = 0`; sending continues with Redis stopped. Mutation check: the five-consecutive-failures rule. |
 | `p3/recovery` (merged) | D79 (every pool plans with the current values) with the burst measured on the real code; reconciliation with the deferred trigger, `requeue-stale`, transition 12 and the 60-second final-write retry, the lease sweeper's tests, resubscribe, the connection epoch (D76), topology redeclaration, the relay's publisher after a closed channel (the exit stays). Exit criteria: the RabbitMQ restart, the empty broker volume, `requeue-stale`, a real Postgres restart. Mutation checks: transition 12's guards, reconciliation. |
-
-**Rules of the phase (author):** fault scenarios and exit criteria run on the mock profile only. The default webhook.site URL is not used (48 of its 50 requests are left).
 
 **Minimum Compose version:** v2.24.0, from Docker's documentation and the release notes; tested with v5.6.1 (D45, D70). Re-derived in P1 when the application services and the one-shot `migrate` service landed. Three features decide it: `up --wait` (introduced in v2.1.1), `up --wait` with a one-shot container that other services wait for with `service_completed_successfully` (fixed in v2.7.0: "Use appropriate dependency condition for one-shot containers when running `compose up --wait`"), and the optional `.env` entry, `env_file` with `required: false` (the documentation says "As of Docker Compose version 2.24.0"); the last is the newest. The number is not run against a v2.24.0 binary; the practical check is the clean-clone rehearsal in P7. CI runs the stack with the standalone v5.6.1 binary.
 
@@ -32,7 +39,7 @@ Status is one of: `not started`, `in progress`, `in review` (pull requests open)
 | P1 | Core path | done | [#4](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/4) (`p1/schema-and-store`, merged), [#5](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/5) (`p1/relay-worker-provider`, merged), [#6](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/6) (`p1/compose-e2e`, merged) | 2026-11-19 |
 | P2 | API completeness | done | [#7](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/7) (`p2/batch-and-idempotency`, merged), [#8](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/8) (`p2/cancel-redrive-listing`, merged), [#9](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/9) (`p2/validation`, merged) | 2026-11-19 |
 | P3 | Delivery robustness | done | [#10](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/10) (`p3/classification-and-retry`, merged), [#11](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/11) (`p3/breaker-and-fallback`, merged), [#12](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/12) (`p3/recovery`, merged); follow-up [#13](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/13) (`p3/isopen-race`, merged) | 2026-11-19 |
-| P4 | Templates and scheduling | in progress | | |
+| P4 | Templates and scheduling | in progress | `p4/templates` (in review) | |
 | P5 | Real-time and observability | not started | | |
 | P6 | Quality | not started | | |
 | P7 | Delivery | not started | | |
@@ -90,6 +97,70 @@ Newest entry first. One entry per session, in this form:
 - **Open issues:** new entries added to the table above.
 - **Next step:** the first thing the next session does.
 ```
+
+### 2026-11-19 — P4: templates (pull request 1 of 2)
+
+- **By the author, at the start:** `p3/recovery` and the follow-up are merged, P3 is complete and its fifteen decisions are accepted. **Open issue 11 is answered with option (d):** it moves to the P6 tuning list with two named measurements, and `future-work.md` states the limitation with the numbers measured so far. Four points for the phase: (1) two pull requests in the plan's order, each followed by green CI, a report and a stop; (2) the allow-list walker is the security boundary and is read line by line by the main loop, with two mutation checks whose output is in the report (the function-name check removed, the one-template rule removed); (3) the mock profile only; (4) the log level of the broker's `CONNECTION_FORCED` message is lowered if that is a small change.
+- **Issue 11, done first** (its own commit): the plan's P6 tuning list names the claim's cost with 1,000, 10,000, 100,000 and 1,000,000 pending rows under idle-state statistics (to confirm or refute: it grows with the backlog and is negligible for a batch of 1,000), and the comparison of options (a), (b) and (c) in the burst scenario with the pool size of each role (`pgxpool`'s default, the larger of 4 and the number of CPUs, against 75 concurrent dispatches). `future-work.md` and ADR-0003 §6 no longer call it an open issue.
+- **Point 4, done** (its own commit): it was a small change. A channel that closes with `320 CONNECTION_FORCED` is logged at info level; the connection's state change still logs the loss once at warn level, and a channel error of its own stays at warn (`TestChannelCloseLevel`).
+- **Done:**
+  - **Storage:** `templates` and `template_versions` (migration `000002`), immutable versions, a new version under a lock of the parent row, a taken name inserts nothing, deactivation as a flag.
+  - **The engine** (`internal/domain/template.go`, `template_walk.go`): `CompileTemplate` is the only constructor; it parses, applies the one-template rule, walks the tree, checks the declared variables and executes the template once. `Render` converts the values and limits the output to 512 KB. `text/template` for SMS and push, `html/template` for e-mail.
+  - **Endpoints:** create, add a version, read (latest and pinned), preview, deactivate, activate.
+  - **Notifications from templates:** `template` in place of `content`, single and in a batch; rendered at creation, validated like a content, stored with the version that produced it; one load and one compilation per template and request.
+  - **Documents:** ADR-0008 (§2 to §9), ADR-0006 (§3, §4, §9, §11), ADR-0010 (the template row, two mutation rows), `future-work.md` (four limitations, one extension), `errors.md`, the README's API examples, the design review log (section 6, one row).
+- **The walker, read line by line by the main loop** (`template_walk.go`, 362 lines, with the constructor and `Render` in `template.go`). What the reading checked: every type switch rejects in its default case; the walk reaches every child of every node type it accepts (the list, the action's pipe, the `if`'s pipe and both lists, every command and every argument); declarations are refused on every pipe, the `if`'s included; an identifier is accepted in one place only; the tree that is walked is the object handed to the engine; the data is the unnamed `map[string]string` (a named map type could have methods, and `.Name` calls a method before it looks up a key). **Then probed by the main loop:** 39 hostile sources on each of the three channels (a builtin after a call, in an `if`, in an `else if`, inside a self-named `define` next to an empty one; `template` calling itself; functions as arguments; every literal form of a number as `truncate`'s length): all refused, each for the intended reason.
+- **Two facts about the library, probed before the brief was written** (Go 1.27.1), which the design did not have:
+  - A `define` named like the source itself leaves **one** template in the set: the definition, in place of the tree the parser returned. "Exactly one template" passes; the rule is now "the set holds exactly the tree the parser returned".
+  - `html/template` rewrites a tree when it first executes it, so a tree is walked before it runs and never shared.
+- **Mutation checks** (run by the main loop; the file restored byte-identically after each, checksum compared, the suite green afterwards):
+
+  | Mutation | Named tests that fail | Their message |
+  |---|---|---|
+  | **The function-name check removed** (the three lines of `call` that refuse a name other than `default` and `truncate`) | `TestTemplateFunctionNameCheck_RejectsEveryBuiltinInCallPosition` (sub-tests `printf`, `call` and the 17 others), `TestTemplateFunctionNameCheck_RejectsUnknownFunction`, `TestTemplateFunctionNameCheck_RejectsPrintfAndCallElsewhere`, and two tests that use `printf` as their example | `CompileTemplate("{{ printf .a .b }}") = invalid_call ("printf"), want function_not_allowed ("printf")`; `CompileTemplate("{{ .a \| printf }}") = invalid_call ("printf"), want function_not_allowed ("printf")` |
+  | **The same, and the argument check no longer names `default`** (so that a builtin with two string arguments is really accepted) | The same tests, and `FuzzCompileTemplate` on its seeds | `CompileTemplate("{{ printf .a .b }}") accepted the source (true), want function_not_allowed (printf)`; for `call`: `execution of an accepted template failed: … error calling call: non-function .a of type string` |
+  | **The one-template rule removed** | `TestTemplateOneTemplateRule_RejectsHarmlessSecondTemplate`, `TestTemplateOneTemplateRule_RejectsSelfNamedDefine`, `TestTemplateOneTemplateRule_RejectsBlock`, and `FuzzCompileTemplate` on its seeds | `CompileTemplate("{{define \"x\"}}hi{{end}}hello") accepted the source (true), want multiple_templates (define)`; the reference of the fuzz target: `accepted "{{define \"x\"}}hi{{end}}hello", but the reference refuses it: second template in set: x` |
+
+  **What the first row showed:** with the name check alone removed, a builtin is still refused, by the argument check, which names the two functions too. The named tests fail because they assert the reason of a rejection, not only the rejection. The second row is the mutation in which a builtin is really accepted; it is reported so that the first is not read as more than it is.
+- **`FuzzCompileTemplate`:** never panics; every accepted source renders, with all variables and with the required ones only; an independent reference (the ordinary parser, a walk by reflection, no code shared with the walker) finds nothing outside the allow-list. In the delegate's run it found one disagreement in three seconds: `0{{define "body"}}{{end}}` is accepted, because the parser itself drops an empty definition of the source's own name; nothing can be hidden in it, and the reference was taught that case (the input is kept as a seed). Then 26.8 million inputs in 150 s without a finding; in `make fuzz` here 5.7 million in 30 s.
+- **Pull requests opened:** `p4/templates` (the link is added with the next commit).
+- **Exit criteria** (run by the main loop on this branch; mock profile and test containers only; the default webhook.site URL received nothing, 48 of its 50 requests are left):
+  - `make test`: green, 21 packages.
+  - `make fuzz`: green, five targets of 30 s each.
+  - `make test-e2e`: green, 155 s. `TestComposeE2E_Templates`: an SMS and an e-mail template, both previews (the SMS text is UCS-2 with two segments, the e-mail variable escaped), a single create and a batch, all three notifications `sent`, each once at the provider, the API showing the template version and the segment count of the rendered text. `load-smoke`: 6,000 SMS in 61.2 s, 98.0/s, largest one-second window **99**. The scheduled-delivery scenario belongs to `p4/scheduling`.
+  - `make generate`: no drift (run twice, checksums compared). `make lint`: 0 issues.
+  - `gh pr checks` is reported on the pull request.
+- **Decisions taken** (within the latitude of the ledger and the ADRs; the ADRs are updated):
+  1. **The one-template rule is "the set holds exactly the tree the parser returned"**, which is stronger than the count D40 and ADR-0008 name and rejects the self-named `define`.
+  2. **The source is parsed without a function check** and the walker alone decides about function names; the walked tree object is the one handed to the engine; `CompileTemplate` is the only constructor and runs on every use, also on a stored body.
+  3. **A parenthesised pipeline as an argument and a function name in argument position are refused.** ADR-0008's table listed neither; an allow-list refuses what it does not list, and the engine would call a function passed as an argument.
+  4. **Calls are checked when the template is created** (two arguments counting the piped value; `default` two strings, `truncate` a length and a string), so an accepted template cannot fail when executed.
+  5. **Literals are narrower than the language:** a number is plain decimal below one billion (a larger one parses and fails only when executed), a string literal is valid UTF-8 without U+0000. A body with invalid UTF-8 or U+0000 is refused.
+  6. **A compiled template is executed once at creation,** which surfaces `html/template`'s escaping errors as `unsafe_html` then and not when a notification is created.
+  7. Variable names match `^[A-Za-z_][A-Za-z0-9_]{0,63}$`; the limit of 50 counts both lists together; a `null` value and a value with U+0000 are a `422` like an object or an array.
+  8. `truncate` counts code points and adds no ellipsis; in an e-mail the fallback of `default` is escaped like a value.
+  9. **`"template": null` means absent,** as in the request example of ADR-0006 §3; every other member keeps the rule that `null` is not a value. Neither `content` nor `template`: `content` / `required`. Both: `template` / `conflicts_with_content`.
+  10. **The template stage runs after the validation that needs no database,** with these errors: `template_not_found`, `template_version_not_found`, `template_inactive`, `template_channel_mismatch`, per variable `missing_variable`, `unknown_variable`, `invalid_type`, `too_long`, `invalid_character`, and on the rendered text `empty`, `too_many_segments`, `too_long`. A stored body that does not compile is a `500`.
+  11. **In a batch the `dedupe_key` is claimed after the template stage,** so an item that fails to render never makes a later valid item a duplicate ("an invalid item never claims its key").
+  12. **A request with an `Idempotency-Key` that uses a template looks the key up before it renders** (`Store.LookupIdempotencyKey`, read-only, the claim's liveness rule). Without it, a retry after a deactivation or a new version was answered `422` instead of the stored `202`. The claim statement and `createTx` are unchanged.
+  13. The per-request cache holds the load's error too; the latest version also serves items that pin that number; every item without a version gets the same version.
+  14. The notification response has `template: {name, version}` or `null`; the variables are not returned.
+  15. **The template endpoints answer one flat object** (the template with the version shown); the creates answer `201` with `Location`; an existing name is the new problem type `template-exists`; a name that cannot match the pattern is a `404` without a database call; a `{version}` that is not a positive integer is a `400`. They ignore `Idempotency-Key`.
+  16. **The preview answers what a create would,** with one exception: an inactive template can be previewed. Its errors are named without the `template.` prefix, the rendered-text errors on `content`.
+  17. No foreign key from `notifications` to the template tables (ADR-0004 lists none; a batch insert would pay a check per row). The name pattern and the body's size are also `CHECK` constraints.
+  18. The single create is answered by the guard itself, as the batch already was: the generated decoder would read a variable's number as a `float64` and refuse one outside its range.
+  19. `template.version` must be a JSON integer literal from 1 to the largest `int4`.
+- **Observed:**
+  - **Inside a template every value is a string:** `{{ if .flag }}` is true for the JSON values `false` and `0`. It follows from D40 (values are converted to strings); the API description and `future-work.md` say so.
+  - `html/template` refuses an e-mail body that ends inside a tag, an attribute, a comment or a `<script>`, also when it has no variable, and removes HTML comments from the output.
+  - `mockprovider` stores no content, so the Compose scenario proves rendering through the API (provenance, the segment count of the rendered text, the preview); that the rendered text is what reaches the provider is asserted through the wired roles (`internal/integration/template_test.go`).
+  - A 64 KB adversarial body (nested `if`s, 11,000 actions) compiled in 1 to 10 ms and rendered in about 1.5 ms in the delegate's measurement; nothing exponential in `html/template`'s escaper.
+  - The ADR defines no endpoint that lists templates; none was built (`future-work.md` §13).
+  - `doc.go` of `internal/domain` claimed the package imports only the standard library and `uuid`, which had been wrong since the phone validation of P2; the sentence now says what holds: no I/O.
+- **Not verified:** a 32-bit platform and any Go version other than 1.27.1 (the walker refuses unknown node types, but the two probed behaviours of the parser were observed on this version only); the retry that overtakes its own first request (`future-work.md`; reasoned, not provoked); that an unexpected engine error can never carry a variable value in its text (it goes to the log line only, and no way to produce one was found); the template endpoints under load; `make test-docker`.
+- **Delegation:** four delegates. In two worktrees in parallel: **Opus** for the engine and the walker, from a brief that fixed the API, the grammar and the two probed facts and left the code to it; **Sonnet** for the tables, queries and store functions, from a brief that named the files, the statements and the tests. Then, one after the other in the main checkout: **Sonnet** for the six management endpoints, **Opus** for the create path with the batch, the replay and the preview, the wired-role test and the Compose scenario. The main loop probed the parser before specifying, decided the grammar, the stage order, the replay and the endpoint shapes, wrote the four briefs, read the walker line by line and probed it, ran the mutation checks, reviewed every diff (and corrected a message about `unsafe_html`, the migration round-trip test, which did not count the new tables, and the package comment), ran `make test`, `make fuzz`, `make test-e2e`, lint and the drift check itself, and wrote the documents, the issue-11 changes and the log-level change.
+- **Open issues:** none. Issue 11 is closed by the author's answer.
+- **Next step:** after the merge, `p4/scheduling` from the updated `main`.
 
 ### 2026-11-19 — P3: the red `integration` job on `main` (follow-up)
 
