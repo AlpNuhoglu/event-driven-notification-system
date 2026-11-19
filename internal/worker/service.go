@@ -33,7 +33,7 @@ import (
 // the rate limit then uses the in-process fallback (D25). The connections are
 // closed after the role has stopped.
 func Service(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
-	pool, err := pgxpool.New(ctx, cfg.Connections.DatabaseURL)
+	pool, err := openPool(ctx, cfg)
 	if err != nil {
 		return fmt.Errorf("postgres: %w", err)
 	}
@@ -84,6 +84,12 @@ func Service(ctx context.Context, cfg config.Config, logger *slog.Logger) error 
 		return err
 	}
 	return role.Run(ctx)
+}
+
+// openPool opens the role's Postgres pool with the store's constructor, so
+// that every connection plans with the current statistics (D79).
+func openPool(ctx context.Context, cfg config.Config) (*pgxpool.Pool, error) {
+	return store.OpenPool(ctx, cfg.Connections.DatabaseURL)
 }
 
 // Resources are the connections the worker role runs on. Service opens them

@@ -543,13 +543,15 @@ func TestDeleteExpiredIdempotencyKeys_VersusTakeOver(t *testing.T) {
 // The expiry pass and the idempotency-key cleanup must never run as cached
 // prepared statements: after many passes that found nothing, Postgres would
 // switch to a generic plan that joins each batch against every expired row
-// (design review log, section 6). The check is the listing's
+// (design review log, section 6). The relay's queued count is checked with
+// them: it has no parameters, so Postgres would keep its cached plan even
+// under plan_cache_mode = force_custom_plan (D79). The check is the listing's
 // (TestList_RunsWithCustomPlans): neither statement appears in
 // pg_prepared_statements, with GetNotification as the control that the check
 // can see cached statements.
 func TestExpiry_RunsWithCustomPlans(t *testing.T) {
 	url := testutil.NewMigratedDatabase(t)
-	pool, err := pgxpool.New(context.Background(), url+"&pool_max_conns=1")
+	pool, err := OpenPool(context.Background(), url+"&pool_max_conns=1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -562,6 +564,9 @@ func TestExpiry_RunsWithCustomPlans(t *testing.T) {
 			t.Fatal(err)
 		}
 		if _, err := s.DeleteExpiredIdempotencyKeys(ctxT(t)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.QueuedCounts(ctxT(t)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -577,6 +582,9 @@ func TestExpiry_RunsWithCustomPlans(t *testing.T) {
 	}
 	if c := count(`%WITH doomed AS%`); c != 0 {
 		t.Errorf("the key cleanup statement is prepared on the connection (%d), want 0", c)
+	}
+	if c := count(`%-- name: CountQueuedByLane%`); c != 0 {
+		t.Errorf("the relay's queued count is prepared on the connection (%d), want 0", c)
 	}
 
 	// Control.

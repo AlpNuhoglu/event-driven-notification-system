@@ -181,13 +181,19 @@ func newDatabase(t testing.TB, template string) string {
 	return u
 }
 
-// NewPool returns a connection pool on a new migrated database (see
-// NewMigratedDatabase). The pool is closed when the test ends, before the
-// database is dropped.
-func NewPool(t testing.TB) *pgxpool.Pool {
+// PoolOpener opens a connection pool on a database URL. The tests pass
+// store.OpenPool, the constructor of every role's pool (D79), so that they
+// run with the plans production runs with. This package cannot call it
+// itself: the store's own tests import testutil.
+type PoolOpener func(ctx context.Context, databaseURL string) (*pgxpool.Pool, error)
+
+// NewPool returns a connection pool, opened with open, on a new migrated
+// database (see NewMigratedDatabase). The pool is closed when the test ends,
+// before the database is dropped.
+func NewPool(t testing.TB, open PoolOpener) *pgxpool.Pool {
 	t.Helper()
 	u := NewMigratedDatabase(t)
-	pool, err := pgxpool.New(context.Background(), u)
+	pool, err := open(context.Background(), u)
 	if err != nil {
 		t.Fatalf("pool: %v", err)
 	}

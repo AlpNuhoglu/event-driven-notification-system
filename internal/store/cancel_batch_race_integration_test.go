@@ -202,7 +202,7 @@ func batchRace(t *testing.T, a, b *Store, pool *pgxpool.Pool, batchID uuid.UUID,
 // connections run with the given settings.
 func storeWith(t *testing.T, base *pgxpool.Pool, settings map[string]string) (*Store, *pgxpool.Pool) {
 	t.Helper()
-	cfg, err := pgxpool.ParseConfig(base.Config().ConnString())
+	cfg, err := PoolConfig(base.Config().ConnString())
 	if err != nil {
 		t.Fatal(err)
 	}

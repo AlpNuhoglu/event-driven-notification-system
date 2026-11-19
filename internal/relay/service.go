@@ -23,7 +23,7 @@ import (
 // cannot be reached at start and when the broker connection's recovery gives
 // up, so that the process exits with a non-zero code (ADR-0005).
 func Service(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
-	pool, err := pgxpool.New(ctx, cfg.Connections.DatabaseURL)
+	pool, err := openPool(ctx, cfg)
 	if err != nil {
 		return fmt.Errorf("postgres: %w", err)
 	}
@@ -52,6 +52,12 @@ func Service(ctx context.Context, cfg config.Config, logger *slog.Logger) error 
 
 	r := New(store.New(pool, store.ProfilesFrom(cfg.Retry)), pub, conn, events.Nop{}, logger, ConfigFrom(cfg.Relay), jitter)
 	return run(ctx, r, conn.GaveUp(), conn.Err)
+}
+
+// openPool opens the role's Postgres pool with the store's constructor, so
+// that every connection plans with the current statistics (D79).
+func openPool(ctx context.Context, cfg config.Config) (*pgxpool.Pool, error) {
+	return store.OpenPool(ctx, cfg.Connections.DatabaseURL)
 }
 
 // run runs the four loops until ctx is cancelled, gaveUp is closed or a

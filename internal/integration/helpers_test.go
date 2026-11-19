@@ -75,7 +75,7 @@ func newEnv(t *testing.T) *env {
 			t.Logf("role logs:\n%s", logs.String())
 		}
 	})
-	pool := testutil.NewPool(t)
+	pool := testutil.NewPool(t, store.OpenPool)
 	amqpURL := testutil.NewRabbitMQVhost(t)
 	conn, err := amqp.Dial(amqpURL)
 	if err != nil {
@@ -301,7 +301,7 @@ func (e *env) dial() *queue.Connection {
 
 func (e *env) rolePool(cfg config.Config) *pgxpool.Pool {
 	e.t.Helper()
-	pool, err := pgxpool.New(context.Background(), cfg.Connections.DatabaseURL)
+	pool, err := store.OpenPool(context.Background(), cfg.Connections.DatabaseURL)
 	if err != nil {
 		e.t.Fatalf("pool: %v", err)
 	}

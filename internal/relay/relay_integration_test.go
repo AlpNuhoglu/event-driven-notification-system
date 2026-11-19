@@ -99,7 +99,7 @@ func newRelay(t *testing.T, st *store.Store, url string, cfg Config) (*Relay, *q
 
 func newStore(t *testing.T) (*store.Store, *pgxpool.Pool) {
 	t.Helper()
-	pool := testutil.NewPool(t)
+	pool := testutil.NewPool(t, store.OpenPool)
 	return store.New(pool, zeroDelays), pool
 }
 

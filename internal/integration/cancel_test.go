@@ -67,7 +67,7 @@ func (c *claimTracer) claims() []claimEnd {
 // startTracedWorker is startWorker with the tracer on the worker's pool.
 func (e *env) startTracedWorker(cfg config.Config, tracer pgx.QueryTracer) *running {
 	e.t.Helper()
-	pcfg, err := pgxpool.ParseConfig(cfg.Connections.DatabaseURL)
+	pcfg, err := store.PoolConfig(cfg.Connections.DatabaseURL)
 	if err != nil {
 		e.t.Fatalf("pool config: %v", err)
 	}
