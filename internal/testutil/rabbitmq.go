@@ -174,7 +174,7 @@ func RabbitMQQueue(t testing.TB, amqpURL, queue string) map[string]any {
 
 // Proxy is a TCP proxy between a client and the broker that a test can
 // pause and break, to produce missing confirms and lost connections without
-// touching the shared container.
+// touching the shared container. NewRedisProxy puts one in front of Redis.
 type Proxy struct {
 	target string
 	addr   string

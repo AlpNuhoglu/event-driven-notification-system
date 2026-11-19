@@ -15,6 +15,9 @@ COMPOSE_MOCK = docker-compose -f docker-compose.yml -f docker-compose.mock.yml
 # make test-e2e runs the stack under its own Compose project, so it never
 # reuses or removes the stack of make up-mock. The host ports can be changed
 # when the defaults are taken (the other host ports as in .env.example).
+# The tests receive E2E_PROJECT too: the Redis fallback scenario stops and
+# starts the stack's redis service and reads the worker's /metrics through
+# docker-compose.
 E2E_PROJECT       ?= edns-e2e
 E2E_TIMEOUT       ?= 10m
 API_PORT          ?= 8080
@@ -77,7 +80,7 @@ test-e2e: ## Compose stack with the mock override, e2e tests and load-smoke (nee
 	status=0; \
 	$(E2E_COMPOSE) up -d --build --wait || status=$$?; \
 	if [ $$status -eq 0 ]; then \
-		E2E_API_URL=http://localhost:$(API_PORT) E2E_MOCK_URL=http://localhost:$(MOCKPROVIDER_PORT) \
+		E2E_API_URL=http://localhost:$(API_PORT) E2E_MOCK_URL=http://localhost:$(MOCKPROVIDER_PORT) E2E_PROJECT=$(E2E_PROJECT) \
 			go test -tags e2e -count=1 -v -timeout $(E2E_TIMEOUT) ./test/e2e/... || status=$$?; \
 	fi; \
 	if [ $$status -ne 0 ]; then \

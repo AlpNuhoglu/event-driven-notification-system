@@ -55,6 +55,17 @@ func startRedis() (*redis.Options, error) {
 	return opts, nil
 }
 
+// NewRedisProxy starts a Proxy in front of the server of rdb (a client from
+// NewRedis) and returns it with a Redis URL of rdb's logical database through
+// the proxy. Break makes Redis unreachable, Pause makes it hang. The proxy
+// is closed when the test ends.
+func NewRedisProxy(t testing.TB, rdb *redis.Client) (*Proxy, string) {
+	t.Helper()
+	opts := rdb.Options()
+	p := NewProxy(t, "redis://"+opts.Addr)
+	return p, fmt.Sprintf("%s/%d", p.URL(), opts.DB)
+}
+
 // NewRedis returns a client on a Redis logical database that no other running
 // test uses. The database is emptied (FLUSHDB) before the test and again when
 // it ends, and the client is closed at cleanup. The container is started on

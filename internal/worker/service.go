@@ -25,11 +25,12 @@ import (
 
 // Service is the worker role (a bootstrap.Service). It connects to Postgres,
 // RabbitMQ and Redis, wires the role with NewRole and runs it until ctx is
-// cancelled. It returns an error when a dependency cannot be reached at
-// start, when the broker connection's recovery gives up and when a
+// cancelled. It returns an error when Postgres or RabbitMQ cannot be reached
+// at start, when the broker connection's recovery gives up and when a
 // consumer's delivery stream ends unexpectedly, so that the process exits
-// with a non-zero code (ADR-0005). The connections are closed after the role
-// has stopped.
+// with a non-zero code (ADR-0005). An unreachable Redis is only a warning:
+// the rate limit then uses the in-process fallback (D25). The connections are
+// closed after the role has stopped.
 func Service(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	pool, err := pgxpool.New(ctx, cfg.Connections.DatabaseURL)
 	if err != nil {
@@ -51,7 +52,7 @@ func Service(ctx context.Context, cfg config.Config, logger *slog.Logger) error 
 		}
 	}()
 
-	opts, err := redis.ParseURL(cfg.Connections.RedisURL)
+	opts, err := ratelimit.RedisOptions(cfg.Connections.RedisURL)
 	if err != nil {
 		return fmt.Errorf("redis: %w", err)
 	}
@@ -61,8 +62,15 @@ func Service(ctx context.Context, cfg config.Config, logger *slog.Logger) error 
 			logger.Warn("worker: close redis client", "error", err)
 		}
 	}()
-	if err := rdb.Ping(ctx).Err(); err != nil {
-		return fmt.Errorf("redis: %w", err)
+	// Redis holds only the shared rate limit. A worker that starts while it
+	// is unreachable starts anyway and paces with the in-process fallback
+	// from its first reservation (D25).
+	pingCtx, cancelPing := context.WithTimeout(ctx, cfg.RateLimit.RedisTimeout)
+	err = rdb.Ping(pingCtx).Err()
+	cancelPing()
+	if err != nil {
+		logger.Warn("worker: redis unreachable at start; the rate limit falls back to the in-process limiter",
+			"error", err)
 	}
 
 	role, err := NewRole(cfg, Resources{
@@ -85,8 +93,8 @@ type Resources struct {
 	Pool  *pgxpool.Pool
 	Conn  *queue.Connection
 	Redis redis.Scripter
-	// Registry receives the provider clients' counters; the clients of all
-	// channels share them.
+	// Registry receives the provider clients' counters, which the clients of
+	// all channels share, and the gauge limiter_fallback_active.
 	Registry prometheus.Registerer
 	// WriteMargin replaces DefaultWriteMargin when positive. It is not
 	// configuration: only tests shorten it, like every other duration (D52).
@@ -95,7 +103,8 @@ type Resources struct {
 
 // Role is the wired worker role: for each channel of WORKER_CHANNELS one
 // Worker with its own provider client and its own consumer, all sharing one
-// store and one rate limiter. A Role runs once.
+// store and one rate limiter (the Redis limiter with its in-process fallback,
+// D25). A Role runs once.
 type Role struct {
 	conn   *queue.Connection
 	logger *slog.Logger
@@ -122,7 +131,19 @@ func NewRole(cfg config.Config, res Resources, logger *slog.Logger) (*Role, erro
 	if err := res.Conn.DeclareTopology(cfg.Worker.ConsumerTimeout); err != nil {
 		return nil, err
 	}
-	limiter, err := ratelimit.New(res.Redis, cfg.RateLimit.PerSecond, cfg.RateLimit.Horizon)
+	shared, err := ratelimit.New(res.Redis, cfg.RateLimit.PerSecond, cfg.RateLimit.Horizon)
+	if err != nil {
+		return nil, err
+	}
+	limiter, err := ratelimit.NewFallback(shared, ratelimit.FallbackConfig{
+		PerSecond:     cfg.RateLimit.PerSecond,
+		Replicas:      cfg.Worker.Replicas,
+		Horizon:       cfg.RateLimit.Horizon,
+		Timeout:       cfg.RateLimit.RedisTimeout,
+		ProbeInterval: cfg.RateLimit.FallbackProbeInterval,
+		Registry:      res.Registry,
+		Logger:        logger,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -144,7 +165,7 @@ func NewRole(cfg config.Config, res Resources, logger *slog.Logger) (*Role, erro
 	return r, nil
 }
 
-func newUnit(cfg config.Config, res Resources, logger *slog.Logger, st *store.Store, limiter *ratelimit.Limiter,
+func newUnit(cfg config.Config, res Resources, logger *slog.Logger, st *store.Store, limiter Limiter,
 	margin time.Duration, name string,
 ) (unit, error) {
 	ch, err := domain.ParseChannel(name)

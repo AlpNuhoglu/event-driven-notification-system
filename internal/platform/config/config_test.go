@@ -101,6 +101,9 @@ func TestOverrides(t *testing.T) {
 		"LOG_LEVEL":               "debug",
 		"RATE_LIMIT_PER_SECOND":   "10",
 
+		"RATE_LIMIT_REDIS_TIMEOUT":           "30ms",
+		"RATE_LIMIT_FALLBACK_PROBE_INTERVAL": "40ms",
+
 		"AMQP_RECOVERY_RETRY_INTERVAL": "20ms",
 		"AMQP_RECOVERY_MAX_RETRIES":    "3",
 	}))
@@ -122,7 +125,9 @@ func TestOverrides(t *testing.T) {
 		cfg.Observability.LogLevel != "debug",
 		cfg.Connections.AMQPRecoveryRetryInterval != 20*time.Millisecond,
 		cfg.Connections.AMQPRecoveryMaxRetries != 3,
-		cfg.RateLimit.PerSecond != 10:
+		cfg.RateLimit.PerSecond != 10,
+		cfg.RateLimit.RedisTimeout != 30*time.Millisecond,
+		cfg.RateLimit.FallbackProbeInterval != 40*time.Millisecond:
 		t.Errorf("overrides not applied: %+v", cfg)
 	}
 }
