@@ -101,6 +101,12 @@ type RateLimit struct {
 	// SlotTolerance is how late a send may start after its reserved slot.
 	// Beyond it the slot is given up and a new one is reserved (D77).
 	SlotTolerance time.Duration
+	// RedisTimeout bounds each call to Redis; a call that fails or times out
+	// switches to the in-process fallback (D25).
+	RedisTimeout time.Duration
+	// FallbackProbeInterval is how often Redis is asked again while the
+	// fallback is active.
+	FallbackProbeInterval time.Duration
 }
 
 // RetryConfig holds the retry profiles and shared delay bounds.
@@ -366,6 +372,9 @@ func (l *loader) load() Config {
 		Horizon:       l.dur("RATE_LIMIT_HORIZON", 250*time.Millisecond),
 		RetryInterval: l.dur("RATE_LIMIT_RETRY_INTERVAL", 50*time.Millisecond),
 		SlotTolerance: l.dur("PACER_SLOT_TOLERANCE", 5*time.Millisecond),
+
+		RedisTimeout:          l.dur("RATE_LIMIT_REDIS_TIMEOUT", 250*time.Millisecond),
+		FallbackProbeInterval: l.dur("RATE_LIMIT_FALLBACK_PROBE_INTERVAL", time.Second),
 	}
 	c.Retry = RetryConfig{
 		High:                 l.retry("HIGH", "TTL_HIGH", Retry{time.Second, 30 * time.Second, 5, 10 * time.Minute}),

@@ -1,4 +1,5 @@
-// Package health provides the admin health endpoints and a probe for them.
+// Package health provides the admin endpoints (health and metrics) and a
+// probe for the health endpoints.
 package health
 
 import (
@@ -12,6 +13,18 @@ import (
 // Handler serves GET /healthz and GET /readyz. Both always report ok in this
 // phase. Any other path is answered with 404, any other method with 405.
 func Handler() http.Handler {
+	return healthMux()
+}
+
+// AdminHandler is the handler of the admin port (ADR-0009 §8): Handler's
+// endpoints and GET /metrics, served by metrics.
+func AdminHandler(metrics http.Handler) http.Handler {
+	mux := healthMux()
+	mux.Handle("GET /metrics", metrics)
+	return mux
+}
+
+func healthMux() *http.ServeMux {
 	ok := func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"status":"ok"}`))

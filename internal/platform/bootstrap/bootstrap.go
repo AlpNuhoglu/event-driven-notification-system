@@ -1,6 +1,7 @@
 // Package bootstrap is the shared runner of the long-running roles. It loads
-// the configuration, serves the admin health endpoints, supports the
-// healthcheck subcommand and runs the role's own work next to them.
+// the configuration, serves the admin endpoints (health and metrics),
+// supports the healthcheck subcommand and runs the role's own work next to
+// them.
 package bootstrap
 
 import (
@@ -12,6 +13,9 @@ import (
 	"net"
 	"net/http"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/platform/config"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/platform/health"
@@ -73,7 +77,7 @@ func serve(ctx context.Context, ln net.Listener, role string, stdout, stderr io.
 func serveService(ctx context.Context, ln net.Listener, role string, cfg config.Config, svc Service, stdout, stderr io.Writer) int {
 	logger := slog.New(slog.NewJSONHandler(stdout, nil)).With("role", role)
 	srv := &http.Server{
-		Handler:           health.Handler(),
+		Handler:           AdminHandler(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	errc := make(chan error, 1)
@@ -116,6 +120,13 @@ func serveService(ctx context.Context, ln net.Listener, role string, cfg config.
 	}
 	logger.Info("service stopped")
 	return code
+}
+
+// AdminHandler is the handler of every role's admin port: /healthz, /readyz
+// and /metrics, the Prometheus handler over the default gatherer, on which the
+// roles register their metrics (ADR-0009 §8).
+func AdminHandler() http.Handler {
+	return health.AdminHandler(promhttp.HandlerFor(prometheus.DefaultGatherer, promhttp.HandlerOpts{}))
 }
 
 // serviceExit maps the error a Service returned to an exit code. Ending
