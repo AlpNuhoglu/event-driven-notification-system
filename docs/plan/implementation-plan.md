@@ -2,7 +2,7 @@
 
 The plan that the implementation sessions execute. Each phase is sized for one fresh Claude Code session and one or a few pull requests.
 
-- **What to build** is specified in the [ADRs](../adr/), the primary design documents, and recorded with its reasons in the [decision ledger](../ai/decision-ledger.md) (v4: `D1`–`D77`, `G1`–`G5`). This plan decides only **in which order**, and **how each step is shown to be done**.
+- **What to build** is specified in the [ADRs](../adr/), the primary design documents, and recorded with its reasons in the [decision ledger](../ai/decision-ledger.md) (v4: `D1`–`D78`, `G1`–`G5`). This plan decides only **in which order**, and **how each step is shown to be done**.
 - **Where things stand** is recorded in [`docs/progress.md`](../progress.md). A session reads that file first.
 - If this plan and the ledger or an ADR disagree, the ledger and the ADRs win; fix the plan in the same pull request and note it under "Known deviations from the plan" in `progress.md`. If an ADR and the ledger disagree with each other, do not pick one: record it under "Open issues" in `progress.md` and ask.
 
