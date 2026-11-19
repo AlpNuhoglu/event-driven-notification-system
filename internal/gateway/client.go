@@ -9,6 +9,8 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/google/uuid"
+
+	"github.com/AlpNuhoglu/event-driven-notification-system/internal/domain"
 )
 
 // Reasons of the close frames the gateway sends.
@@ -159,13 +161,31 @@ func (c *client) subscribe(ctx context.Context, req request) error {
 			message: "the current state could not be read; the subscription is registered and live events will arrive",
 		}))
 	}
+	return c.handSnapshot(ctx, snap)
+}
+
+// handSnapshot hands the snapshot's messages to the writer. The whole
+// snapshot has one deadline, WriteTimeout, next to the deadline of each
+// write: a client that reads a little now and then keeps every single write
+// under its deadline, and without a bound of the whole a snapshot of a
+// thousand messages could hold the connection for minutes. When the
+// deadline passes, the connection is over (the returned error ends the
+// reader, which cuts the write in progress); the client reconnects and
+// subscribes again.
+func (c *client) handSnapshot(ctx context.Context, snap []domain.StatusChanged) error {
+	hctx, cancel := context.WithTimeout(ctx, c.g.opts.WriteTimeout)
+	defer cancel()
 	for _, e := range snap {
 		msg, err := encodeStatus(e)
 		if err != nil {
 			c.g.opts.Logger.Warn("gateway: dropping a snapshot message that cannot be encoded", "id", e.ID.String(), "error", err)
 			continue
 		}
-		if err := c.hand(ctx, msg); err != nil {
+		if err := c.hand(hctx, msg); err != nil {
+			if ctx.Err() == nil && errors.Is(err, context.DeadlineExceeded) {
+				c.g.snapshotTimeouts.Add(1)
+				c.g.opts.Logger.Debug("gateway: a client did not take its snapshot in time; closing the connection", "messages", len(snap))
+			}
 			return err
 		}
 	}

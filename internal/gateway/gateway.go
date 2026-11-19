@@ -67,7 +67,8 @@ type Options struct {
 	// PingInterval is the time between pings, and the time a client has to
 	// answer one (WS_PING_INTERVAL).
 	PingInterval time.Duration
-	// WriteTimeout bounds every write to a client (WS_WRITE_TIMEOUT).
+	// WriteTimeout bounds every write to a client, and the handing over of
+	// the whole snapshot of one subscribe request (WS_WRITE_TIMEOUT).
 	WriteTimeout time.Duration
 }
 
@@ -93,6 +94,9 @@ type Gateway struct {
 	// slowClosed counts the connections closed because their send queue
 	// was full.
 	slowClosed atomic.Int64
+	// snapshotTimeouts counts the connections closed because their client
+	// did not take a snapshot within WriteTimeout.
+	snapshotTimeouts atomic.Int64
 }
 
 // New returns a Gateway.
@@ -270,6 +274,12 @@ func (g *Gateway) Connections() int {
 // send queue was full.
 func (g *Gateway) SlowClientsClosed() int64 {
 	return g.slowClosed.Load()
+}
+
+// SnapshotTimeouts returns the number of connections closed because their
+// client did not take a snapshot in time.
+func (g *Gateway) SnapshotTimeouts() int64 {
+	return g.snapshotTimeouts.Load()
 }
 
 // snapshot reads the current state of the notifications in ids and of the
