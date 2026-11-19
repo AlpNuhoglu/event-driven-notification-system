@@ -1,0 +1,67 @@
+# Alert rules (ADR-0009 section 3). There is no Alertmanager: the rules are
+# evaluated and shown by Prometheus (Alerts page, /api/v1/rules). The
+# thresholds are first values, to be tuned against load and chaos results.
+groups:
+  - name: notifications
+    rules:
+      - alert: RelayDown
+        expr: up{job="relay"} == 0
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          description: The relay's admin endpoint has not been scraped successfully for 30 seconds.
+          runbook: Run "docker-compose ps relay" and read its logs; queued work is not published while the relay is down.
+
+      - alert: HighLaneStalled
+        expr: max by (channel) (lane_oldest_queued_age_seconds{priority="high"}) > 120
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          description: The oldest queued high-priority message of channel {{ $labels.channel }} has waited more than 2 minutes, for 2 minutes.
+          runbook: Check that the worker consumes the channel's dispatch queue (its consumers and depth in RabbitMQ) and whether the channel's circuit is closed (circuit_state).
+
+      - alert: PoisonMessages
+        expr: max by (queue) (rabbitmq_detailed_queue_messages{queue=~"dispatch\\..+\\.poison"}) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          description: The poison queue {{ $labels.queue }} has held messages for 5 minutes.
+          runbook: Inspect the messages of the queue in RabbitMQ and the worker logs for the decode or validation error that dead-lettered them.
+
+      # One rule for both conditions of the ADR: any high-priority expiry in
+      # 10 minutes, or more than 1 % of the finished normal-priority
+      # notifications expired in 15 minutes. When nothing finished, the
+      # division yields no sample, so the second condition stays silent.
+      - alert: ExpirySpike
+        expr: |
+          sum(increase(expired_total{priority="high"}[10m])) > 0
+          or
+          sum(increase(expired_total{priority="normal"}[15m])) / sum(increase(notifications_finished_total{priority="normal"}[15m])) > 0.01
+        labels:
+          severity: warning
+        annotations:
+          description: A high-priority notification expired in the last 10 minutes, or more than 1 % of the normal-priority notifications that finished in the last 15 minutes expired.
+          runbook: Compare expired_total by priority with the lane's oldest queued age and the backlog; the workers are not keeping up with the arrival rate.
+
+      - alert: CircuitNotClosed
+        # Written on "not closed", not on "open": during a long outage a
+        # circuit alternates between open and half-open (open for at most
+        # 2 minutes), so it is never continuously open for 5 minutes.
+        expr: circuit_state != 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          description: The circuit of channel {{ $labels.channel }} and provider {{ $labels.provider }} has not been closed for 5 minutes.
+          runbook: Look at delivery_attempts_total by outcome for the provider and at the provider's own status.
+
+      - alert: LimiterFallbackActive
+        expr: limiter_fallback_active == 1
+        labels:
+          severity: warning
+        annotations:
+          description: A worker uses its local rate limiter because Redis is unavailable.
+          runbook: Check the redis container and the worker logs; the per-channel limit is enforced per worker until Redis is back.

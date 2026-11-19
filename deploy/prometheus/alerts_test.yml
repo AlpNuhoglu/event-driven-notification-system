@@ -1,0 +1,234 @@
+# Unit tests of alerts.yml, run by "make check-rules" with promtool.
+# Every rule has a series that must fire it and one that must not.
+rule_files:
+  - alerts.yml
+
+evaluation_interval: 1m
+
+tests:
+  # RelayDown
+  - interval: 15s
+    input_series:
+      - series: 'up{job="relay", instance="relay:8081"}'
+        values: "0x20"
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: RelayDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: relay
+              instance: "relay:8081"
+            exp_annotations:
+              description: The relay's admin endpoint has not been scraped successfully for 30 seconds.
+              runbook: Run "docker-compose ps relay" and read its logs; queued work is not published while the relay is down.
+
+  - interval: 15s
+    input_series:
+      - series: 'up{job="relay", instance="relay:8081"}'
+        values: "1x20"
+      - series: 'up{job="worker", instance="worker:8081"}'
+        values: "0x20"
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: RelayDown
+        exp_alerts: []
+
+  # HighLaneStalled: fires for a high lane above 120 s for 2 minutes.
+  - interval: 1m
+    input_series:
+      - series: 'lane_oldest_queued_age_seconds{channel="sms", priority="high"}'
+        values: "200x10"
+      - series: 'lane_oldest_queued_age_seconds{channel="email", priority="normal"}'
+        values: "900x10"
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: HighLaneStalled
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              channel: sms
+            exp_annotations:
+              description: The oldest queued high-priority message of channel sms has waited more than 2 minutes, for 2 minutes.
+              runbook: Check that the worker consumes the channel's dispatch queue (its consumers and depth in RabbitMQ) and whether the channel's circuit is closed (circuit_state).
+
+  # A lane that drains before the 2 minutes are over does not fire.
+  - interval: 1m
+    input_series:
+      - series: 'lane_oldest_queued_age_seconds{channel="sms", priority="high"}'
+        values: "200 200 0 0 0 0 0 0"
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: HighLaneStalled
+        exp_alerts: []
+
+  # A high lane at or below the threshold does not fire.
+  - interval: 1m
+    input_series:
+      - series: 'lane_oldest_queued_age_seconds{channel="sms", priority="high"}'
+        values: "120x10"
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: HighLaneStalled
+        exp_alerts: []
+
+  # PoisonMessages: a poison queue with messages for 5 minutes fires; a
+  # regular queue with messages does not.
+  - interval: 1m
+    input_series:
+      - series: 'rabbitmq_detailed_queue_messages{queue="dispatch.sms.poison"}'
+        values: "1x12"
+      - series: 'rabbitmq_detailed_queue_messages{queue="dispatch.sms.high"}'
+        values: "50x12"
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: PoisonMessages
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              queue: dispatch.sms.poison
+            exp_annotations:
+              description: The poison queue dispatch.sms.poison has held messages for 5 minutes.
+              runbook: Inspect the messages of the queue in RabbitMQ and the worker logs for the decode or validation error that dead-lettered them.
+
+  # A poison queue that is emptied before 5 minutes does not fire.
+  - interval: 1m
+    input_series:
+      - series: 'rabbitmq_detailed_queue_messages{queue="dispatch.sms.poison"}'
+        values: "1 1 1 0 0 0 0 0"
+      - series: 'rabbitmq_detailed_queue_messages{queue="dispatch.sms.high"}'
+        values: "50x8"
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: PoisonMessages
+        exp_alerts: []
+
+  # ExpirySpike, high: a single expiry fires.
+  - interval: 1m
+    input_series:
+      - series: 'expired_total{channel="sms", priority="high"}'
+        values: "0 0 0 0 1 1 1 1 1 1 1 1"
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: ExpirySpike
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations: &expiry_annotations
+              description: A high-priority notification expired in the last 10 minutes, or more than 1 % of the normal-priority notifications that finished in the last 15 minutes expired.
+              runbook: Compare expired_total by priority with the lane's oldest queued age and the backlog; the workers are not keeping up with the arrival rate.
+
+  # ExpirySpike, high: the expiry has left the 10-minute window.
+  - interval: 1m
+    input_series:
+      - series: 'expired_total{channel="sms", priority="high"}'
+        values: "0 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1"
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: ExpirySpike
+        exp_alerts: []
+
+  # ExpirySpike, normal: about 2 % expired fires.
+  - interval: 1m
+    input_series:
+      - series: 'expired_total{channel="sms", priority="normal"}'
+        values: "0+1x20"
+      - series: 'notifications_finished_total{channel="sms", priority="normal", status="sent"}'
+        values: "0+50x20"
+    alert_rule_test:
+      - eval_time: 18m
+        alertname: ExpirySpike
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations: *expiry_annotations
+
+  # ExpirySpike, normal: about 0.2 % expired does not fire.
+  - interval: 1m
+    input_series:
+      - series: 'expired_total{channel="sms", priority="normal"}'
+        values: "0+1x20"
+      - series: 'notifications_finished_total{channel="sms", priority="normal", status="sent"}'
+        values: "0+500x20"
+    alert_rule_test:
+      - eval_time: 18m
+        alertname: ExpirySpike
+        exp_alerts: []
+
+  # ExpirySpike, normal: nothing finished, nothing expired; no division by
+  # zero alert.
+  - interval: 1m
+    input_series:
+      - series: 'expired_total{channel="sms", priority="normal"}'
+        values: "0x20"
+      - series: 'notifications_finished_total{channel="sms", priority="normal", status="sent"}'
+        values: "0x20"
+    alert_rule_test:
+      - eval_time: 18m
+        alertname: ExpirySpike
+        exp_alerts: []
+
+  # CircuitNotClosed: alternating between open (2) and half-open (1) for
+  # 6 minutes fires.
+  - interval: 1m
+    input_series:
+      - series: 'circuit_state{channel="sms", provider="webhook"}'
+        values: "2 1 2 1 2 1 2 1"
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: CircuitNotClosed
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              channel: sms
+              provider: webhook
+            exp_annotations:
+              description: The circuit of channel sms and provider webhook has not been closed for 5 minutes.
+              runbook: Look at delivery_attempts_total by outcome for the provider and at the provider's own status.
+
+  # CircuitNotClosed: a circuit that returns to closed within 5 minutes does
+  # not fire.
+  - interval: 1m
+    input_series:
+      - series: 'circuit_state{channel="sms", provider="webhook"}'
+        values: "2 1 2 1 0 0 0 0"
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: CircuitNotClosed
+        exp_alerts: []
+
+  # CircuitNotClosed: a closed circuit never fires.
+  - interval: 1m
+    input_series:
+      - series: 'circuit_state{channel="sms", provider="webhook"}'
+        values: "0x10"
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: CircuitNotClosed
+        exp_alerts: []
+
+  # LimiterFallbackActive
+  - interval: 1m
+    input_series:
+      - series: 'limiter_fallback_active{instance="worker:8081", job="worker"}'
+        values: "1x5"
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: LimiterFallbackActive
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              instance: "worker:8081"
+              job: worker
+            exp_annotations:
+              description: A worker uses its local rate limiter because Redis is unavailable.
+              runbook: Check the redis container and the worker logs; the per-channel limit is enforced per worker until Redis is back.
+
+  - interval: 1m
+    input_series:
+      - series: 'limiter_fallback_active{instance="worker:8081", job="worker"}'
+        values: "0x5"
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: LimiterFallbackActive
+        exp_alerts: []

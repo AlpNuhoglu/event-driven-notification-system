@@ -34,6 +34,7 @@ jobs:
             go.sum
             Makefile
       - run: make lint
+      - run: make check-rules
 
   unit:
     runs-on: ubuntu-24.04
