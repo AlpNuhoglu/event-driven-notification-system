@@ -11,7 +11,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/AlpNuhoglu/event-driven-notification-system/internal/events"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/platform/config"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/queue"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/store"
@@ -55,14 +54,22 @@ func Service(ctx context.Context, cfg config.Config, logger *slog.Logger) error 
 	if err != nil {
 		return err
 	}
-	r := New(store.New(pool, store.ProfilesFrom(cfg.Retry)), pub, conn, eventPublisher(), logger, ConfigFrom(cfg.Relay), jitter, m)
+	ev, err := eventPublisher(cfg, logger)
+	if err != nil {
+		return err
+	}
+	// Closed after Run has returned (deferred calls run last-in first-out):
+	// the events of the last transactions get their chance.
+	defer ev.Close()
+	r := New(store.New(pool, store.ProfilesFrom(cfg.Retry)), pub, conn, ev, logger, ConfigFrom(cfg.Relay), jitter, m)
 	return r.Run(ctx, conn.GaveUp(), conn.Err)
 }
 
-// eventPublisher is the role's publisher of status events; the relay has
-// none yet, so its events are dropped.
-func eventPublisher() events.Publisher {
-	return events.Nop{}
+// eventPublisher is the role's publisher of status events: a connection of
+// its own, separate from the dispatch connection, opened lazily (ADR-0005,
+// D11). The caller closes it.
+func eventPublisher(cfg config.Config, logger *slog.Logger) (*queue.EventPublisher, error) {
+	return queue.NewEventPublisher(queue.EventPublisherConfigFrom(cfg), logger)
 }
 
 // openPool opens the role's Postgres pool with the store's constructor, so
