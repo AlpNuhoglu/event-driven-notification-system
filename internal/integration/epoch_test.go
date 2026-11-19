@@ -352,8 +352,11 @@ func TestWorker_ShutdownWithStaleDeliveryInDispatch(t *testing.T) {
 	if len(answers) != 1 || answers[0].Kind != "nack" || answers[0].Conn != 2 {
 		t.Errorf("answers on the wire %+v, want one nack, on the second connection (the buffered copy)", answers)
 	}
-	if n := e.ready(); n != 1 {
-		t.Errorf("%d messages ready after the shutdown, want 1", n)
+	// The nack is on the wire (asserted above); the broker makes the message
+	// ready again a moment later, so the count is waited for, not read once.
+	// (Read at once it was 0 in 1 of 60 runs on a loaded machine.)
+	if !testutil.Within(func() bool { return e.ready() == 1 }, waitTimeout) {
+		t.Errorf("%d messages ready after the shutdown, want 1", e.ready())
 	}
 	if n := e.prov.count(); n != 0 {
 		t.Errorf("%d sends, want none", n)
