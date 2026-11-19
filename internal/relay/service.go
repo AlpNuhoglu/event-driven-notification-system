@@ -50,10 +50,6 @@ func Service(ctx context.Context, cfg config.Config, logger *slog.Logger) error 
 		return err
 	}
 
-	m, err := NewMetrics(prometheus.DefaultRegisterer)
-	if err != nil {
-		return err
-	}
 	ev, err := eventPublisher(cfg, logger)
 	if err != nil {
 		return err
@@ -61,6 +57,10 @@ func Service(ctx context.Context, cfg config.Config, logger *slog.Logger) error 
 	// Closed after Run has returned (deferred calls run last-in first-out):
 	// the events of the last transactions get their chance.
 	defer ev.Close()
+	m, err := registerMetrics(prometheus.DefaultRegisterer, ev)
+	if err != nil {
+		return err
+	}
 	r := New(store.New(pool, store.ProfilesFrom(cfg.Retry)), pub, conn, ev, logger, ConfigFrom(cfg.Relay), jitter, m)
 	return r.Run(ctx, conn.GaveUp(), conn.Err)
 }
@@ -72,23 +72,37 @@ func eventPublisher(cfg config.Config, logger *slog.Logger) (*queue.EventPublish
 	return queue.NewEventPublisher(queue.EventPublisherConfigFrom(cfg), logger)
 }
 
+// registerMetrics registers every metric the relay serves on reg: its own
+// (NewMetrics) and the counters of its event publisher.
+func registerMetrics(reg prometheus.Registerer, ev *queue.EventPublisher) (*Metrics, error) {
+	m, err := NewMetrics(reg)
+	if err != nil {
+		return nil, err
+	}
+	if err := queue.RegisterEventMetrics(reg, ev); err != nil {
+		return nil, fmt.Errorf("relay: %w", err)
+	}
+	return m, nil
+}
+
 // openPool opens the role's Postgres pool with the store's constructor, so
 // that every connection plans with the current statistics (D79).
 func openPool(ctx context.Context, cfg config.Config) (*pgxpool.Pool, error) {
 	return store.OpenPool(ctx, cfg.Connections.DatabaseURL)
 }
 
-// Run runs the relay's four loops (the publishing cycle with
-// reconciliation, the lease sweeper, the expiry pass and the idempotency-key
-// cleanup) until ctx is cancelled, gaveUp is closed (the broker connection's
-// recovery gave up; gaveUpErr returns its error) or a loop ends with an
+// Run runs the relay's five loops (the publishing cycle with
+// reconciliation, the lease sweeper, the expiry pass, the idempotency-key
+// cleanup and the gauge measurement) until ctx is cancelled, gaveUp is
+// closed (the broker connection's recovery gave up; gaveUpErr returns its
+// error) or a loop ends with an
 // error (the publisher's channel is closed), and waits for them to finish.
 // It returns an error in the last two cases, so that the process exits with
 // a non-zero code and is restarted.
 func (r *Relay) Run(ctx context.Context, gaveUp <-chan struct{}, gaveUpErr func() error) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	loops := []func(context.Context) error{r.RunPublishing, r.RunLeaseSweeper, r.RunExpiry, r.RunIdempotencyCleanup}
+	loops := []func(context.Context) error{r.RunPublishing, r.RunLeaseSweeper, r.RunExpiry, r.RunIdempotencyCleanup, r.RunGauges}
 	loopErr := make(chan error, len(loops))
 	var wg sync.WaitGroup
 	for _, loop := range loops {
@@ -128,6 +142,7 @@ func ConfigFrom(c config.Relay) Config {
 		IdempotencyCleanupInterval: c.IdempotencyCleanupEvery,
 
 		ReconcileMinInterval: c.ReconcileMinEvery,
+		GaugeInterval:        c.BacklogGaugeEvery,
 	}
 }
 

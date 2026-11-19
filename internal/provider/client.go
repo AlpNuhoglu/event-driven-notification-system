@@ -153,6 +153,17 @@ func register[T prometheus.Collector](reg prometheus.Registerer, col T) (T, erro
 	return col, err
 }
 
+// InitSeries creates the series of provider_unexpected_2xx_total of
+// channel ch at zero: one per standard 2xx status other than 202, the fixed
+// set the code label takes in practice.
+func (c *Client) InitSeries(ch domain.Channel) {
+	for code := 200; code <= 299; code++ {
+		if code != http.StatusAccepted && http.StatusText(code) != "" {
+			c.unexpected.WithLabelValues(string(ch), c.cfg.Name, strconv.Itoa(code))
+		}
+	}
+}
+
 // Name returns the provider name.
 func (c *Client) Name() string { return c.cfg.Name }
 

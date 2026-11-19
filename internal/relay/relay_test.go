@@ -56,6 +56,24 @@ type fakeStore struct {
 	reconcileErr    error
 	onReconcile     func(ctx context.Context)
 	reconciles      int
+	// Gauge measurement: every call returns gauges, or gaugesErr while it
+	// is set.
+	gauges    store.Gauges
+	gaugesErr error
+	measures  int
+}
+
+func (f *fakeStore) Gauges(context.Context) (store.Gauges, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.measures++
+	return f.gauges, f.gaugesErr
+}
+
+func (f *fakeStore) measureCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.measures
 }
 
 func (f *fakeStore) ReconcileQueued(ctx context.Context) ([]domain.StatusChanged, error) {

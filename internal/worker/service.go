@@ -101,8 +101,9 @@ type Resources struct {
 	Pool  *pgxpool.Pool
 	Conn  *queue.Connection
 	Redis redis.Scripter
-	// Registry receives the provider clients' counters, which the clients of
-	// all channels share, and the gauge limiter_fallback_active.
+	// Registry receives the role's metrics (NewMetrics), the provider
+	// clients' counters, which the clients of all channels share, the gauge
+	// limiter_fallback_active and the counters of the event publisher.
 	Registry prometheus.Registerer
 	// WriteMargin replaces DefaultWriteMargin when positive. It is not
 	// configuration: only tests shorten it, like every other duration (D52).
@@ -163,6 +164,13 @@ func NewRole(cfg config.Config, res Resources, logger *slog.Logger) (*Role, erro
 	if err != nil {
 		return nil, err
 	}
+	if err := queue.RegisterEventMetrics(res.Registry, ev); err != nil {
+		return nil, fmt.Errorf("worker role: %w", err)
+	}
+	m, err := NewMetrics(res.Registry)
+	if err != nil {
+		return nil, err
+	}
 	st := store.New(res.Pool, store.ProfilesFrom(cfg.Retry))
 	margin := DefaultWriteMargin
 	if res.WriteMargin > 0 {
@@ -171,7 +179,7 @@ func NewRole(cfg config.Config, res Resources, logger *slog.Logger) (*Role, erro
 
 	r := &Role{conn: res.Conn, logger: logger, events: ev}
 	for _, name := range cfg.Worker.Channels {
-		u, err := newUnit(cfg, res, logger, st, limiter, ev, margin, name)
+		u, err := newUnit(cfg, res, logger, st, limiter, ev, m, margin, name)
 		if err != nil {
 			r.closeConsumers()
 			return nil, err
@@ -182,7 +190,7 @@ func NewRole(cfg config.Config, res Resources, logger *slog.Logger) (*Role, erro
 }
 
 func newUnit(cfg config.Config, res Resources, logger *slog.Logger, st *store.Store, limiter Limiter,
-	ev events.Publisher, margin time.Duration, name string,
+	ev events.Publisher, m *Metrics, margin time.Duration, name string,
 ) (unit, error) {
 	ch, err := domain.ParseChannel(name)
 	if err != nil {
@@ -199,8 +207,9 @@ func newUnit(cfg config.Config, res Resources, logger *slog.Logger, st *store.St
 	if err != nil {
 		return unit{}, fmt.Errorf("worker role %s: %w", ch, err)
 	}
+	client.InitSeries(ch)
 	clock := SystemClock{}
-	br, err := newCircuit(cfg, ch, clock, logger)
+	br, err := newCircuit(cfg, ch, clock, logger, m)
 	if err != nil {
 		return unit{}, fmt.Errorf("worker role %s: %w", ch, err)
 	}
@@ -226,6 +235,7 @@ func newUnit(cfg config.Config, res Resources, logger *slog.Logger, st *store.St
 		Clock:    clock,
 		Jitter:   jitter,
 		Logger:   logger,
+		Metrics:  m,
 	})
 	if err != nil {
 		return unit{}, fmt.Errorf("worker role %s: %w", ch, err)
@@ -388,8 +398,10 @@ func (c circuit) Admit() (Permit, bool, time.Time) {
 // (D26) on the worker's clock. Its state lives in this process only; every
 // state change is logged, and a circuit opened by a provider_fatal answer
 // (wrong credentials, a wrong or expired endpoint) at error level, because
-// only a person can fix its cause (ADR-0007 section 2).
-func newCircuit(cfg config.Config, ch domain.Channel, clock Clock, logger *slog.Logger) (circuit, error) {
+// only a person can fix its cause (ADR-0007 section 2). Every state change
+// also sets circuit_state{channel,provider} on m, the only source of circuit
+// state outside the process (ADR-0009 §1).
+func newCircuit(cfg config.Config, ch domain.Channel, clock Clock, logger *slog.Logger, m *Metrics) (circuit, error) {
 	log := logger.With(slog.String("channel", string(ch)), slog.String("provider", cfg.Provider.Name))
 	b, err := breaker.New(breaker.Config{
 		Window:              cfg.Breaker.Window,
@@ -405,11 +417,26 @@ func newCircuit(cfg config.Config, ch domain.Channel, clock Clock, logger *slog.
 		// While a probe is in flight the pacer asks again at the pace at
 		// which it asks the limiter again.
 		ProbeWait: cfg.RateLimit.RetryInterval,
-	}, clock.Now, func(c breaker.Change) { logCircuit(log, clock, c) })
+	}, clock.Now, func(c breaker.Change) {
+		m.setCircuit(ch, cfg.Provider.Name, circuitValue(c.To))
+		logCircuit(log, clock, c)
+	})
 	if err != nil {
 		return circuit{}, err
 	}
 	return circuit{b}, nil
+}
+
+// circuitValue is the value of circuit_state for a breaker state.
+func circuitValue(s breaker.State) int {
+	switch s {
+	case breaker.Open:
+		return circuitOpen
+	case breaker.HalfOpen:
+		return circuitHalfOpen
+	default:
+		return circuitClosed
+	}
 }
 
 func logCircuit(log *slog.Logger, clock Clock, c breaker.Change) {

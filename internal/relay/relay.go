@@ -3,7 +3,8 @@
 // high-water mark, recovers notifications whose lease has expired, fails
 // notifications whose expires_at has passed (transition 10), returns every
 // queued notification to pending on each (re)connection to RabbitMQ
-// (reconciliation, transition 8) and deletes expired idempotency keys (D78).
+// (reconciliation, transition 8), deletes expired idempotency keys (D78) and
+// measures the gauges of the lanes and of the backlog (ADR-0009 §1).
 package relay
 
 import (
@@ -29,6 +30,7 @@ type Store interface {
 	ExpireDue(ctx context.Context, limit int) ([]domain.StatusChanged, error)
 	DeleteExpiredIdempotencyKeys(ctx context.Context) (int, error)
 	ReconcileQueued(ctx context.Context) ([]domain.StatusChanged, error)
+	Gauges(ctx context.Context) (store.Gauges, error)
 }
 
 // Publisher publishes one batch and returns the ids that were confirmed and
@@ -61,6 +63,10 @@ type Config struct {
 	IdempotencyCleanupInterval time.Duration // IDEMPOTENCY_CLEANUP_INTERVAL
 
 	ReconcileMinInterval time.Duration // RECONCILE_MIN_INTERVAL
+
+	// GaugeInterval is the cadence of the gauge measurement
+	// (BACKLOG_GAUGE_INTERVAL); zero or less runs no measurement.
+	GaugeInterval time.Duration
 }
 
 func (c Config) hwm(p domain.Priority) int {
@@ -89,13 +95,17 @@ type Relay struct {
 }
 
 // New returns a Relay. jitter returns a number in [0, 1) for the retry
-// decision of the lease sweeper. m receives the reconciliation counters; nil
-// means counters that are not registered anywhere.
+// decision of the lease sweeper. m receives the relay's metrics; nil means
+// metrics that are not registered anywhere. The final transitions the relay
+// hands to ev are counted on their way (notifications_finished_total).
 func New(st Store, pub Publisher, conn Connection, ev events.Publisher, logger *slog.Logger, cfg Config, jitter func() float64, m *Metrics) *Relay {
 	if m == nil {
 		m, _ = NewMetrics(nil) // cannot fail without a registry
 	}
-	return &Relay{store: st, pub: pub, conn: conn, events: ev, logger: logger, cfg: cfg, jitter: jitter, metrics: m, now: time.Now}
+	return &Relay{
+		store: st, pub: pub, conn: conn, events: m.finished.Publisher(ev), logger: logger,
+		cfg: cfg, jitter: jitter, metrics: m, now: time.Now,
+	}
 }
 
 // RunPublishing runs the publishing cycle every TickInterval until ctx is
@@ -225,6 +235,7 @@ func (r *Relay) cycle(ctx context.Context) error {
 				r.logger.Warn("relay: lane failed", "channel", string(c), "priority", p.String(), "error", err)
 				continue
 			}
+			r.metrics.publishedLane(lane, len(evs))
 			for _, e := range evs {
 				r.events.Publish(e)
 			}
@@ -268,6 +279,7 @@ func (r *Relay) sweep(ctx context.Context) {
 		}
 		return
 	}
+	r.metrics.recoveredBySweeper(evs)
 	for _, e := range evs {
 		r.events.Publish(e)
 	}
@@ -304,6 +316,7 @@ func (r *Relay) expire(ctx context.Context) {
 			r.logger.Warn("relay: expiry pass failed", "error", err)
 			return
 		}
+		r.metrics.expiredByPass(evs)
 		for _, e := range evs {
 			r.events.Publish(e)
 		}
@@ -342,4 +355,39 @@ func (r *Relay) cleanup(ctx context.Context) {
 			return
 		}
 	}
+}
+
+// RunGauges measures the gauges of the lanes and of the backlog
+// (lane_queued, lane_oldest_queued_age_seconds, backlog_due,
+// scheduled_future) at once and then every GaugeInterval until ctx is
+// cancelled. It is a loop of its own: the two statements run outside any
+// lane transaction and never delay the publishing cycle. A failed
+// measurement is logged and leaves the gauges as they were. With a
+// GaugeInterval of zero or less it returns at once.
+func (r *Relay) RunGauges(ctx context.Context) error {
+	if r.cfg.GaugeInterval <= 0 {
+		return nil
+	}
+	r.measure(ctx)
+	t := time.NewTicker(r.cfg.GaugeInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-t.C:
+			r.measure(ctx)
+		}
+	}
+}
+
+func (r *Relay) measure(ctx context.Context) {
+	g, err := r.store.Gauges(ctx)
+	if err != nil {
+		if ctx.Err() == nil {
+			r.logger.Warn("relay: gauge measurement failed", "error", err)
+		}
+		return
+	}
+	r.metrics.setGauges(g)
 }
