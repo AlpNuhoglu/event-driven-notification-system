@@ -1,5 +1,5 @@
-# Application services (migrate, api, relay, worker) and the six
-# infrastructure services. All four application services run the same image,
+# Application services (migrate, api, relay, worker, gateway) and the six
+# infrastructure services. All five application services run the same image,
 # built from this repository; the command (for the relay, the entrypoint)
 # selects the role.
 #
@@ -8,11 +8,12 @@
 # local mockprovider (make up-mock). A .env file is optional: when present, its
 # values reach every application container; see .env.example.
 #
-# Only the API and the three user interfaces publish a host port. Each host port
-# can be changed with a variable (API_PORT, GRAFANA_PORT, PROMETHEUS_PORT,
-# JAEGER_UI_PORT), in the environment or in .env, when the default is taken on
-# the machine; see .env.example. The container ports stay the same. The admin
-# port 8081 of the application services is not published.
+# Only the API, the WebSocket gateway and the three user interfaces publish a
+# host port. Each host port can be changed with a variable (API_PORT,
+# GATEWAY_PORT, GRAFANA_PORT, PROMETHEUS_PORT, JAEGER_UI_PORT), in the
+# environment or in .env, when the default is taken on the machine; see
+# .env.example. The container ports stay the same. The admin port 8081 of the
+# application services is not published.
 x-app: &app
   build: .
   image: event-driven-notification-system:local
@@ -88,6 +89,26 @@ services:
       retries: 10
       start_period: 10s
     stop_grace_period: 20s
+    restart: unless-stopped
+
+  gateway:
+    <<: *app
+    command: ["gateway"]
+    ports:
+      - "${GATEWAY_PORT:-8082}:8082"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "gateway", "healthcheck"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
     restart: unless-stopped
 
   postgres:

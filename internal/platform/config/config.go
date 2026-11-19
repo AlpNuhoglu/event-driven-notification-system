@@ -150,6 +150,9 @@ type Events struct {
 	WSSendQueueSize    int
 	WSMaxSubscriptions int
 	WSPingInterval     time.Duration
+	// WSWriteTimeout bounds every write to a WebSocket client and the
+	// gateway's closing of its connections at shutdown.
+	WSWriteTimeout time.Duration
 }
 
 // Templates configures template size limits.
@@ -415,6 +418,7 @@ func (l *loader) load() Config {
 		WSSendQueueSize:    l.intv("WS_SEND_QUEUE_SIZE", 256),
 		WSMaxSubscriptions: l.intv("WS_MAX_SUBSCRIPTIONS", 1000),
 		WSPingInterval:     l.dur("WS_PING_INTERVAL", 30*time.Second),
+		WSWriteTimeout:     l.dur("WS_WRITE_TIMEOUT", 10*time.Second),
 	}
 	c.Templates = Templates{
 		MaxBodyBytes:   l.int64v("TEMPLATE_MAX_BODY_BYTES", 65536),

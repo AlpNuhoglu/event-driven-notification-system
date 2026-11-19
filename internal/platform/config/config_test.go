@@ -42,7 +42,7 @@ func lookup(m map[string]string) func(string) (string, bool) {
 
 // composeOnly lists the variables of .env.example that docker-compose.yml
 // interpolates itself (published host ports) and that no service reads.
-var composeOnly = []string{"API_PORT", "MOCKPROVIDER_PORT", "GRAFANA_PORT", "PROMETHEUS_PORT", "JAEGER_UI_PORT"}
+var composeOnly = []string{"API_PORT", "GATEWAY_PORT", "MOCKPROVIDER_PORT", "GRAFANA_PORT", "PROMETHEUS_PORT", "JAEGER_UI_PORT"}
 
 func TestKeysMatchEnvExample(t *testing.T) {
 	file := envFile(t)
@@ -110,6 +110,7 @@ func TestOverrides(t *testing.T) {
 		"SCHEDULE_PAST_TOLERANCE": "1500ms",
 		"SCHEDULE_MAX_HORIZON":    "2h",
 		"EXPIRES_AT_MIN_LEAD":     "750ms",
+		"WS_WRITE_TIMEOUT":        "40ms",
 	}))
 	if err != nil {
 		t.Fatal(err)
@@ -134,7 +135,8 @@ func TestOverrides(t *testing.T) {
 		cfg.RateLimit.FallbackProbeInterval != 40*time.Millisecond,
 		cfg.API.SchedulePastTolerance != 1500*time.Millisecond,
 		cfg.API.ScheduleMaxHorizon != 2*time.Hour,
-		cfg.API.ExpiresAtMinLead != 750*time.Millisecond:
+		cfg.API.ExpiresAtMinLead != 750*time.Millisecond,
+		cfg.Events.WSWriteTimeout != 40*time.Millisecond:
 		t.Errorf("overrides not applied: %+v", cfg)
 	}
 }
@@ -184,6 +186,8 @@ func TestInvalid(t *testing.T) {
 		{"SCHEDULE_PAST_TOLERANCE", secret},
 		{"SCHEDULE_MAX_HORIZON", "-1h"},
 		{"EXPIRES_AT_MIN_LEAD", "0s"},
+		{"WS_WRITE_TIMEOUT", "0s"},
+		{"WS_WRITE_TIMEOUT", secret},
 		{"LOG_LEVEL", secret},
 	}
 	for _, tt := range tests {
