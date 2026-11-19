@@ -42,10 +42,15 @@ type scheduled struct {
 //   - a notification scheduled an hour ahead and then cancelled is never
 //     sent.
 //
-// sent_at, created_at and the relay's decision that a row is due all come
-// from the database's clock, and scheduled_at is the stored value: the
-// comparisons do not depend on the host's clock agreeing with the
-// containers'. The host's clock only chooses the values sent.
+// The times that matter are the stack's. The values sent are counted from
+// the created_at of the first notification, which is the database's clock;
+// the API judges a scheduled_at by its own clock, in a container on the same
+// machine; and sent_at, created_at and the relay's decision that a row is
+// due are the database's again. The host's clock chooses one value only, the
+// far time of that first notification. Counted from the host's clock, a
+// scheduled_at a few seconds ahead was "in the past, so now" for a stack
+// whose clock is those seconds ahead of the host's (containers in a virtual
+// machine, whose clock can drift from the host's).
 func TestComposeE2E_Scheduling(t *testing.T) {
 	s := newStack(t)
 	s.resetMock(t)
@@ -68,14 +73,40 @@ func TestComposeE2E_Scheduling(t *testing.T) {
 		return n
 	}
 
-	// Scheduled an hour ahead, then cancelled while pending.
+	// Scheduled far ahead, to be cancelled while pending. Its created_at is
+	// the stack's clock, from which the other times are counted. The horizon
+	// is 30 days, so a day ahead is a valid time whatever the host's clock
+	// says, short of being weeks wrong.
 	later := create(map[string]any{
-		"channel": "email", "recipient": fakeEmail, "content": "see you in an hour",
-		"scheduled_at": time.Now().Add(time.Hour).Format(time.RFC3339),
+		"channel": "email", "recipient": fakeEmail, "content": "see you tomorrow",
+		"scheduled_at": time.Now().Add(24 * time.Hour).Format(time.RFC3339),
 	})
-	if later.Status != "pending" || later.ScheduledAt == nil {
-		t.Fatalf("scheduled an hour ahead: %+v", later)
+	if later.Status != "pending" || later.ScheduledAt == nil || later.CreatedAt.IsZero() {
+		t.Fatalf("scheduled a day ahead: %+v", later)
 	}
+	stackNow := later.CreatedAt
+
+	// Scheduled a few seconds ahead, in another zone's offset. It is the
+	// next request after the one that read the clock.
+	when := stackNow.Add(scheduleAhead).Truncate(time.Microsecond).In(time.FixedZone("+03:00", 3*3600))
+	ahead := create(map[string]any{
+		"channel": "sms", "recipient": fakePhone, "content": "scheduled hello",
+		"scheduled_at": when.Format(time.RFC3339Nano),
+	})
+	if ahead.Status != "pending" || ahead.ScheduledAt == nil || !ahead.ScheduledAt.Equal(when) || ahead.ScheduledAt.Location() != time.UTC {
+		t.Fatalf("scheduled %s ahead of the stack's clock: %+v, want pending with scheduled_at %v in UTC (created %s after the clock was read)",
+			scheduleAhead, ahead, when.UTC(), ahead.CreatedAt.Sub(stackNow))
+	}
+
+	// A few seconds in the past: "now", answered as null.
+	now := create(map[string]any{
+		"channel": "push", "recipient": fakeDevice, "content": "now",
+		"scheduled_at": stackNow.Add(-schedulePast).Format(time.RFC3339Nano),
+	})
+	if now.Status != "pending" || now.ScheduledAt != nil {
+		t.Fatalf("scheduled in the tolerance: %+v, want pending with scheduled_at null", now)
+	}
+
 	var cancelled struct {
 		Notification    scheduled `json:"notification"`
 		MayHaveBeenSent bool      `json:"may_have_been_sent"`
@@ -85,29 +116,12 @@ func TestComposeE2E_Scheduling(t *testing.T) {
 		t.Fatalf("cancel: %+v", cancelled)
 	}
 
-	// Scheduled a few seconds ahead, in another zone's offset.
-	when := time.Now().Add(scheduleAhead).Truncate(time.Microsecond).In(time.FixedZone("+03:00", 3*3600))
-	ahead := create(map[string]any{
-		"channel": "sms", "recipient": fakePhone, "content": "scheduled hello",
-		"scheduled_at": when.Format(time.RFC3339Nano),
-	})
-	if ahead.Status != "pending" || ahead.ScheduledAt == nil || !ahead.ScheduledAt.Equal(when) || ahead.ScheduledAt.Location() != time.UTC {
-		t.Fatalf("scheduled a few seconds ahead: %+v, want pending with scheduled_at %v in UTC", ahead, when.UTC())
-	}
-
-	// A few seconds in the past: "now", answered as null.
-	now := create(map[string]any{
-		"channel": "push", "recipient": fakeDevice, "content": "now",
-		"scheduled_at": time.Now().Add(-schedulePast).Format(time.RFC3339Nano),
-	})
-	if now.Status != "pending" || now.ScheduledAt != nil {
-		t.Fatalf("scheduled in the tolerance: %+v, want pending with scheduled_at null", now)
-	}
-
 	// The "now" notification is sent at once, the scheduled one at its time.
 	s.waitSent(t, now.ID, sendTimeout)
 	if n := read(now.ID); n.SentAt == nil || n.SentAt.Sub(n.CreatedAt) > scheduleLateBound {
 		t.Errorf("now: sent_at %v, created_at %v; want sent within %s", n.SentAt, n.CreatedAt, scheduleLateBound)
+	} else {
+		t.Logf("now: sent %s after created_at (bound %s)", n.SentAt.Sub(n.CreatedAt), scheduleLateBound)
 	}
 	s.waitSent(t, ahead.ID, sendTimeout)
 	got := read(ahead.ID)
@@ -123,8 +137,9 @@ func TestComposeE2E_Scheduling(t *testing.T) {
 		t.Errorf("scheduled: attempt_count %d, want 1", got.AttemptCount)
 	}
 	if got.ScheduledAt != nil && got.SentAt != nil {
-		t.Logf("scheduled_at %s, sent_at %s (%s after)", got.ScheduledAt.Format(time.RFC3339Nano),
-			got.SentAt.Format(time.RFC3339Nano), got.SentAt.Sub(*got.ScheduledAt))
+		t.Logf("scheduled_at %s, sent_at %s (%s after, bound %s); created %s after the stack's clock was read, lead %s",
+			got.ScheduledAt.Format(time.RFC3339Nano), got.SentAt.Format(time.RFC3339Nano),
+			got.SentAt.Sub(*got.ScheduledAt), scheduleLateBound, ahead.CreatedAt.Sub(stackNow), scheduleAhead)
 	}
 
 	// The cancelled one stayed cancelled and never reached the provider.
