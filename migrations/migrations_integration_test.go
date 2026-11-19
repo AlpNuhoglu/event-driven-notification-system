@@ -25,7 +25,8 @@ func tableCount(t *testing.T, url string) int {
 	var n int
 	err = conn.QueryRow(ctx, `SELECT count(*) FROM information_schema.tables
 		WHERE table_schema = 'public'
-		  AND table_name IN ('batches', 'notifications', 'notification_attempts', 'idempotency_keys')`).Scan(&n)
+		  AND table_name IN ('batches', 'notifications', 'notification_attempts', 'idempotency_keys',
+		                     'templates', 'template_versions')`).Scan(&n)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,10 +40,10 @@ func TestMigrations_UpDownUp(t *testing.T) {
 		apply func(string) error
 		want  int
 	}{
-		{"up", migrations.Up, 4},
-		{"up again is a no-op", migrations.Up, 4},
+		{"up", migrations.Up, 6},
+		{"up again is a no-op", migrations.Up, 6},
 		{"down", migrations.Down, 0},
-		{"up after down", migrations.Up, 4},
+		{"up after down", migrations.Up, 6},
 	}
 	for _, s := range steps {
 		if err := s.apply(url); err != nil {
