@@ -4,17 +4,17 @@ The first file every session reads and the last one it updates. The phases and t
 
 ## Current phase
 
-**P5: real-time and observability** — in progress: `p5/events-and-gateway` is merged, and `p5/metrics-and-summary`, the second of three pull requests, is open.
+**P5: real-time and observability** — in progress: `p5/events-and-gateway` and `p5/metrics-and-summary` are merged; `p5/logging-tracing-health` is the third and last pull request.
 
-**Next step:** the author merges `p5/metrics-and-summary`. Then `p5/logging-tracing-health` from the updated `main`.
+**Next step:** the author merges `p5/logging-tracing-health`. Then P6 (quality) from the updated `main`.
 
 **How P5 is split** (the plan names the three branches):
 
 | Pull request | Contents |
 |---|---|
 | `p5/events-and-gateway` (merged) | The repetition of the P4 tests and the three timing dependencies it led to. The status event's message, the lazy and bounded event publisher in api, relay and worker, the gateway with subscribe-then-snapshot, origin patterns, the bounded send queue and its own event queue, the `gateway` service in Compose, the Compose scenario create → subscribe → snapshot → events → `sent`. Mutation check: the snapshot read before the registration. |
-| `p5/metrics-and-summary` (in review) | By the author's decisions after the first pull request: ids in the canonical spelling only (open issue 12), a deadline for the whole snapshot of a subscribe request, `.claude/worktrees/` ignored, and the gateway's readiness check. Then: every metric of ADR-0009 §1 with the ones later decisions added (`expired_total` by priority and `notifications_finished_total`, D75; `pacer_slots_missed_total`, D77; `limiter_fallback_active`; the reconciliation counters), `GET /v1/metrics/summary` with its two caches, the "Overview" dashboard with its smoke test, `alerts.yml` with the thresholds of D74 and `promtool check rules`, Prometheus scraping the roles. |
-| `p5/logging-tracing-health` | `slog` with the central handler and the three redaction layers, the request log brought in line with ADR-0009 §4, correlation IDs, hybrid tracing, the health endpoints in full, the canary scan, `make demo`. |
+| `p5/metrics-and-summary` (merged) | By the author's decisions after the first pull request: ids in the canonical spelling only (open issue 12), a deadline for the whole snapshot of a subscribe request, `.claude/worktrees/` ignored, and the gateway's readiness check. Then: every metric of ADR-0009 §1 with the ones later decisions added (`expired_total` by priority and `notifications_finished_total`, D75; `pacer_slots_missed_total`, D77; `limiter_fallback_active`; the reconciliation counters), `GET /v1/metrics/summary` with its two caches, the "Overview" dashboard with its smoke test, `alerts.yml` with the thresholds of D74 and `promtool check rules`, Prometheus scraping the roles. |
+| `p5/logging-tracing-health` (in progress) | `slog` with the central handler and the three redaction layers, the request log brought in line with ADR-0009 §4, correlation IDs, hybrid tracing, the health endpoints in full, the canary scan, `make demo`. |
 
 **How P4 was split** (the plan names the two branches):
 
@@ -48,7 +48,7 @@ Status is one of: `not started`, `in progress`, `in review` (pull requests open)
 | P2 | API completeness | done | [#7](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/7) (`p2/batch-and-idempotency`, merged), [#8](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/8) (`p2/cancel-redrive-listing`, merged), [#9](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/9) (`p2/validation`, merged) | 2026-11-19 |
 | P3 | Delivery robustness | done | [#10](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/10) (`p3/classification-and-retry`, merged), [#11](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/11) (`p3/breaker-and-fallback`, merged), [#12](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/12) (`p3/recovery`, merged); follow-up [#13](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/13) (`p3/isopen-race`, merged) | 2026-11-19 |
 | P4 | Templates and scheduling | done | [#14](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/14) (`p4/templates`, merged), [#15](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/15) (`p4/scheduling`, merged) | 2026-11-19 |
-| P5 | Real-time and observability | in progress | [#16](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/16) (`p5/events-and-gateway`, merged), [#17](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/17) (`p5/metrics-and-summary`, in review) | |
+| P5 | Real-time and observability | in progress | [#16](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/16) (`p5/events-and-gateway`, merged), [#17](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/17) (`p5/metrics-and-summary`, merged) | |
 | P6 | Quality | not started | | |
 | P7 | Delivery | not started | | |
 
@@ -88,8 +88,9 @@ Questions that the ledger and the ADRs do not answer, and problems that are not 
 
 | # | Raised on | Issue | Blocks |
 |---|---|---|---|
+| 13 | 2026-11-20 (P5) | **Open observation: one run of `internal/api` failed and has not been reproduced.** While `p5/metrics-and-summary` was put together, one run of `go test -race -tags=integration -count=1 ./internal/api/... ./internal/store/` ended `FAIL` for `internal/api`. It ran right after the summary endpoint had been merged into the checkout and `make generate` had run, while a delegate was running its own tests on the same machine. The output had been cut to its last four lines, so the failing test and its message are not known. **Repetitions since, none of which failed:** on that branch 14 full runs of the package (6 one after the other, 8 four at a time), 40 runs of the summary and contract tests, and two runs of `make test`; on `main` after the merge (commit `6b099cb`), by the author's instruction: `go test -race -tags=integration -shuffle=on -count=30 ./internal/api/` (30 of 30, 326 s; without `-v` a passing run prints no seed), and the same command with `-v` while `make test-e2e` ran beside it twice (30 of 30: 4,890 passed test runs of 163 tests, seed `1795128933152865000`, 324 s; both end-to-end runs green). **Not resolved:** the cause is unknown. Since then every test run's full output goes to a file, and a failing run's output is kept before the next command. If it fails again, the cause is found before anything else. | Nothing |
 
-No issue is open. Issue 12 (ids in spellings other than the canonical one) was answered by the author with the recommended option and is closed by `p5/metrics-and-summary`: one parser, the canonical form only, everywhere an id arrives from outside (session log, P5, pull request 2). Issue 11 (the claim misled by statistics from an empty outbox) was answered by the author with option (d): it is part of the tuning of P6, with its measurements named in the plan (session log, P4).
+Issue 12 (ids in spellings other than the canonical one) was answered by the author with the recommended option and is closed by `p5/metrics-and-summary`: one parser, the canonical form only, everywhere an id arrives from outside (session log, P5, pull request 2). Issue 11 (the claim misled by statistics from an empty outbox) was answered by the author with option (d): it is part of the tuning of P6, with its measurements named in the plan (session log, P4).
 
 ## Session log
 
