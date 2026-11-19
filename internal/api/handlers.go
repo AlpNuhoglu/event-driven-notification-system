@@ -218,9 +218,13 @@ func (h *handlers) CreateNotificationBatch(ctx context.Context, _ apigen.CreateN
 // GetBatch returns the batch with the count of its notifications per status,
 // or 404.
 func (h *handlers) GetBatch(ctx context.Context, req apigen.GetBatchRequestObject) (apigen.GetBatchResponseObject, error) {
+	id, p := pathID(req.Id)
+	if p != nil {
+		return nil, p
+	}
 	dbCtx, cancel := context.WithTimeout(ctx, h.dbTimeout)
 	defer cancel()
-	b, err := h.repo.GetBatch(dbCtx, uuid.UUID(req.Id))
+	b, err := h.repo.GetBatch(dbCtx, id)
 	if errors.Is(err, store.ErrBatchNotFound) {
 		return nil, newProblem(kindNotFound, "No batch has this id.")
 	}
@@ -409,11 +413,17 @@ func replay(stored *store.StoredResponse, idField, locationPrefix, requestID str
 	if stored == nil {
 		return replayedResponse{}, &problem{kind: kindInternal, detail: kindInternal.detail, cause: errors.New("replay without a stored response")}
 	}
+	// The id is decoded as a string and parsed with domain.ParseID: decoding
+	// into a uuid.UUID would go through the UUID library's lenient parser.
 	var ids map[string]json.RawMessage
+	var s string
 	var id uuid.UUID
 	err := json.Unmarshal(stored.Body, &ids)
 	if err == nil {
-		err = json.Unmarshal(ids[idField], &id)
+		err = json.Unmarshal(ids[idField], &s)
+	}
+	if err == nil {
+		id, err = domain.ParseID(s)
 	}
 	if err != nil {
 		return replayedResponse{}, &problem{kind: kindInternal, detail: kindInternal.detail, cause: fmt.Errorf("stored response has no %s: %w", idField, err)}
@@ -460,9 +470,13 @@ func unexpectedOutcome(o store.CreateOutcome) *problem {
 
 // GetNotification returns the notification or 404.
 func (h *handlers) GetNotification(ctx context.Context, req apigen.GetNotificationRequestObject) (apigen.GetNotificationResponseObject, error) {
+	id, p := pathID(req.Id)
+	if p != nil {
+		return nil, p
+	}
 	dbCtx, cancel := context.WithTimeout(ctx, h.dbTimeout)
 	defer cancel()
-	n, err := h.repo.GetNotification(dbCtx, uuid.UUID(req.Id))
+	n, err := h.repo.GetNotification(dbCtx, id)
 	if errors.Is(err, store.ErrNotFound) {
 		return nil, newProblem(kindNotFound, "No notification has this id.")
 	}

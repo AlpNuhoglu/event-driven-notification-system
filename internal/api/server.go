@@ -357,13 +357,15 @@ func responseError(w http.ResponseWriter, r *http.Request, err error) {
 }
 
 // parameterError is the generated wrapper's handler for a parameter it
-// cannot bind: the id path parameter, the version of a template (not an
-// integer), a query parameter of the listing (it
+// cannot bind: the version of a template (not an integer), a query
+// parameter of the listing (it
 // gives the problems the guard gives, see parseListQuery), or the
 // Idempotency-Key header when it is sent more than once (the wrapper refuses
 // that before createGuard runs).
 // X-Request-ID and traceparent never fail: the middleware normalises them
-// first.
+// first. The id path parameters never fail either: they are bound as
+// strings and parsed by createGuard (see ids.go); the last answer below is
+// the one an id gets there.
 func parameterError(w http.ResponseWriter, r *http.Request, err error) {
 	var tooMany *apigen.TooManyValuesForParamError
 	var invalid *apigen.InvalidParamFormatError
@@ -385,8 +387,7 @@ func parameterError(w http.ResponseWriter, r *http.Request, err error) {
 			writeProblem(w, r, p)
 			return
 		}
-		writeProblem(w, r, newProblem(kindMalformed, "A path parameter is invalid.",
-			fieldError(invalid.ParamName, codeInvalidUUID, invalid.ParamName+" must be a UUID")))
+		writeProblem(w, r, invalidPathIDProblem(invalid.ParamName))
 		return
 	}
 	writeProblem(w, r, newProblem(kindMalformed, "A request parameter is invalid."))

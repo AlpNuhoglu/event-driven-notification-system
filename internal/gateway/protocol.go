@@ -83,8 +83,8 @@ func parseRequest(data []byte) (request, *protocolError) {
 		if json.Unmarshal(raw, &s) != nil {
 			return request{}, invalidMessage("notification_ids[%d] must be a string", i)
 		}
-		id, ok := parseID(s)
-		if !ok {
+		id, err := domain.ParseID(s)
+		if err != nil {
 			return request{}, &protocolError{code: codeInvalidID, message: fmt.Sprintf("notification_ids[%d] is not a UUID", i)}
 		}
 		if !seen[id] {
@@ -98,8 +98,8 @@ func parseRequest(data []byte) (request, *protocolError) {
 		return request{}, err
 	}
 	if batch != nil {
-		id, ok := parseID(*batch)
-		if !ok {
+		id, err := domain.ParseID(*batch)
+		if err != nil {
 			return request{}, &protocolError{code: codeInvalidID, message: "batch_id is not a UUID"}
 		}
 		r.batch = &id
@@ -122,16 +122,6 @@ func unmarshalMember(members map[string]json.RawMessage, name string, v any) *pr
 		return invalidMessage("%s has the wrong type", name)
 	}
 	return nil
-}
-
-// parseID parses an id in the canonical form only: uuid.Parse also accepts
-// the urn:uuid: prefix, braces and the form without hyphens.
-func parseID(s string) (uuid.UUID, bool) {
-	if len(s) != 36 {
-		return uuid.UUID{}, false
-	}
-	id, err := uuid.Parse(s)
-	return id, err == nil
 }
 
 // statusMessage is the server's status_changed message, for a snapshot and

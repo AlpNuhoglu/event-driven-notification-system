@@ -28,30 +28,36 @@ const (
 
 // eventBody is the JSON body of a status event. Every member is always
 // present; batch_id and failure_reason are null when the notification has
-// none. Nothing in it is personal data: no recipient, no content.
+// none. Nothing in it is personal data: no recipient, no content. The ids
+// are strings here, written in the canonical form and read back with
+// domain.ParseID, so that decoding a body never reaches the UUID library's
+// lenient parser (it would accept other spellings of an id).
 type eventBody struct {
-	ID            uuid.UUID  `json:"id"`
-	BatchID       *uuid.UUID `json:"batch_id"`
-	Channel       string     `json:"channel"`
-	Priority      string     `json:"priority"`
-	Status        string     `json:"status"`
-	Version       int64      `json:"version"`
-	FailureReason *string    `json:"failure_reason"`
-	AttemptCount  int        `json:"attempt_count"`
-	UpdatedAt     time.Time  `json:"updated_at"`
+	ID            string    `json:"id"`
+	BatchID       *string   `json:"batch_id"`
+	Channel       string    `json:"channel"`
+	Priority      string    `json:"priority"`
+	Status        string    `json:"status"`
+	Version       int64     `json:"version"`
+	FailureReason *string   `json:"failure_reason"`
+	AttemptCount  int       `json:"attempt_count"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 // EncodeEvent returns the message body of a status event.
 func EncodeEvent(e domain.StatusChanged) ([]byte, error) {
 	b := eventBody{
-		ID:           e.ID,
-		BatchID:      e.BatchID,
+		ID:           e.ID.String(),
 		Channel:      string(e.Channel),
 		Priority:     e.Priority.String(),
 		Status:       string(e.Status),
 		Version:      e.Version,
 		AttemptCount: e.AttemptCount,
 		UpdatedAt:    e.UpdatedAt.UTC(),
+	}
+	if e.BatchID != nil {
+		batch := e.BatchID.String()
+		b.BatchID = &batch
 	}
 	if e.FailureReason != nil {
 		r := string(*e.FailureReason)
@@ -64,14 +70,30 @@ func EncodeEvent(e domain.StatusChanged) ([]byte, error) {
 // version does not know is ignored, so that a publisher of a later version
 // does not silence a consumer of this one; a body without an id, with a
 // version below 1 or with a channel, priority or status this version does
-// not know is an error, and its consumer drops the message.
+// not know is an error, and its consumer drops the message. An id or a
+// batch_id in any spelling but the canonical one is an error as well.
 func DecodeEvent(body []byte) (domain.StatusChanged, error) {
 	var b eventBody
 	if err := json.Unmarshal(body, &b); err != nil {
 		return domain.StatusChanged{}, fmt.Errorf("status event: %w", err)
 	}
-	if b.ID == uuid.Nil {
+	if b.ID == "" {
 		return domain.StatusChanged{}, errors.New("status event: no id")
+	}
+	id, err := domain.ParseID(b.ID)
+	if err != nil {
+		return domain.StatusChanged{}, fmt.Errorf("status event: id: %w", err)
+	}
+	if id == uuid.Nil {
+		return domain.StatusChanged{}, errors.New("status event: no id")
+	}
+	var batchID *uuid.UUID
+	if b.BatchID != nil {
+		batch, err := domain.ParseID(*b.BatchID)
+		if err != nil {
+			return domain.StatusChanged{}, fmt.Errorf("status event: batch_id: %w", err)
+		}
+		batchID = &batch
 	}
 	if b.Version < 1 {
 		return domain.StatusChanged{}, fmt.Errorf("status event: version %d", b.Version)
@@ -89,8 +111,8 @@ func DecodeEvent(body []byte) (domain.StatusChanged, error) {
 		return domain.StatusChanged{}, fmt.Errorf("status event: unknown status %q", b.Status)
 	}
 	e := domain.StatusChanged{
-		ID:           b.ID,
-		BatchID:      b.BatchID,
+		ID:           id,
+		BatchID:      batchID,
 		Channel:      ch,
 		Priority:     prio,
 		Status:       status,
