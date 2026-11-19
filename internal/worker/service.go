@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/redis/go-redis/v9"
+	oteltrace "go.opentelemetry.io/otel/trace"
 
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/breaker"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/domain"
@@ -113,6 +114,10 @@ type Resources struct {
 	// WriteMargin replaces DefaultWriteMargin when positive. It is not
 	// configuration: only tests shorten it, like every other duration (D52).
 	WriteMargin time.Duration
+	// TracerProvider records the worker.process spans and the provider
+	// calls' spans; the global provider when nil. The pool's statement spans
+	// follow the pool's own tracer (store.WithTracerProvider).
+	TracerProvider oteltrace.TracerProvider
 }
 
 // Role is the wired worker role: for each channel of WORKER_CHANNELS one
@@ -208,6 +213,7 @@ func newUnit(cfg config.Config, res Resources, logger *slog.Logger, st *store.St
 		ConnectTimeout:      cfg.Provider.ConnectTimeout,
 		Timeout:             cfg.Provider.Timeout,
 		MaxIdleConnsPerHost: cfg.Worker.Concurrency,
+		TracerProvider:      res.TracerProvider,
 	}, res.Registry)
 	if err != nil {
 		return unit{}, fmt.Errorf("worker role %s: %w", ch, err)
@@ -241,6 +247,8 @@ func newUnit(cfg config.Config, res Resources, logger *slog.Logger, st *store.St
 		Jitter:   jitter,
 		Logger:   logger,
 		Metrics:  m,
+
+		TracerProvider: res.TracerProvider,
 	})
 	if err != nil {
 		return unit{}, fmt.Errorf("worker role %s: %w", ch, err)
@@ -350,6 +358,7 @@ func (m delivery) Epoch() uint64             { return m.d.Epoch }
 func (m delivery) Stale() bool               { return m.d.Stale() }
 func (m delivery) Ack() error                { return staleAs(m.d.Ack()) }
 func (m delivery) Nack() error               { return staleAs(m.d.Nack()) }
+func (m delivery) TraceParent() string       { return m.d.TraceParent() }
 
 // staleAs maps the queue's ErrStale to the worker's.
 func staleAs(err error) error {
@@ -377,7 +386,6 @@ func (p providerClient) Send(ctx context.Context, r Request) Response {
 		Channel:        r.Channel,
 		To:             r.To,
 		Content:        r.Content,
-		TraceParent:    r.TraceParent,
 	})
 	return Response{
 		StatusCode:   res.StatusCode,

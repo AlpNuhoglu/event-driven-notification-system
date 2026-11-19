@@ -18,8 +18,11 @@ import (
 	"sync/atomic"
 	"time"
 
+	oteltrace "go.opentelemetry.io/otel/trace"
+
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/domain"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/events"
+	"github.com/AlpNuhoglu/event-driven-notification-system/internal/platform/tracing"
 )
 
 // DefaultWriteMargin is the part of the lease that the send deadline keeps
@@ -76,8 +79,11 @@ type Deps struct {
 	Jitter func() float64
 	Logger *slog.Logger
 	// Metrics receives the worker's metrics; nil means metrics that are not
-	// registered anywhere. The only optional dependency.
+	// registered anywhere. Optional, like TracerProvider.
 	Metrics *Metrics
+	// TracerProvider records the worker.process spans; the global provider
+	// when nil.
+	TracerProvider oteltrace.TracerProvider
 }
 
 // Worker paces and delivers the notifications of one channel.
@@ -103,6 +109,8 @@ type Worker struct {
 	missed atomic.Uint64
 	// metrics counts the attempts and the running dispatches.
 	metrics *channelMetrics
+	// tracer starts the worker.process spans (tracing.go).
+	tracer oteltrace.Tracer
 }
 
 // New validates cfg and returns the worker of cfg.Channel.
@@ -145,6 +153,7 @@ func New(cfg Config, d Deps) (*Worker, error) {
 		log:          d.Logger.With(slog.String("channel", string(cfg.Channel))),
 		buf:          newBuffer(),
 		sem:          make(chan struct{}, cfg.Concurrency),
+		tracer:       tracing.Tracer(d.TracerProvider, "internal/worker"),
 	}
 	w.metrics = m.forChannel(cfg.Channel, d.Provider.Name(), w.MissedSlots)
 	return w, nil

@@ -1,6 +1,7 @@
 -- name: LockDueLane :many
 -- Relay cycle, select (ADR-0002). The row locks are held while the relay publishes.
-SELECT id, trace_parent
+-- attempt_count and scheduled_at decide the parent of the publish span (D13).
+SELECT id, trace_parent, attempt_count, scheduled_at
 FROM notifications
 WHERE channel = @channel AND priority = @priority
   AND status IN ('pending', 'retrying')

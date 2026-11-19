@@ -47,6 +47,10 @@ func (w *Worker) dispatch(shutdown, ctx context.Context, m Message, slot time.Ti
 // slot unused, or nil. It answers m exactly once: the nack below or the ack
 // below, never both.
 func (w *Worker) deliver(shutdown, ctx context.Context, m Message, slot time.Time) Message {
+	// The worker.process span covers this delivery from the claim to the
+	// final write; ctx carries it to every call below (tracing.go).
+	ctx, span := w.startProcess(ctx, m)
+	defer span.End()
 	// a. claimStart is when the claim call that succeeded was issued; the
 	// send deadline is measured from it.
 	c, ev, claimStart, err := w.claim(shutdown, ctx, m.NotificationID())
@@ -54,6 +58,7 @@ func (w *Worker) deliver(shutdown, ctx context.Context, m Message, slot time.Tim
 		// The claim never succeeded and shutdown has begun. The only nack
 		// of a taken delivery; none for a delivery that the connection's
 		// reset made stale meanwhile, e.g. during a long claim retry (D76).
+		processOutcome(span, processRequeued)
 		w.nack(m)
 		return nil
 	}
@@ -65,10 +70,13 @@ func (w *Worker) deliver(shutdown, ctx context.Context, m Message, slot time.Tim
 	w.ack(m)
 	if err != nil {
 		// store.ErrNotApplied: a duplicate, cancelled, expired or not-due row.
+		processOutcome(span, processNotApplied)
 		return w.nextForSlot(slot)
 	}
+	processClaimed(span, c.Notification)
 	w.events.Publish(ev)
 	if c.Expired {
+		processOutcome(span, processExpired)
 		return w.nextForSlot(slot)
 	}
 	w.attempt(ctx, c.Notification, claimStart, slot)
@@ -240,7 +248,6 @@ func (w *Worker) call(ctx context.Context, n store.Notification) (r store.Attemp
 		Channel:        n.Channel,
 		To:             n.Recipient.Reveal(), // the recipient leaves the process here, and only here
 		Content:        n.Content,
-		TraceParent:    n.TraceParent,
 	})
 	return w.attemptResult(res)
 }
@@ -279,6 +286,7 @@ func (w *Worker) attemptResult(res Response) store.AttemptResult {
 // processing meanwhile and no newer attempt has started (D14).
 func (w *Worker) complete(ctx context.Context, n store.Notification, r store.AttemptResult) {
 	w.metrics.attempted(r)
+	attemptOutcome(ctx, r.Outcome)
 	w.write(ctx, "final write", n, func(wctx context.Context) (store.Sent, domain.StatusChanged, error) {
 		if r.Outcome == domain.OutcomeSuccess {
 			return w.store.CompleteSent(wctx, n.ID, n.AttemptCount, w.provider.Name(), r)
@@ -292,6 +300,7 @@ func (w *Worker) complete(ctx context.Context, n store.Notification, r store.Att
 // due after delay, without consuming budget.
 func (w *Worker) abort(ctx context.Context, n store.Notification, delay time.Duration) {
 	w.metrics.aborted()
+	attemptOutcome(ctx, domain.OutcomeAborted)
 	w.write(ctx, "abort attempt", n, func(wctx context.Context) (store.Sent, domain.StatusChanged, error) {
 		ev, err := w.store.AbortAttempt(wctx, n.ID, n.AttemptCount, delay)
 		return store.Sent{}, ev, err

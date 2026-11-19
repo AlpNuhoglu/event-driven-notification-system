@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/trace"
 
 	spec "github.com/AlpNuhoglu/event-driven-notification-system/api"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/api/apigen"
@@ -117,6 +118,9 @@ type Options struct {
 	// Metrics receives the api's metrics; nil means metrics that are not
 	// registered anywhere.
 	Metrics *Metrics
+	// TracerProvider records the request spans; the global provider when
+	// nil.
+	TracerProvider trace.TracerProvider
 }
 
 // NewHandler returns the API's http.Handler.
@@ -197,7 +201,8 @@ func NewHandler(o Options) http.Handler {
 	docs := swaggerui.Handler()
 	mux.Handle("GET /docs", docs)
 	mux.Handle("GET /docs/{asset}", docs)
-	return &frame{next: &router{mux: mux}, logger: o.Logger, maxBodyBytes: o.MaxBodyBytes, metrics: o.Metrics}
+	f := &frame{next: &router{mux: mux}, logger: o.Logger, maxBodyBytes: o.MaxBodyBytes, metrics: o.Metrics}
+	return traced(f, o.TracerProvider)
 }
 
 // createGuard runs before the generated code decodes a create request: it
@@ -456,6 +461,7 @@ func (rt *router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	_, pattern := rt.mux.Handler(r)
 	st.setRoute(pattern)
+	nameRequestSpan(r, pattern)
 	if p := undefinedQueryProblem(pattern, r.URL.RawQuery); p != nil {
 		writeProblem(w, r, p)
 		return

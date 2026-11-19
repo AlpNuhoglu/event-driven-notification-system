@@ -15,9 +15,11 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/domain"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/events"
+	"github.com/AlpNuhoglu/event-driven-notification-system/internal/platform/tracing"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/queue"
 	"github.com/AlpNuhoglu/event-driven-notification-system/internal/store"
 )
@@ -67,6 +69,10 @@ type Config struct {
 	// GaugeInterval is the cadence of the gauge measurement
 	// (BACKLOG_GAUGE_INTERVAL); zero or less runs no measurement.
 	GaugeInterval time.Duration
+
+	// TracerProvider records the publish spans; the global provider when
+	// nil. Not configuration: tests pass their own.
+	TracerProvider trace.TracerProvider
 }
 
 func (c Config) hwm(p domain.Priority) int {
@@ -92,6 +98,7 @@ type Relay struct {
 	jitter  func() float64
 	metrics *Metrics
 	now     func() time.Time // the clock of the reconciliation window
+	tracer  trace.Tracer
 }
 
 // New returns a Relay. jitter returns a number in [0, 1) for the retry
@@ -105,6 +112,7 @@ func New(st Store, pub Publisher, conn Connection, ev events.Publisher, logger *
 	return &Relay{
 		store: st, pub: pub, conn: conn, events: m.finished.Publisher(ev), logger: logger,
 		cfg: cfg, jitter: jitter, metrics: m, now: time.Now,
+		tracer: tracing.Tracer(cfg.TracerProvider, "internal/relay"),
 	}
 }
 
@@ -245,14 +253,24 @@ func (r *Relay) cycle(ctx context.Context) error {
 }
 
 // publishFunc publishes the rows of one lane with the lane's channel and
-// priority.
+// priority. Each row gets its relay.publish span (startPublish, the trace
+// rule D13), whose context the message carries as its traceparent; the
+// spans end with the batch's outcome. The spans are in-memory work around
+// the publish call and change nothing of the lane transaction.
 func (r *Relay) publishFunc(lane store.Lane) store.PublishFunc {
 	return func(ctx context.Context, rows []store.DueRow) ([]uuid.UUID, error) {
 		msgs := make([]queue.Message, len(rows))
+		spans := make([]trace.Span, len(rows))
 		for i, row := range rows {
-			msgs[i] = queue.Message{ID: row.ID, Channel: lane.Channel, Priority: lane.Priority, TraceParent: row.TraceParent}
+			spans[i] = r.startPublish(ctx, lane, row)
+			msgs[i] = queue.Message{
+				ID: row.ID, Channel: lane.Channel, Priority: lane.Priority,
+				TraceParent: tracing.FormatTraceParent(spans[i].SpanContext()),
+			}
 		}
-		return r.pub.PublishBatch(ctx, msgs, r.cfg.ConfirmTimeout)
+		published, err := r.pub.PublishBatch(ctx, msgs, r.cfg.ConfirmTimeout)
+		endPublish(spans, rows, published, err)
+		return published, err
 	}
 }
 

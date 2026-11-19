@@ -7,6 +7,7 @@ package db
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -46,7 +47,7 @@ func (q *Queries) CountQueuedByLane(ctx context.Context) ([]CountQueuedByLaneRow
 }
 
 const lockDueLane = `-- name: LockDueLane :many
-SELECT id, trace_parent
+SELECT id, trace_parent, attempt_count, scheduled_at
 FROM notifications
 WHERE channel = $1 AND priority = $2
   AND status IN ('pending', 'retrying')
@@ -63,11 +64,14 @@ type LockDueLaneParams struct {
 }
 
 type LockDueLaneRow struct {
-	ID          uuid.UUID
-	TraceParent string
+	ID           uuid.UUID
+	TraceParent  string
+	AttemptCount int32
+	ScheduledAt  *time.Time
 }
 
 // Relay cycle, select (ADR-0002). The row locks are held while the relay publishes.
+// attempt_count and scheduled_at decide the parent of the publish span (D13).
 func (q *Queries) LockDueLane(ctx context.Context, arg LockDueLaneParams) ([]LockDueLaneRow, error) {
 	rows, err := q.db.Query(ctx, lockDueLane, arg.Channel, arg.Priority, arg.BatchLimit)
 	if err != nil {
@@ -77,7 +81,12 @@ func (q *Queries) LockDueLane(ctx context.Context, arg LockDueLaneParams) ([]Loc
 	var items []LockDueLaneRow
 	for rows.Next() {
 		var i LockDueLaneRow
-		if err := rows.Scan(&i.ID, &i.TraceParent); err != nil {
+		if err := rows.Scan(
+			&i.ID,
+			&i.TraceParent,
+			&i.AttemptCount,
+			&i.ScheduledAt,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

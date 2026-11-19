@@ -7,6 +7,9 @@ import (
 	"sync"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/trace"
+
+	"github.com/AlpNuhoglu/event-driven-notification-system/internal/platform/tracing"
 )
 
 // Header names.
@@ -172,5 +175,11 @@ func withRequestHeaders(w http.ResponseWriter, r *http.Request) (*http.Request, 
 		r.Header.Set(headerTraceParent, st.traceParent)
 	}
 	w.Header().Set(headerRequestID, st.correlationID)
+	// With the request span in the context (traced), the trace parent to
+	// store is the span's own context: a child of the client's traceparent
+	// when it sent one, the root of a new trace otherwise (ADR-0009 §6).
+	if sc := trace.SpanContextFromContext(r.Context()); sc.IsValid() {
+		st.traceParent = tracing.FormatTraceParent(sc)
+	}
 	return r.WithContext(context.WithValue(r.Context(), stateKey{}, st)), st
 }

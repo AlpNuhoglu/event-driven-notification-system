@@ -60,6 +60,13 @@ func (d Delivery) Nack() error {
 	return nil
 }
 
+// TraceParent returns the delivery's traceparent header, or "" when it has
+// none or it is not a string.
+func (d Delivery) TraceParent() string {
+	v, _ := d.d.Headers["traceparent"].(string)
+	return v
+}
+
 // Stale reports whether the delivery is from an older epoch now. Once true it
 // stays true. It is for dropping deliveries early; the decision that matters
 // is taken again inside Ack and Nack.
