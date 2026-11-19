@@ -49,5 +49,12 @@ func DecodeCursor(s string) (Cursor, error) {
 	if y := at.Year(); y < 1 || y > 9999 {
 		return Cursor{}, ErrInvalidCursor // no row has such a time; keep it away from the database
 	}
-	return Cursor{CreatedAt: at, ID: id}, nil
+	c := Cursor{CreatedAt: at, ID: id}
+	// One cursor has exactly one accepted spelling: the base64 decoder skips
+	// carriage returns and line feeds, so a string with one inside would
+	// otherwise decode to the same cursor (found by FuzzDecodeCursor).
+	if c.Encode() != s {
+		return Cursor{}, ErrInvalidCursor
+	}
+	return c, nil
 }

@@ -105,5 +105,14 @@ down: ## Stop the stack and remove its volumes
 verify-suite: ## Not implemented yet
 	@echo "verify-suite: not implemented yet; see docs/plan/implementation-plan.md" >&2; exit 1
 
-fuzz: ## Not implemented yet
-	@echo "fuzz: not implemented yet; see docs/plan/implementation-plan.md" >&2; exit 1
+# Time box of each fuzz target. The minimisation of a new input is bounded
+# as well: by default the engine may spend up to 60s on each one, and with
+# the long inputs of the SMS counter that used up the whole time box.
+FUZZTIME     ?= 30s
+FUZZMINIMIZE ?= 1000x
+
+fuzz: ## Run each fuzz target for FUZZTIME (default 30s)
+	@for t in FuzzCountSMS FuzzDecodeCursor FuzzCursorRoundTrip; do \
+		echo "fuzz: $$t for $(FUZZTIME)"; \
+		go test -run '^$$' -fuzz "^$$t$$" -fuzztime $(FUZZTIME) -fuzzminimizetime $(FUZZMINIMIZE) ./internal/domain/ || exit 1; \
+	done

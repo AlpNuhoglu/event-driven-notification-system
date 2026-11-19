@@ -78,3 +78,23 @@ func TestDecodeCursor_Rejects(t *testing.T) {
 		t.Errorf("24 zero bytes: %v", err)
 	}
 }
+
+// A cursor has exactly one accepted spelling. The base64 decoder skips CR and
+// LF, so without the check in DecodeCursor these would decode to a cursor.
+func TestDecodeCursor_OneSpelling(t *testing.T) {
+	valid := Cursor{CreatedAt: time.UnixMicro(1_700_000_000_000_000).UTC(), ID: uuid.MustParse("0190a5c0-1111-7222-8333-444455556666")}.Encode()
+	if _, err := DecodeCursor(valid); err != nil {
+		t.Fatalf("valid cursor: %v", err)
+	}
+	for _, s := range []string{
+		valid[:10] + "\r" + valid[10:],
+		valid[:10] + "\n" + valid[10:],
+		valid + "\n",
+		"\r\n" + valid,
+		"A000000000000000000\r0000000000000",
+	} {
+		if _, err := DecodeCursor(s); err == nil {
+			t.Errorf("DecodeCursor(%q) succeeded", s)
+		}
+	}
+}
