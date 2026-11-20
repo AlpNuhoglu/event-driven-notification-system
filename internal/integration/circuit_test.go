@@ -340,6 +340,15 @@ func TestE2E_CircuitOpenedAfterClaimAbortsTheAttempt(t *testing.T) {
 		"RATE_LIMIT_PER_SECOND": "1",
 		"RATE_LIMIT_HORIZON":    "1500ms",
 		"BREAKER_FATAL_OPEN":    millis(fatalOpen),
+		// The second notification must ask the breaker at the slot it was
+		// claimed for. With the default tolerance of 5 ms, a dispatch that
+		// wakes later than that gives the slot up and takes a later one
+		// (D77); at one send per second that slot is after the open period,
+		// and the notification is sent as the probe instead of aborted
+		// (seen in CI in P6: sent three seconds after the first, when the
+		// circuit closed). Half an interval is ample for a slow runner and
+		// still inside the open period.
+		"PACER_SLOT_TOLERANCE": "500ms",
 	})
 
 	opener := e.createOne(5, testTTL)
