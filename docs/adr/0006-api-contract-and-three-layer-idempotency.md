@@ -242,7 +242,7 @@ Every non-2xx answer the server can produce is a problem document, including the
 | Snapshot | One message per notification; a notification named by id and through its batch in one request is sent once. |
 | Unsubscribe | Removes what is subscribed and ignores the rest. It is not answered. An event that was already queued for the connection can still arrive. |
 | No acknowledgement | Neither request is acknowledged. The snapshot is the answer to a subscribe. |
-| Errors | The connection stays open. **A message never repeats anything the client sent;** it names a member and, for a list, the index. |
+| Errors | The connection stays open. **A message never repeats anything the client sent;** it names a member and, for a list, the index. The same holds before the connection exists: a refused handshake (an origin that is not allowed is `403`, a request that is not a valid upgrade a `4xx`) is answered with a fixed text, not with the WebSocket library's, which quotes the request's headers. |
 | Close statuses | 1013 (try again later) when the send queue is full; 1001 (going away) at shutdown; 1009 for a request larger than 1,000 ids need. A client that does not answer a ping, or does not take the snapshot of a subscribe request within `WS_WRITE_TIMEOUT`, is disconnected without a close frame. |
 
 | `code` | When |

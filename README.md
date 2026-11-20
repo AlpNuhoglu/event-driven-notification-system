@@ -1,6 +1,6 @@
 # Event-Driven Notification System
 
-> **Work in progress.** The core path is implemented: a notification created through the API is stored, published, rate-limited and sent to the provider, notifications can be created in batches with two layers of duplicate prevention (`Idempotency-Key`, `dedupe_key`), they can be listed, cancelled and redriven, they can be created from versioned templates and scheduled for later delivery, every request is validated for its channel, with the SMS segment count reported, a client can follow its notifications in real time over a WebSocket, and the metrics are served as JSON, to Prometheus and on a Grafana dashboard with alert rules. Structured logging, tracing and `make demo` follow in the phases of the [implementation plan](docs/plan/implementation-plan.md); [progress](docs/progress.md) shows where the work stands. This README grows with it.
+> **Work in progress.** The core path is implemented: a notification created through the API is stored, published, rate-limited and sent to the provider, notifications can be created in batches with two layers of duplicate prevention (`Idempotency-Key`, `dedupe_key`), they can be listed, cancelled and redriven, they can be created from versioned templates and scheduled for later delivery, every request is validated for its channel, with the SMS segment count reported, a client can follow its notifications in real time over a WebSocket, the metrics are served as JSON, to Prometheus and on a Grafana dashboard with alert rules, every service logs structured lines with correlation ids, and a request can be followed as a trace in Jaeger. The test matrix, the load tests and the final documents follow in the phases of the [implementation plan](docs/plan/implementation-plan.md); [progress](docs/progress.md) shows where the work stands. This README grows with it.
 
 A notification service written in Go that accepts SMS, Email and Push notifications through a REST API and delivers them asynchronously through an external provider. It is built around a Postgres outbox, a RabbitMQ dispatch broker with strict priority, a per-channel rate limit of at most 100 messages per second, retries classified by failure scope, and real-time status tracking.
 
@@ -285,6 +285,25 @@ It lists, per lane (channel and priority), the queued count against its high-wat
 - **Prometheus:** http://localhost:9090. The six alert rules are under "Alerts" (there is no Alertmanager): relay down, `high` lane stalled, poison messages, expiry spike, circuit not closed, limiter fallback. `make check-rules` validates the rule file and runs its unit tests.
 - Each service serves `/metrics`, `/healthz` and `/readyz` on its admin port (8081), which is not published to the host; Prometheus scrapes it inside the Compose network.
 
+### Logs and traces
+
+Every service writes JSON lines to its container's output (`docker-compose logs -f worker`). A line has `service`, `version`, and, when it belongs to a request or a notification, `correlation_id`, `trace_id` and `span_id`; a notification's lines also have `notification_id`, `channel`, `priority` and `status`. At the default level (`LOG_LEVEL=info`) a notification produces one line, its final outcome; `LOG_LEVEL=debug` shows every transition and the API's line per request. A recipient is always masked (`+90555***4567`, `u***@example.com`) and message content is never logged.
+
+`X-Request-ID` on a request (up to 128 characters of letters, digits, `.`, `_`, `-`) becomes the `correlation_id` of everything that request causes; without one the API generates it and returns it in the response header.
+
+**Jaeger:** http://localhost:16686. A request is one trace from the API through the relay and the worker to the provider call. A retry, and every delivery of a scheduled notification, is a new trace that links back to the request. Search by service `api` and open a `POST /v1/notifications` trace, or search by the tag `notification.id=<id>`.
+
+### make demo
+
+`make demo` shows the running stack working, with at most 10 notifications. Start the stack first (`docker-compose up -d --wait`, or `make up-mock` for the mock provider), then run it. It runs inside the worker container, so it uses the worker's own `PROVIDER_URL`:
+
+1. It checks that the provider URL can take the notifications: it connects to the host, and for a webhook.site URL it also asks the webhook.site API whether the URL still exists and how many of its 50 requests are left. It never sends a request to the provider URL itself, and sends nothing if the check fails.
+2. It creates 5 notifications (`--count`, at most 10) through the API: a mix of sms, email and push and of the three priorities, one of them through the batch endpoint, with only the reserved fake values. Each request has an `Idempotency-Key`, so a second run within the key's lifetime replays the stored answers and sends nothing again; the output says so.
+3. It follows them over the WebSocket and prints each status change (time, short id, channel, priority, status, version) until all are `sent` or `failed`, or until `--timeout` (30s).
+4. It prints each notification's final status and attempts, the per-channel attempts and success rate of `/v1/metrics/summary`, and where to look next (Grafana, Prometheus, Jaeger).
+
+It exits 0 only when every notification ended `sent`. Pass options with `make demo DEMO_ARGS="--count 3"`. With the default webhook.site URL the requests are publicly visible and count against its 50: use the mock profile for anything beyond a few requests.
+
 ### Real-time status updates
 
 The gateway serves a WebSocket at `ws://localhost:8082/v1/ws`. A client subscribes to notification ids, to a batch id, or to both, and receives the current state of each notification at once (a snapshot) and then every status change as it happens. Because of the snapshot, a client can create a notification first and subscribe afterwards without missing anything.
@@ -326,7 +345,6 @@ Every message from the server about a notification has this form, for the snapsh
 Added in the phases named in the implementation plan:
 
 - How to create and configure your own webhook.site URL
-- `make demo`
 - Requirements map with evidence
 - Interpretations of the assessment and known limitations
 - Load-test results
