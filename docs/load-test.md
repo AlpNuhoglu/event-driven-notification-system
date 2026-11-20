@@ -74,6 +74,27 @@ A window of 100 is not above the limit, but it is the limit with no margin, on a
 
 The run takes 30,000 / 97 ≈ 309 s; the measured 309.3 s means the pacer used every slot and added none.
 
+### One run of the rate scenario failed: a window of 102
+
+The scenario was run twice more on 2026-11-20, in P7, from a fresh clone of the repository on the same machine (on battery, `caffeinate` held, the same code and the same rate):
+
+| Run | Conditions | Arrived | **Largest one-second window** | Result |
+|---|---|---|---|---|
+| P6 (above) | Nothing else running | 30,000 in 309.3 s, 97.0 per second | **98** | Pass |
+| **P7, first** | **The session that wrote the documents was working on the machine:** shell commands, Git, a few HTTP requests, small scripts. No build, no test run, no other container | 30,000 in 309.5 s, 96.9 per second | **102** | **Fail:** "a one-second window at the provider holds 102 sms arrivals, more than 100". The mock's own figure and the window computed from its arrival times agree |
+| P7, second | Nothing else running; the session waited | 30,000 in 309.3 s, 97.0 per second | **98** | Pass |
+
+**So the claim of this section does not hold unconditionally: at 97 msg/s, one of three runs of 30,000 sms put 102 arrivals into one second at the mock provider, on a machine that was only lightly used.** Two arrivals above the limit in the worst second of a run of 30,000.
+
+What the failed run's logs show (they are kept outside the repository): the worker logged all 30,000 notifications as sent, no warning and no error, and its "sent" lines have three places where nothing completed for a moment and a bunch followed: two gaps of 51 and 57 ms eight seconds into the run, gaps of 53 and 99 ms at 3 min 27 s, and one of 178 ms at 4 min 22 s. Counted over the worker's own completion times, 16 one-second windows hold 100 or more (the largest 106); those are completions, not arrivals, and the arrivals are the mock's 102.
+
+**What is not established:** where the stalls were. The stack was removed with its data when the run ended, so the attempts' start times and the mock's arrival list are gone. Two readings fit, and they differ in what they mean:
+
+- The receiving side stalled (the mock's process, or the virtual machine's network path), while the worker went on starting sends at its slots. Requests then queue and are received together. This is the limitation the design already states: **the limit is enforced when a send starts, not when it arrives** ([future-work.md](future-work.md)). A stall of 50 ms holds about five sends; three free slots do not absorb that, and no rate close to 100 would.
+- The worker stalled and then sent late claims together. The missed-slot rule (D77) exists to prevent exactly this and has its tests and its mutation; nothing in this run contradicts them, and nothing in it confirms that they held.
+
+Neither was investigated further. The plan's pacing-margin rule (lower the rate when a run shows 100 or more, then repeat the runs) was **not** applied: it is a change of the configured rate and of D24, which is the author's decision, and by the first reading a rate of 96 would not have prevented this run. The 20 `load-smoke` runs and the two passing runs above were on an idle machine; **an idle machine is the condition under which "largest window 98" was measured.**
+
 ## Strict priority and channel isolation
 
 No load scenario was run for these two claims (see "Not measured" below). What exists is tested, not measured under load:
@@ -99,12 +120,12 @@ Reduced scope, decided by the author on 2026-11-20 with the submission a few hou
 
 ## Chaos scenarios
 
-The scenarios of `make test-e2e` ([ADR-0010](adr/0010-testing-and-ci.md) §1, "Chaos scenarios"). Each ends with one `chaos report:` line, read from Postgres and from the mock provider's report. The counts below are from six runs of the suite on 2026-11-20 (three by a delegate and two by the main loop at 98 msg/s, one by the main loop at 97); where a count differed between runs, the range is given.
+The scenarios of `make test-e2e` ([ADR-0010](adr/0010-testing-and-ci.md) §1, "Chaos scenarios"). Each ends with one `chaos report:` line, read from Postgres and from the mock provider's report. The counts below are from seven runs of the suite on 2026-11-20 (three by a delegate and two by the main loop at 98 msg/s, two by the main loop at 97); where a count differed between runs, the range is given.
 
 | Scenario | Accepted | Sent | Failed | Requests at the provider | Keys received more than once | Most requests for one key |
 |---|---|---|---|---|---|---|
 | Provider down for 60 s, three `high` notifications | 3 | 3 | 0 | 3 | 0 | 1 |
-| **Worker killed with `SIGKILL` mid-send** | 100 | 100 | 0 | **120 to 123** | **20 to 23** | **2** |
+| **Worker killed with `SIGKILL` mid-send** | 100 | 100 | 0 | **120 to 125** | **20 to 25** | **2** |
 | RabbitMQ restarted | 164 to 182 | all | 0 | as many as accepted | 0 | 1 |
 | RabbitMQ wiped with its data | 165 to 179 | all | 0 | as many as accepted | 0 | 1 |
 | `requeue-stale` | 10 | 10 | 0 | 10 | 0 | 1 |
@@ -112,6 +133,6 @@ The scenarios of `make test-e2e` ([ADR-0010](adr/0010-testing-and-ci.md) §1, "C
 | Redis stopped | 7 | 7 | 0 | 7 | 0 | 1 |
 | One worker per channel, one of them killed while idle | 990 | 990 | 0 | 990 | 0 | 1 |
 
-**The duplicates of the `SIGKILL` scenario are the delivery guarantee at work, not a defect.** The mock answers sms after 3 s in that scenario, so the worker's 25 concurrency slots are in flight when it is killed. The provider had received 20 to 23 of those requests; the worker died before it recorded an answer; the rows stayed `processing` until their lease expired (30 s), the lease sweeper returned them to `retrying`, and they were sent again with the same `Idempotency-Key`. No notification reached the provider more than twice, and the scenario asserts that only a notification the kill left `processing` reached it twice. The bound is the concurrency: at most `WORKER_CONCURRENCY` (25) notifications per channel and worker are repeated by a kill. The notifications that were queued or buffered at the kill, 75 or more, were sent once.
+**The duplicates of the `SIGKILL` scenario are the delivery guarantee at work, not a defect.** The mock answers sms after 3 s in that scenario, so the worker's 25 concurrency slots are in flight when it is killed. The provider had received 20 to 25 of those requests; the worker died before it recorded an answer; the rows stayed `processing` until their lease expired (30 s), the lease sweeper returned them to `retrying`, and they were sent again with the same `Idempotency-Key`. No notification reached the provider more than twice, and the scenario asserts that only a notification the kill left `processing` reached it twice. The bound is the concurrency: at most `WORKER_CONCURRENCY` (25) notifications per channel and worker are repeated by a kill. The notifications that were queued or buffered at the kill, 75 or more, were sent once.
 
 The other scenarios produced no duplicate in these runs. A duplicate is possible in them too (an attempt that ends `unknown` is retried); they report the count and do not assert it.

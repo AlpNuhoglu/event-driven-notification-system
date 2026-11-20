@@ -187,7 +187,7 @@ stateDiagram-v2
 
 | Quantity | Value |
 |---|---|
-| Pacing rate | 97 msg/s per channel, so that no one-second window exceeds 100 |
+| Pacing rate | 97 msg/s per channel, chosen so that no one-second window at the provider exceeds 100. Measured: 98 on an idle machine, and 102 in one load run on a machine doing other work ([load-test results](load-test.md)); the limit applies to when a send starts |
 | Delivery capacity | 3 channels × 97 msg/s = **291 msg/s**, about **25.1 M per day** |
 | 1 M SMS burst | About 2.9 hours to drain through the SMS channel |
 | RabbitMQ buffer | At most 2,000 distinct notifications per channel (HWM per lane: high 500, normal 1,000, low 500), about 21 seconds of work; duplicates possible |
@@ -217,7 +217,7 @@ Delivery is **at-least-once**. Duplicates are prevented where the system can pre
 | The HTTP client repeating a request | Redirects are not followed and transport replays are disabled ([ADR-0007](adr/0007-retry-policy-and-circuit-breaker.md) §11) |
 | An attempt whose result is unknown | Retried with `Idempotency-Key: <notification_id>` to the provider ([ADR-0007](adr/0007-retry-policy-and-circuit-breaker.md) §6) |
 
-**Every attempt that ends `unknown` can produce a duplicate with a provider that ignores idempotency keys, and webhook.site does.** An attempt ends `unknown` after a timeout or a broken connection that follows a written request, when a worker dies after the provider answered, or when a database outage outlasts the worker's final-write retries. **A request counts as written once the HTTP transport has read its body to the end and no failed write was reported;** before that the attempt is `unreachable`, which consumes no retry budget. The rule errs towards `unknown` ([ADR-0007](adr/0007-retry-policy-and-circuit-breaker.md) §2). The load and chaos tests count duplicates at the provider and report them ([load-test results](load-test.md#chaos-scenarios)): none outside the scenario that kills the worker mid-send, where the 20 to 23 sends in flight were repeated once each.
+**Every attempt that ends `unknown` can produce a duplicate with a provider that ignores idempotency keys, and webhook.site does.** An attempt ends `unknown` after a timeout or a broken connection that follows a written request, when a worker dies after the provider answered, or when a database outage outlasts the worker's final-write retries. **A request counts as written once the HTTP transport has read its body to the end and no failed write was reported;** before that the attempt is `unreachable`, which consumes no retry budget. The rule errs towards `unknown` ([ADR-0007](adr/0007-retry-policy-and-circuit-breaker.md) §2). The load and chaos tests count duplicates at the provider and report them ([load-test results](load-test.md#chaos-scenarios)): none outside the scenario that kills the worker mid-send, where the 20 to 25 sends in flight were repeated once each.
 
 ## Failure handling
 
