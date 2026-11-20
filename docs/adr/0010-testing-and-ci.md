@@ -32,7 +32,7 @@ Each claim needs a test at the level where it can actually fail, and the most im
 | **Contract** | `kin-openapi` response validation | The implementation matches `openapi.yaml` | Every API test response is validated against the spec, **including error responses** (`400`, `404`, `409`, `413`, `422`, `503`) against the `application/problem+json` schema |
 | **End-to-end** | Compose stack and `mockprovider` | Whole flows | Create → subscribe → snapshot and events → `sent`; injected faults → retries and circuit opening; scheduled delivery; template rendering; batch partial success; health endpoints; trace propagation; the PII canary scan; the dashboard smoke test; `load-smoke` |
 | **Chaos** | Scripted scenarios on the e2e stack | The dependency failure matrix ([ADR-0007](0007-retry-policy-and-circuit-breaker.md) §10) | Below |
-| **Load** | k6 against `mockprovider` | The design's quantitative claims | Section 3 |
+| **Load** | The Go harness of `load-smoke` against `mockprovider` (k6 was planned and not built) | The rate claim | Section 3 |
 
 #### Actor-pair matrix
 
@@ -154,12 +154,14 @@ A separate binary (`cmd/mockprovider`) with an admin API for fault injection. It
 | Nothing is lost or duplicated (phase 2: full drain) | 100,000 messages across the three channels | Every notification `sent`, and **each `Idempotency-Key` received exactly once** at `mockprovider` |
 | Reads stay fast on a large table | Listing and metrics summary on the phase-1 dataset | Latency reported |
 
+**As built (P6, reduced by the author on 2026-11-20).** Only the first row is run as a load scenario: `make load` sends 30,000 sms at the configured rate through a stack of its own and applies the criterion of the table; it is `load-smoke` at full size, written in Go, not in k6. The other six rows were not built. For strict priority and channel isolation the tests that exist are named in [the load-test results](../load-test.md); the saturation report, the two phases of the burst test and the read latencies are not measured ([future-work.md](../future-work.md), item 21). The configured rate is 97 msg/s since P6: one `load-smoke` run at 98 logged a largest window of 100.
+
 - **`load-smoke`** is a 60-second version of the rate scenario that runs **in the end-to-end CI job from day 1**. It measures the jitter from which the pacing margin is derived ([ADR-0007](0007-retry-policy-and-circuit-breaker.md) §5).
 - **Why the burst test has two phases:** fully draining 1 M messages takes about 2.8 hours per channel, which is impractical for every run. Phase 1 proves the buffering behaviour at full scale; phase 2 proves completeness on a dataset that can be drained.
 - **Duplicates are measured at the provider, not in the database.** `id` is the primary key, so `COUNT(DISTINCT id) = COUNT(*)` is always true and proves nothing. Duplicate *sends* happen at the provider, which is why `mockprovider` counts idempotency keys.
 - Chaos runs report their expected at-least-once duplicates separately. This is an honest measurement of the delivery semantics, not a pass/fail criterion.
 - Trace sampling is set to about 1 % during load tests ([ADR-0009](0009-observability.md)).
-- **Results are published in `docs/load-test.md`** with figures and Grafana screenshots. webhook.site is never used for load.
+- **Results are published in `docs/load-test.md`,** with the machine they were measured on and which numbers are exact and which are orders of magnitude. webhook.site is never used for load.
 
 ### 4. Commands
 
@@ -168,9 +170,9 @@ A separate binary (`cmd/mockprovider`) with an admin API for fault injection. It
 | **`make test`** | Unit, fuzz seed corpus, integration and contract tests, all with `-race` | Go and Docker |
 | `make up-mock` | Starts the stack with the mock override, `docker-compose.mock.yml`, which adds `mockprovider` and points `PROVIDER_URL` at it ([ADR-0005](0005-service-topology-and-status-events.md)) | Docker |
 | `make test-e2e` | Starts the Compose stack with the mock override, under its own Compose project so that it never touches a developer's running stack; runs the e2e and chaos scenarios, `load-smoke`, the canary scan and the dashboard smoke test; always stops the stack afterwards. Then a second pass on a stack of its own with the per-channel worker override, for the one scenario of that layout (section 1). `load-smoke` logs the largest one-second window it saw, and every chaos scenario its `chaos report:` line. | Go and Docker (the tests run on the host against the stack) |
-| `make load` | k6 scenarios against the Compose stack | Docker |
+| `make load` | The rate scenario: 30,000 sms at the configured rate on a stack of its own with the mock override, traced at 1 % (`test/load/docker-compose.load.yml`); the same test as `load-smoke`, so it runs on the host | Go and Docker |
 | `make test-docker` | Same as `make test`, inside a Go container | Docker only |
-| `make verify-suite` | The mutation patches of section 8 | Go and Docker |
+| `make verify-suite` | The mutation patches of `test/mutations` (section 8), each applied to a temporary worktree of `HEAD`; `MUTATIONS=<part of a name>` runs one | Go and Docker |
 | `make demo` | A probe of the provider URL, then at most 10 requests through the running stack | Docker |
 | `make fuzz` | Extended fuzzing (optional, time-boxed) | Go |
 
@@ -184,15 +186,15 @@ Runs on pushes and pull requests. A new push to the same branch cancels the runn
 
 | Job | Contents |
 |---|---|
-| `lint` | `golangci-lint` v2 (configuration in the v2 format) with `govet`, `staticcheck`, `errcheck`, `gosec`, `bodyclose`, `noctx`, `contextcheck`, `sqlclosecheck`, `revive`; `gofumpt` as a formatter; a Markdown link check |
+| `lint` | `golangci-lint` v2 (configuration in the v2 format) with `govet`, `staticcheck`, `errcheck`, `gosec`, `bodyclose`, `noctx`, `contextcheck`, `sqlclosecheck`, `revive`; `gofumpt` as a formatter. The Markdown link check that was planned here is not built. |
 | `codegen-drift` | Runs `sqlc generate` and `oapi-codegen`, then `git diff --exit-code`: generated code must match its sources. The OpenAPI spec is also linted. |
 | `unit` | `go test -race` with a coverage profile, uploaded as an artifact |
 | `integration` | testcontainers on the GitHub-hosted runner, which has Docker |
-| `test-docker` | Runs `make test-docker`, **proving that the Go-less path works** rather than only claiming it |
+| `test-docker` | **Not built** (P6 was reduced; [future-work.md](../future-work.md), item 21). Planned: runs `make test-docker`, proving that the Go-less path works. `make test-docker` is run by hand; it passed from a clean clone in P6. |
 | `migrations` | `up → down → up` on an empty Postgres: every migration is reversible |
 | `compose-up` | Runs the assessment's command, **`docker-compose up`**, once with the standalone binary and waits for the services to be healthy |
 | `e2e` | Starts the stack, then the e2e suite with `load-smoke`; **all service logs are uploaded if it fails** |
-| `security` | `govulncheck`, and a `trivy` scan of the built image. **Scheduled and non-blocking:** a newly published advisory must not turn `main` red. |
+| `security` | **Not built** (the same reduction). Planned: `govulncheck`, and a `trivy` scan of the built image, scheduled and non-blocking, so that a newly published advisory does not turn `main` red. |
 
 - **Third-party actions are pinned to full commit SHAs,** not tags.
 - Each workflow declares minimal `permissions`.
@@ -200,6 +202,8 @@ Runs on pushes and pull requests. A new push to the same branch cancels the runn
 - Coverage is reported but not gated: coverage gates tend to be met with low-value tests. The `domain/` package is expected to be covered almost completely by its table tests.
 
 ### 6. CD: `.github/workflows/release.yml`
+
+**Not built.** P6 was reduced by the author on 2026-11-20; no release workflow exists and no image is published ([future-work.md](../future-work.md), item 21). What was planned:
 
 - Triggered by a `v*` tag.
 - Builds the image for **`linux/amd64` and `linux/arm64`**, so it also runs natively on Apple Silicon machines, and pushes it to GHCR, tagged with the version and the commit SHA and carrying OCI labels.
@@ -218,7 +222,9 @@ Runs on pushes and pull requests. A new push to the same branch cancels the runn
 
 ### 8. Verifying the suite: `make verify-suite`
 
-A test suite that passes proves little unless it can also fail. `make verify-suite` applies **mutation patches** in a temporary worktree, one at a time, and requires that each one makes a **named test fail** (a compile error does not count):
+A test suite that passes proves little unless it can also fail. `make verify-suite` applies **mutation patches** in a temporary worktree, one at a time, and requires that each one makes a **named test fail** (a compile error does not count).
+
+**The suite holds seven patches** (`test/mutations/*.patch`; each file starts with what it removes and the tests that must fail): the claim guard, the missed-slot rule (`TestMissedSlot`, `TestE2E_LateRelayCommitKeepsRateLimit`), `mandatory` removed from the publish, the idempotency-key guard (`TestIdempotencyKey_ConcurrentSameKey` in the store and in the api), the cancel guard widened to `processing` (`TestCancel_RacesWithClaim`, `TestCancel_WhileProcessingReturns409`), the `attempt_count` fence of transition 12, and the five-consecutive-failures rule. The other rows of the table were each run by hand once, in the phase that built the guarantee, and are not patch files ([future-work.md](../future-work.md), item 21):
 
 | Mutation | Must be caught by |
 |---|---|

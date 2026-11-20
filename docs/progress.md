@@ -4,18 +4,16 @@ The first file every session reads and the last one it updates. The phases and t
 
 ## Current phase
 
-**P6: quality** — in progress: `p6/matrix-and-chaos`, the first of four pull requests.
+**P6: quality** — in review: `p6/matrix-and-chaos` is merged; `p6/load` is open and carries the rest of the phase, in the scope the author reduced on 2026-11-20.
 
-**Next step:** the author merges `p6/matrix-and-chaos`. Then `p6/load` from the updated `main`.
+**Next step:** the author merges `p6/load`. Then P7 (delivery) from the updated `main`.
 
-**How P6 is split** (the plan names the four branches; the author fixed their order):
+**How P6 is split** (the plan named four branches; the author reduced the phase on 2026-11-20 and put the rest into `p6/load`):
 
 | Pull request | Contents |
 |---|---|
-| `p6/matrix-and-chaos` (in review) | Before the first change: `make test-docker` from a clean copy, and `make test` ten times with `-shuffle=on` (open observation 13). The actor-pair matrix checked against the tests, a test named for every ledger decision with a guard over the names, the chaos scenarios the stack did not have yet (worker `SIGKILL`, the 60-second provider outage, the fallback alert, the per-channel worker layout), duplicates reported in one form. |
-| `p6/load` | The k6 scenarios and `make load`, the 20 `load-smoke` runs and the pacing margin, the two tuning lists (statistics after a burst, the claim after an idle period, the pool sizes), the first values of D66 and D74, `docs/load-test.md`. |
-| `p6/verify-suite` | `make verify-suite`: the plan's six mutations, the missed-slot candidate and the ones run by hand in earlier phases, each naming the test that must fail. |
-| `p6/ci-and-release` | CI hardening (`test-docker`, `migrations`, `compose-up`, the scheduled `security` job, actions pinned by SHA, minimal permissions) and the release workflow with its one run on a test tag. |
+| `p6/matrix-and-chaos` (merged) | Before the first change: `make test-docker` from a clean copy, and `make test` ten times with `-shuffle=on` (open observation 13). The actor-pair matrix checked against the tests, a test named for every ledger decision with a guard over the names, the chaos scenarios the stack did not have yet (worker `SIGKILL`, the 60-second provider outage, the fallback alert, the per-channel worker layout), duplicates reported in one form. |
+| `p6/load` (in review) | Before the load work: `make test-docker` once more, the provider client's rule for a written request tested at the largest body and replaced (D27 amended), the delivery guarantee in the README. Then the reduced scope: the configured rate lowered to 97 msg/s with 20 `load-smoke` runs, the 30,000-SMS rate scenario as `make load`, `make verify-suite` with seven mutations, `docs/load-test.md`, the plan's P6 section and `future-work.md` brought to what was done and not done. |
 
 **Rules of the phase (author):** every load, chaos and tuning run uses the mock profile, and the default webhook.site URL is not used (48 of its 50 requests are left); `docs/load-test.md` records the machine next to the numbers and says which numbers are orders of magnitude; the remedy for the statistics problems is decided by measurement, preferring one whose effect does not depend on when statistics were taken, with remedy (c) approved in advance under its conditions, and every role's pool size and Postgres' `max_connections` set explicitly; `make verify-suite` also holds the mutations run by hand in earlier phases where the patch is a few lines; before the release workflow's test tag is pushed, the author is told what it will publish and confirms; one pull request at a time, each followed by green CI, a report and a stop.
 
@@ -60,7 +58,7 @@ Status is one of: `not started`, `in progress`, `in review` (pull requests open)
 | P3 | Delivery robustness | done | [#10](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/10) (`p3/classification-and-retry`, merged), [#11](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/11) (`p3/breaker-and-fallback`, merged), [#12](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/12) (`p3/recovery`, merged); follow-up [#13](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/13) (`p3/isopen-race`, merged) | 2026-11-19 |
 | P4 | Templates and scheduling | done | [#14](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/14) (`p4/templates`, merged), [#15](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/15) (`p4/scheduling`, merged) | 2026-11-19 |
 | P5 | Real-time and observability | done | [#16](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/16) (`p5/events-and-gateway`, merged), [#17](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/17) (`p5/metrics-and-summary`, merged), [#18](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/18) (`p5/logging-tracing-health`, merged) | 2026-11-20 |
-| P6 | Quality | in review | [#19](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/19) (`p6/matrix-and-chaos`, in review) | |
+| P6 | Quality | in review | [#19](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/19) (`p6/matrix-and-chaos`, merged), `p6/load` (in review) | |
 | P7 | Delivery | not started | | |
 
 ## First-hour experiments
@@ -99,7 +97,11 @@ Questions that the ledger and the ADRs do not answer, and problems that are not 
 
 | # | Raised on | Issue | Blocks |
 |---|---|---|---|
-| 13 | 2026-11-20 (P5) | **One run of `internal/api` failed in P5 and its output was lost. A cause that fits was found in P6 and removed; whether it was the cause of that run cannot be known.** In P5 the package then passed 14 full runs, 40 runs of the summary and contract tests, and 60 shuffled runs (30 of them with `make test-e2e` beside it). **In P6** `make test` ran ten times with `-shuffle=on` on `main`, every output kept: two runs failed, both while a test container started (session log, P6). One of the two signatures, a race between the test binaries of one `go test` invocation over the shared reaper container of testcontainers-go, fails the first package that starts a container, was reproduced in 16 of 40 rounds, and fits the P5 run (several packages in one invocation, the machine busy). The test helpers now repeat a failed container start. Two further series of ten shuffled runs followed (session log). **For the author:** close this entry, or keep it as an observation. | Nothing |
+| 15 | 2026-11-20 (P6) | **The ledger still gives the rate as 98 msg/s (D24) and the capacity as 294 msg/s (G4).** The author set the configured rate to 97 in `p6/load` (the plan's pacing-margin rule, after a window of 100). D24 says "98 msg/s per channel (configurable; margin derived from the jitter measured by load-smoke)", so the change is within the decision, but the two numbers in the ledger are now the old ones. The ADRs and the other documents say 97 and 291. **For the author:** amend D24 and G4, or leave them as the record of the first value. | Nothing |
+
+Issue 14 (the last sentence of D27 no longer matched the provider client) is **closed by the author's amendment of D27** in `p6/load`: a request counts as written once its body has been read to the end and no failed write was reported (ledger, ADR-0007 §2, review log §6).
+
+Observation 13 (one run of `internal/api` failed in P5 and its output was lost) is **closed by the author** after `p6/matrix-and-chaos`: the probable cause, the race between test binaries over the shared reaper container of testcontainers-go, was reproduced (16 of 40 rounds) and remedied (the test helpers repeat a failed container start). **It could not be proven** that this was the cause of the P5 run, because that run's output is lost. **It is reopened if an unexplained failure returns.**
 
 Issue 12 (ids in spellings other than the canonical one) was answered by the author with the recommended option and is closed by `p5/metrics-and-summary`: one parser, the canonical form only, everywhere an id arrives from outside (session log, P5, pull request 2). Issue 11 (the claim misled by statistics from an empty outbox) was answered by the author with option (d): it is part of the tuning of P6, with its measurements named in the plan (session log, P4).
 
@@ -117,6 +119,71 @@ Newest entry first. One entry per session, in this form:
 - **Open issues:** new entries added to the table above.
 - **Next step:** the first thing the next session does.
 ```
+
+### 2026-11-20 — P6: the rest of the phase in one pull request, in a reduced scope (`p6/load`)
+
+- **By the author, at the start:** `p6/matrix-and-chaos` is merged and its ten decisions are accepted. Observation 13 is closed: the probable cause was reproduced and remedied; it could not be proven, and it is reopened if an unexplained failure returns. Before the load work: (1) `make test-docker` once more; (2) the test of the provider client's written rule extended to the largest body the API accepts, and the rule replaced by one that does not depend on the buffer if it does not hold; (3) the delivery guarantee in the README.
+- **By the author, later the same day: the scope is reduced,** with the submission about four hours away; the branch carries the whole rest of P6 in one pull request. **The reduction goes beyond the plan's fallback order** (§12 would have dropped only the 1,000,000-message scenario and the saturation report). The rule for the remaining work: no change to production code on the delivery path, except the configured rate; the client's written rule, already committed, was kept as the author's exception. What remains: the rate set to 97 msg/s with 20 `load-smoke` runs and one 30,000-SMS run; `make verify-suite` with the mutations run by hand in earlier phases; `make test-docker`, `make test`, `make test-e2e`; the check that no action is pinned by tag; the plan's P6 section updated. Not done, each recorded in `future-work.md` (item 21): k6 and every k6 scenario, the 1,000,000 ingest with the read latencies, the saturation report, the 100,000 drain, the claim after an idle period with the pool sizes, the release workflow's run.
+- **`make test-docker`, on the merged `main`** (`c56eace`, before any change of this branch): exit 0, 26 packages, 68 s.
+- **The written rule at the largest body: the buffer argument did not hold, and the rule is replaced** (D27 amended by the author; open issue 14 closed).
+  - Measured on the client as merged in `p6/matrix-and-chaos`, with a server that reads the request while the transport's `WroteRequest` hook is held:
+
+    | Request on the wire | The server had the whole request while the hook was held |
+    |---|---|
+    | 280 bytes (an sms-sized body) | no |
+    | 3,262 bytes | no |
+    | 4,095 bytes | no |
+    | **4,096 bytes, exactly the write buffer** | **yes** |
+    | 4,097 bytes | yes |
+    | 8,262 bytes | yes |
+    | 102,664 bytes (the 100 KB e-mail) | yes |
+
+  - Read in Go 1.27.1: `bufio.Writer.ReadFrom` flushes a buffer that the body fills exactly, and once the buffer is full it hands the rest of the body to the connection directly (`persistConnWriter.ReadFrom`); over HTTP/2 the hook is called after the body's frames.
+  - **The new rule:** a request counts as written when the transport has read its body to the end and has not reported a failed write. The last bytes cannot be on the wire before they were read from the body. If a failed write's report has not arrived when the call returns, the request counts as written: the rule errs towards `unknown`. The in-memory body under the tracing transport is removed again.
+  - **Tests:** `TestSend_ProviderCannotHaveTheRequestBeforeWroteRequestIsReported` (a server that reads the request and closes the connection; an sms, exactly 4,096 bytes, 4,097 bytes and the largest e-mail, 20 repetitions each) and `TestSend_WrittenWhenTheBodyWasReadToTheEnd` (both halves of the rule on a transport the test controls, one case being a call that returns before the hook has run). Mutations by the main loop, restored byte-identically: without the body half, "all of the body but its last byte was read" and "nothing of the body was read" fail; without the failed-write half, "the hook reports a failed write" fails.
+  - Ledger D27, ADR-0007 §2, the client's comment and the review log (§6) are updated.
+- **The rate is 97 msg/s** (the default, `.env.example`, the ADRs, the architecture document, the README).
+  - At 98: 18 quiet runs of `load-smoke` in two series, each cut short, logged a largest window of 99 every time; the one run of `p6/matrix-and-chaos` on a busy machine logged 100.
+  - **At 97: 20 of 20 runs logged a largest window of 98** (6,000 sms each, 61.8 to 62.1 s, one stack kept up; the machine did nothing else apart from a few seconds of compiling for the mutation patches).
+  - **`make load`, 30,000 sms at 97:** created in 3.6 s; arrived in 309.3 s (97.0 per second); **largest one-second window 98**; the test passed.
+  - **A first series was lost to the machine going to sleep** (on battery, idle sleep after one minute): runs 07 to 11 of that series spanned five hours and are not measurements. They are kept as files and not used. Their logs show a "largest window" of 118; nothing was investigated about it, and nothing can be concluded from timestamps taken across a suspended virtual machine. Since then every long run holds a `caffeinate` assertion.
+- **`make verify-suite`** (`test/mutations/`, seven patches, each applied to a temporary worktree of `HEAD`): **7 of 7 mutations made every test named for them fail,** 74 s, no build failure. The main loop read each failure for its reason:
+
+  | Mutation | Tests that failed | Their message |
+  |---|---|---|
+  | The claim guard narrowed to `status = 'queued'` | `TestClaim_WaitsForRelayCommit`, `TestE2E_WorkerFasterThanRelayCommit` | "condition not met within 5s" and "within 10s": the claim that waited for the relay's commit matched nothing |
+  | The missed-slot rule removed | `TestMissedSlot`, `TestE2E_LateRelayCommitKeepsRateLimit` | "a one-second window holds 109 sends, more than 100" |
+  | `mandatory` removed from the publish | `TestRelay_UnroutablePublishStaysPending` | "row … is queued, want pending" |
+  | The idempotency-key guard removed | `TestIdempotencyKey_ConcurrentSameKey` in `internal/store` and in `internal/api` | A second caller created instead of being replayed (in the api test it then met the `dedupe_key`: "status 409 … duplicate") |
+  | The cancel guard widened to `processing` | `TestCancel_RacesWithClaim`, `TestCancel_WhileProcessingReturns409` | "cancel applied true …, claim returned the row true …: want exactly one"; "status 200, want 409" |
+  | The `attempt_count` fence removed from the late success | `TestLateSuccess_NewerAttemptWins` | "late success on a retrying row (attempt_count 2)": applied although a newer attempt had started |
+  | The breaker's five-consecutive rule removed | `TestBreaker_FiveConsecutiveFailuresOpen`, `TestE2E_CircuitOpensAfterFiveConsecutiveFailures` | "state = closed, want open"; "6 requests reached the provider before the circuit opened, want exactly 5" |
+- **Done besides:** the "Delivery guarantee" section of the README; `docs/load-test.md` (the machine, which numbers are exact, the pacing runs, the rate scenario, the chaos counts of five runs, the existing tests for priority and isolation, what was not measured); `make load` and `test/load/docker-compose.load.yml` (traces 1 %); the plan's P6 section in the reduced scope, with a corrected check for actions pinned by tag; ADR-0010 §3 to §6 and §8 as built; `future-work.md` item 21.
+- **CI: no action is pinned by tag.** The plan's command, `grep -rnE 'uses: [^@]+@v?[0-9]' .github/workflows`, prints seven lines, all of them commit SHAs that begin with a digit. The corrected check, `grep -rn 'uses: ' .github/workflows | grep -vE '@[0-9a-f]{40}( |$)'`, prints nothing: all 15 uses of the three actions carry a full SHA. No job was added.
+- **Two delegates were started for the full scope and stopped when it was reduced.** The load-harness delegate had written nothing. The tuning delegate had explored at small scale only (a few thousand rows, no timing that can be used); what it found is in `future-work.md` (item 21): the claim's look-up through the expiry index, a rewrite of the status condition that keeps the planner on the primary key and left the guard tests and the claim-guard mutation as they were, and that the relay's count cannot be repaired by a rewrite. **None of its changes is merged.**
+- **Pull requests opened:** the pull request from `p6/load` (linked in the phase table).
+- **Exit criteria** (the reduced ones of the plan's P6 section; run by the main loop on this branch, mock profile and test containers only; the default webhook.site URL received nothing, 48 of its 50 requests are left):
+  - `make test`: green, 26 packages.
+  - `make test-e2e`: green, 372 s, both passes. `load-smoke` at 97: 6,000 sms in 61.8 s, 97.0/s, largest one-second window **98**. `TestCanaryScan`: 63 canaries, 22 sources, no match. The `SIGKILL` scenario: 100 accepted, 100 sent, 123 requests at the provider, 23 keys twice.
+  - `make test-docker`: green, 26 packages, on this branch's last code commit; and on the merged `main` before the first change.
+  - `make load`: 30,000 sms, largest window 98 (above).
+  - `make verify-suite`: 7 of 7 (above).
+  - The pinned-action check: no output (above).
+  - `make lint`: 0 issues; `go vet` with the integration and e2e tags: clean. No SQL and no OpenAPI source changed.
+  - `gh pr checks` is reported on the pull request.
+- **Decisions taken** (within the author's instructions of this session):
+  1. **The written rule has two halves,** the body read to the end and no failed write reported, and not the first alone: a write that fails on a broken kept-alive connection stays `unreachable`, as ADR-0007 had it.
+  2. **The test server of the provider tests reads the request before it answers,** as a provider does; a server that answers on the headers alone can return a `202` before the body was read, and no rule reads the flag when there is a response.
+  3. **`make load` is the rate scenario on the Go harness of `load-smoke`,** on a stack of its own that traces 1 %. It needs Go, where ADR-0010 had planned Docker only.
+  4. **`make verify-suite` tests `HEAD`** in a temporary worktree, one patch at a time; a patch that does not apply, a failed build and a named test that did not fail all count as "not caught". A patch file starts with what it removes and the tests that must fail.
+  5. **Two mutations are written so that they change the rule and not the statement's shape:** the fence of transition 12 keeps its parameter (`@attempt_no::int IS NOT NULL`), and the cancel guard is widened to `processing`.
+  6. The ledger's D24 and G4 are not edited (open issue 15); the ADRs and the other documents say 97 and 291.
+- **Observed:**
+  - On this machine the system sleeps one minute after the display, on battery and on the adapter.
+  - `docker-compose exec worker env` prints nothing useful (the image has no `env`); the effective rate was read from the runs' arrival rate (97.0 per second).
+- **Not verified:** everything of `future-work.md` item 21; **the margin at 97 on a busy machine** (the 20 runs, the 30,000 run and the last `make test-e2e` ran alone; the window of 100 at 98 was on a busy machine, and no busy run was made at 97); the written rule over TLS and HTTP/2 (the tests speak HTTP/1 to a local server; the argument does not depend on the protocol, and it was not run against one); a failed write whose report arrives after the call returned (it counts as written by the rule; not provoked on a real connection); `make load` and `make verify-suite` on CI (neither is a CI job) and from a clean clone; `make verify-suite` against uncommitted changes (it tests `HEAD`); the nine mutations of ADR-0010 §8 that are not patch files (each was run by hand once, in its phase); a v2.24.0 Compose binary.
+- **Open issues:** 15 (the ledger's 98 and 294), for the author.
+- **Next step:** after the merge, P7 (delivery): the README in full with the requirements map, the regenerated architecture document, the design review log, the clean-clone rehearsal, the webhook.site URL renewed.
 
 ### 2026-11-20 — P6: matrix and chaos (pull request 1 of 4)
 
