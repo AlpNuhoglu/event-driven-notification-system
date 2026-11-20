@@ -30,7 +30,9 @@ Within a few seconds the notification shows `"status":"sent"`; `sent` means the 
 
 **The mock profile** is for anything beyond a few requests. `make up-mock` starts the same stack plus `mockprovider`, a local fake provider, and points the worker at it, so nothing leaves your machine. `curl -fsS localhost:8090/admin/report` shows what the provider received (field names only, never values). `make down` stops the stack and removes its volumes.
 
-`make test` runs the tests (needs Go and Docker); `make fuzz` runs the fuzz targets for 30 seconds each. `make test-e2e` starts the stack with the mock profile under its own Compose project, runs the end-to-end tests and `load-smoke` (a minute of SMS at the full rate, checked against the limit of 100 per second at the provider) against it, and removes it again (needs Go and Docker).
+**One worker per channel** instead of the one worker for all three: add the override `docker-compose.override.worker-per-channel.yml` to the mock profile, `docker-compose -f docker-compose.yml -f docker-compose.mock.yml -f docker-compose.override.worker-per-channel.yml up -d --build --wait` (and the same three `-f` options for `ps`, `logs` and `down -v`). It runs the services `worker-sms`, `worker-email` and `worker-push`, so a crash of one stops only its channel; it works with the mock profile only.
+
+`make test` runs the tests (needs Go and Docker); `make fuzz` runs the fuzz targets for 30 seconds each. `make test-e2e` starts the stack with the mock profile under its own Compose project, runs the end-to-end tests, the chaos scenarios and `load-smoke` (a minute of SMS at the full rate, checked against the limit of 100 per second at the provider) against it, and removes it again; then it does the same with the per-channel worker override for the one scenario of that layout (needs Go and Docker). Every chaos scenario logs one `chaos report:` line with its counts and the duplicates the provider received.
 
 ## API examples
 
