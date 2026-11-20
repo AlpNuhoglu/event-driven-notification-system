@@ -1,0 +1,33 @@
+Mutation: the claim guard narrowed to status = 'queued' (D1, transition 3).
+A claim issued while the relay's transaction is open no longer matches the row
+once the relay has rolled back or not yet committed 'queued'; with the forced
+order of the two tests the message is dropped.
+Must-fail: ./internal/store TestClaim_WaitsForRelayCommit
+Must-fail: ./internal/integration TestE2E_WorkerFasterThanRelayCommit
+
+diff --git a/internal/store/db/worker.sql.go b/internal/store/db/worker.sql.go
+index 2e6438d..953dc54 100644
+--- a/internal/store/db/worker.sql.go
++++ b/internal/store/db/worker.sql.go
+@@ -22,7 +22,7 @@ WITH claimed AS (
+       lease_expires_at = CASE WHEN expires_at <= now() THEN NULL ELSE now() + $1::interval END,
+       updated_at = now(), version = version + 1
+   WHERE id = $2
+-    AND status IN ('pending', 'retrying', 'queued')
++    AND status = 'queued'
+     AND due_at <= now()
+   RETURNING id, batch_id, dedupe_key, channel, priority, recipient, content, sms_encoding, sms_segments, template_name, template_version, template_vars, status, failure_reason, due_at, scheduled_at, expires_at, attempt_count, failures, max_failures, queued_at, lease_expires_at, provider, provider_message_id, correlation_id, trace_parent, version, created_at, updated_at, sent_at
+ ), attempt AS (
+diff --git a/internal/store/queries/worker.sql b/internal/store/queries/worker.sql
+index e6ce613..781a53f 100644
+--- a/internal/store/queries/worker.sql
++++ b/internal/store/queries/worker.sql
+@@ -8,7 +8,7 @@ WITH claimed AS (
+       lease_expires_at = CASE WHEN expires_at <= now() THEN NULL ELSE now() + @lease::interval END,
+       updated_at = now(), version = version + 1
+   WHERE id = @id
+-    AND status IN ('pending', 'retrying', 'queued')
++    AND status = 'queued'
+     AND due_at <= now()
+   RETURNING *
+ ), attempt AS (

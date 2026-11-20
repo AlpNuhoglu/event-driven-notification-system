@@ -1,0 +1,32 @@
+Mutation: the cancel guard widened to processing (D15, transition 9). A
+notification that a worker holds can then be cancelled, so a cancel and a
+claim can both win.
+Must-fail: ./internal/store TestCancel_RacesWithClaim
+Must-fail: ./internal/api TestCancel_WhileProcessingReturns409
+
+diff --git a/internal/store/db/cancel.sql.go b/internal/store/db/cancel.sql.go
+index 4a79926..5992f06 100644
+--- a/internal/store/db/cancel.sql.go
++++ b/internal/store/db/cancel.sql.go
+@@ -119,7 +119,7 @@ func (q *Queries) CancelBatchNotifications(ctx context.Context, batchID *uuid.UU
+ const cancelNotification = `-- name: CancelNotification :one
+ UPDATE notifications
+ SET status = 'cancelled', updated_at = now(), version = version + 1
+-WHERE id = $1 AND status IN ('pending', 'retrying', 'queued')
++WHERE id = $1 AND status IN ('pending', 'retrying', 'queued', 'processing')
+ RETURNING id, batch_id, dedupe_key, channel, priority, recipient, content, sms_encoding, sms_segments, template_name, template_version, template_vars, status, failure_reason, due_at, scheduled_at, expires_at, attempt_count, failures, max_failures, queued_at, lease_expires_at, provider, provider_message_id, correlation_id, trace_parent, version, created_at, updated_at, sent_at
+ `
+ 
+diff --git a/internal/store/queries/cancel.sql b/internal/store/queries/cancel.sql
+index bb35acc..47d52a4 100644
+--- a/internal/store/queries/cancel.sql
++++ b/internal/store/queries/cancel.sql
+@@ -10,7 +10,7 @@
+ -- read from the attempts (HasUnknownAttempt).
+ UPDATE notifications
+ SET status = 'cancelled', updated_at = now(), version = version + 1
+-WHERE id = @id AND status IN ('pending', 'retrying', 'queued')
++WHERE id = @id AND status IN ('pending', 'retrying', 'queued', 'processing')
+ RETURNING *;
+ 
+ -- name: CancelBatchNotifications :many

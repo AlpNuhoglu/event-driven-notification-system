@@ -1,0 +1,32 @@
+Mutation: the attempt_count fence removed from the late success (D14,
+transition 12). A late result is then applied although a newer attempt has
+started. The parameter stays in the statement, so the mutation is in the
+rule and not in the number of arguments.
+Must-fail: ./internal/store TestLateSuccess_NewerAttemptWins
+
+diff --git a/internal/store/db/worker.sql.go b/internal/store/db/worker.sql.go
+index 2e6438d..2ea11c4 100644
+--- a/internal/store/db/worker.sql.go
++++ b/internal/store/db/worker.sql.go
+@@ -376,7 +376,7 @@ SET status = 'sent', provider_message_id = $1, provider = $2, sent_at = now(),
+     updated_at = now(), version = n.version + 1
+ FROM cur
+ WHERE n.id = cur.id
+-  AND n.attempt_count = $3
++  AND $3::int IS NOT NULL
+   AND n.status IN ('pending', 'queued', 'retrying', 'failed', 'cancelled')
+ RETURNING n.id, n.batch_id, n.dedupe_key, n.channel, n.priority, n.recipient, n.content, n.sms_encoding, n.sms_segments, n.template_name, n.template_version, n.template_vars, n.status, n.failure_reason, n.due_at, n.scheduled_at, n.expires_at, n.attempt_count, n.failures, n.max_failures, n.queued_at, n.lease_expires_at, n.provider, n.provider_message_id, n.correlation_id, n.trace_parent, n.version, n.created_at, n.updated_at, n.sent_at, cur.status AS from_status
+ `
+diff --git a/internal/store/queries/worker.sql b/internal/store/queries/worker.sql
+index e6ce613..ffb966e 100644
+--- a/internal/store/queries/worker.sql
++++ b/internal/store/queries/worker.sql
+@@ -70,7 +70,7 @@ SET status = 'sent', provider_message_id = @provider_message_id, provider = @pro
+     updated_at = now(), version = n.version + 1
+ FROM cur
+ WHERE n.id = cur.id
+-  AND n.attempt_count = @attempt_no
++  AND @attempt_no::int IS NOT NULL
+   AND n.status IN ('pending', 'queued', 'retrying', 'failed', 'cancelled')
+ RETURNING sqlc.embed(n), cur.status AS from_status;
+ 

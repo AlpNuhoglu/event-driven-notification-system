@@ -1,0 +1,18 @@
+Mutation: the relay publishes without the mandatory flag (D2). An unroutable
+message is then confirmed without a return, and its row is marked queued
+although no queue holds it.
+Must-fail: ./internal/relay TestRelay_UnroutablePublishStaysPending
+
+diff --git a/internal/queue/publisher.go b/internal/queue/publisher.go
+index ddd458e..458b016 100644
+--- a/internal/queue/publisher.go
++++ b/internal/queue/publisher.go
+@@ -122,7 +122,7 @@ func (p *Publisher) PublishBatch(ctx context.Context, msgs []Message, confirmTim
+ 	confirms := make([]*amqp.DeferredConfirmation, len(msgs))
+ 	for i, m := range msgs {
+ 		dc, err := p.ch.PublishWithDeferredConfirmWithContext(ctx, DispatchExchange, string(m.Channel),
+-			true, false, publishing(m))
++			false, false, publishing(m))
+ 		if err != nil {
+ 			return nil, fmt.Errorf("publish batch: publish: %w", err)
+ 		}

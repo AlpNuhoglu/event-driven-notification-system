@@ -1,0 +1,18 @@
+# Load override: used by make load only, on top of docker-compose.yml and
+# docker-compose.mock.yml. About one request in a hundred is traced during a
+# load run (ADR-0010 section 3, ADR-0009): tracing every one of 30,000
+# notifications would measure the trace store. The defaults of
+# docker-compose.yml and .env.example stay as they are.
+services:
+  api:
+    environment:
+      OTEL_TRACES_SAMPLER_ARG: "0.01"
+  relay:
+    environment:
+      OTEL_TRACES_SAMPLER_ARG: "0.01"
+  worker:
+    environment:
+      OTEL_TRACES_SAMPLER_ARG: "0.01"
+  gateway:
+    environment:
+      OTEL_TRACES_SAMPLER_ARG: "0.01"

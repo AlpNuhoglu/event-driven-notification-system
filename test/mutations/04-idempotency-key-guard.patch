@@ -1,0 +1,30 @@
+Mutation: the guard of the idempotency-key claim removed (D36). A live key is
+taken over like an expired one, so a concurrent request with the same key
+creates a second notification instead of being replayed.
+Must-fail: ./internal/store TestIdempotencyKey_ConcurrentSameKey
+Must-fail: ./internal/api TestIdempotencyKey_ConcurrentSameKey
+
+diff --git a/internal/store/db/idempotency.sql.go b/internal/store/db/idempotency.sql.go
+index 92b7f5c..7edb2dd 100644
+--- a/internal/store/db/idempotency.sql.go
++++ b/internal/store/db/idempotency.sql.go
+@@ -20,7 +20,6 @@ ON CONFLICT (key) DO UPDATE
+       expires_at = EXCLUDED.expires_at,
+       response_status = NULL,
+       response_body = NULL
+-  WHERE idempotency_keys.expires_at <= now()
+ RETURNING key
+ `
+ 
+diff --git a/internal/store/queries/idempotency.sql b/internal/store/queries/idempotency.sql
+index 8ef289d..0e9c2dc 100644
+--- a/internal/store/queries/idempotency.sql
++++ b/internal/store/queries/idempotency.sql
+@@ -12,7 +12,6 @@ ON CONFLICT (key) DO UPDATE
+       expires_at = EXCLUDED.expires_at,
+       response_status = NULL,
+       response_body = NULL
+-  WHERE idempotency_keys.expires_at <= now()
+ RETURNING key;
+ 
+ -- name: GetIdempotencyKey :one

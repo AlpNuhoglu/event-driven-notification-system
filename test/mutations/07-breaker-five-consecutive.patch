@@ -1,0 +1,19 @@
+Mutation: the five-consecutive-failures rule removed from the circuit breaker
+(D26). Under low traffic the window's minimum is never reached, so the
+circuit stays closed however many requests fail in a row.
+Must-fail: ./internal/breaker TestBreaker_FiveConsecutiveFailuresOpen
+Must-fail: ./internal/integration TestE2E_CircuitOpensAfterFiveConsecutiveFailures
+
+diff --git a/internal/breaker/breaker.go b/internal/breaker/breaker.go
+index c125fd3..544c810 100644
+--- a/internal/breaker/breaker.go
++++ b/internal/breaker/breaker.go
+@@ -239,7 +239,7 @@ func (b *Breaker) recordClosed(now time.Time, outcome domain.Outcome, retryAfter
+ 	case domain.BreakerFailure:
+ 		b.win.add(now, true)
+ 		b.streak++
+-		if b.ratioExceeded(now) || b.streakExceeded() {
++		if b.ratioExceeded(now) {
+ 			b.open(now, outcome, b.cfg.OpenBase)
+ 		}
+ 	case domain.BreakerOpen:
