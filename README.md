@@ -12,7 +12,13 @@ cd event-driven-notification-system
 docker-compose up
 ```
 
-The first run builds the application image (a few minutes; later runs start in about half a minute). The command stays in the foreground and prints the log lines of every container. The stack is up when the `migrate` container has exited with code 0 and the log lines stop scrolling; it consists of four application services (`api`, `relay`, `worker`, `gateway`) and six infrastructure containers (Postgres, RabbitMQ, Redis, Prometheus, Grafana, Jaeger).
+What you see, in this order:
+
+1. **Five lines that look like an error and are not:** `Image event-driven-notification-system:local … pull access denied … repository does not exist or may require 'docker login'`. Compose looks for the application image in a registry first, does not find it, and then builds it from this repository (`Building`, then `Built`).
+2. The build and the download of the six infrastructure images: about a minute on a fresh machine with a fast connection (74 s on the CI runner), longer on a slow one; about 20 s on later runs.
+3. The log lines of every container, interleaved, about 2,600 in the first half minute. Most are Grafana's start-up (its `level=warn` lines, and the start-up warnings of Postgres, RabbitMQ, Redis and Jaeger, are those programs' own and expected). The application's lines are JSON: `migrate-1 | migrate: up to date` and `migrate-1 exited with code 0` (it runs once), then `"msg":"service started"` from `api`, `relay`, `worker` and `gateway`.
+
+The command stays in the foreground. **The stack is ready when `api-1` has logged `"msg":"api listening"`** and the output slows down; ten containers keep running: `api`, `relay`, `worker`, `gateway`, and Postgres, RabbitMQ, Redis, Prometheus, Grafana and Jaeger.
 
 In a second terminal, check the API, create one notification and read it back:
 
@@ -24,9 +30,9 @@ curl -fsS -X POST localhost:8080/v1/notifications \
 curl -fsS 'localhost:8080/v1/notifications?limit=1'
 ```
 
-The first line prints `{"status":"ok"}{"status":"ready"}`. The create answers with the notification, `"status":"pending"`, and its `id`. The last command lists the newest notification: within a few seconds it shows `"status":"sent"`, which means the provider accepted the message (`curl -fsS localhost:8080/v1/notifications/<id>` reads one notification by its id). **This create sends one real request to the public provider URL below; please read the next section before sending more.**
+The first line prints `{"status":"ok"}` and the readiness answer, `{"checks":[{"duration_ms":0.3,"name":"postgres","status":"ok"}],"status":"ok"}`. The create answers with the notification, `"status":"pending"`, and its `id`. The last command lists the newest notification. **Pasted together with the create it still shows `"status":"pending"`: run it again a second later** and it shows `"status":"sent"`, `"attempt_count":1` and a `provider_message_id`; `sent` means the provider accepted the message (it took 0.3 s in the rehearsal). `curl -fsS localhost:8080/v1/notifications/<id>` reads one notification by its id, and `…/<id>/attempts` its delivery attempts. In the first terminal the worker logs one line, `"msg":"notification sent"`. **This create sends one real request to the public provider URL below; please read the next section before sending more.**
 
-Stop the stack with Ctrl-C in the first terminal; `docker-compose down -v` removes the containers and the data.
+Stop the stack with Ctrl-C in the first terminal (every container stops within a few seconds); `docker-compose down -v` then removes the containers and the data.
 
 For a shell you get back, use `docker-compose up -d --wait` instead. If a host port is taken on your machine, set `API_PORT`, `GATEWAY_PORT`, `GRAFANA_PORT`, `PROMETHEUS_PORT` or `JAEGER_UI_PORT`, for example `API_PORT=18080 docker-compose up`.
 
@@ -47,7 +53,7 @@ https://webhook.site/7940ee46-a3b1-48b7-a29a-3056e46df5fb
 ```
 
 - **Created on 2026-11-20. It expires on 2026-11-27,** seven days later; a URL that no longer exists answers `404`.
-- **It accepts 50 requests in total. It had received none when it was put here.** Every notification you create on the default stack uses one, and so does every retry. After the 50th request the URL answers `429` (observed on a throwaway URL on 2026-11-18).
+- **It accepts 50 requests in total. **On 2026-11-20 it had received 1, so 49 were left** (the one request is the quick start's create, sent in the clean-clone rehearsal).** Every notification you create on the default stack uses one, and so does every retry. After the 50th request the URL answers `429` (observed on a throwaway URL on 2026-11-18).
 - **Every request sent to it is publicly visible** to anyone who has the URL, at https://webhook.site/#!/view/7940ee46-a3b1-48b7-a29a-3056e46df5fb. Use only the fake values shown above (`+905551234567`, `example.com` addresses), never a real recipient.
 - It is configured to answer `202` with a JSON body of `messageId`, `status` and `timestamp` (R24).
 - How many requests it has received (this call does not count as one): `curl -sS -H 'Accept: application/json' 'https://webhook.site/token/7940ee46-a3b1-48b7-a29a-3056e46df5fb/requests?per_page=1'`, member `total`. `make demo` reads the same number before it sends anything.
@@ -158,7 +164,7 @@ curl -sS -X POST localhost:8080/v1/notifications/batch \
         {"channel":"fax","recipient":"+905551234567","content":"x"}]}'
 ```
 
-The answer is `202` with `Location: /v1/batches/<batch_id>`:
+The answer is `202` with `Location: /v1/batches/<batch_id>` (add `-i` to see the header):
 
 ```json
 {
@@ -313,7 +319,7 @@ curl -sS 'localhost:8080/v1/notifications?status=sent&channel=sms&created_from=2
 curl -sS localhost:8080/v1/notifications/<id>/attempts
 ```
 
-**Cancel** a notification that no worker holds yet (`pending`, `queued`, `retrying`), or every such notification of a batch. Cancelling again answers `200` again. A notification that is `processing`, `sent` or `failed` answers `409` with `current_status`.
+**Cancel** a notification that no worker holds yet (`pending`, `queued`, `retrying`), or every such notification of a batch. On the mock profile a notification is sent within milliseconds, so the cancel of one that was just created answers `409` and the batch cancel reports it as `not_cancellable`; to see a cancel succeed, cancel a scheduled notification. Cancelling again answers `200` again. A notification that is `processing`, `sent` or `failed` answers `409` with `current_status`.
 
 ```
 curl -sS -X POST localhost:8080/v1/notifications/<id>/cancel
