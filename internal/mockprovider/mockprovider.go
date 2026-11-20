@@ -4,8 +4,10 @@
 package mockprovider
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"maps"
 	"math/rand/v2"
 	"net/http"
@@ -139,8 +141,11 @@ func (s *Server) handleProvider(w http.ResponseWriter, r *http.Request) {
 	var fields map[string]json.RawMessage
 	names := []string{}
 	channel := unknownChan
-	body := http.MaxBytesReader(w, r.Body, maxBodyBytes)
-	if err := json.NewDecoder(body).Decode(&fields); err == nil {
+	// What was read before an error (a body over the limit) is still
+	// decoded, as a streaming decoder would have; the request body lives in
+	// this handler only, for an echo_request answer.
+	raw, _ := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBodyBytes))
+	if err := json.NewDecoder(bytes.NewReader(raw)).Decode(&fields); err == nil {
 		for k := range fields {
 			names = append(names, k)
 		}
@@ -153,7 +158,6 @@ func (s *Server) handleProvider(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	fields = nil
 
 	key := r.Header.Get("Idempotency-Key")
 	s.mu.Lock()
@@ -175,6 +179,10 @@ func (s *Server) handleProvider(w http.ResponseWriter, r *http.Request) {
 	}
 	s.statuses[channel][label]++
 	s.mu.Unlock()
+	if o.rule.EchoRequest {
+		o.echo = echoBody(raw, fields)
+	}
+	fields = nil
 
 	if o.latency > 0 {
 		s.wait(r.Context(), o.latency)
@@ -188,6 +196,30 @@ func (s *Server) handleProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.answer(w, o)
+}
+
+// echoBody is the body of an echo_request answer: an error text that
+// quotes the request's "to" and "content" as a provider's free text would
+// ("invalid recipient +905551234567"), and the request body itself, as a
+// JSON value when it is one and as a string otherwise. A member that is
+// absent or not a string is quoted as empty.
+func echoBody(raw []byte, fields map[string]json.RawMessage) []byte {
+	str := func(name string) string {
+		var v string
+		if m, ok := fields[name]; ok {
+			_ = json.Unmarshal(m, &v)
+		}
+		return v
+	}
+	request := json.RawMessage(raw)
+	if !json.Valid(raw) {
+		request, _ = json.Marshal(string(raw)) //nolint:errchkjson // a string always marshals
+	}
+	b, _ := json.Marshal(map[string]any{ //nolint:errchkjson // a string and a valid JSON value
+		"error":   "rejected the message to " + str("to") + ": " + str("content"),
+		"request": request,
+	})
+	return append(b, '\n')
 }
 
 // closeConnection closes the TCP connection without writing a response.
@@ -209,6 +241,10 @@ func (s *Server) answer(w http.ResponseWriter, o outcome) {
 		w.Header().Set("Location", o.rule.Location)
 	}
 	switch {
+	case o.echo != nil:
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = w.Write(o.echo)
 	case o.rule.MalformedBody && status >= 200 && status <= 299:
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(status)

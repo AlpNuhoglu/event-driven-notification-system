@@ -320,6 +320,77 @@ func TestMalformedBody(t *testing.T) {
 	}
 }
 
+// echoAnswer is the body of an echo_request answer.
+type echoAnswer struct {
+	Error   string          `json:"error"`
+	Request json.RawMessage `json:"request"`
+}
+
+func TestEchoRequestQuotesRecipientAndContentInEveryStatus(t *testing.T) {
+	ts := newServer(t)
+	for _, status := range []int{500, 400, 202, 200} {
+		putConfig(t, ts, `{"default":{"status":`+strconv.Itoa(status)+`,"echo_request":true,"malformed_body":true}}`)
+		resp, body := doResp(t, http.MethodPost, ts.URL+"/", smsBody, nil)
+		if resp.StatusCode != status || resp.Header.Get("Content-Type") != "application/json" {
+			t.Fatalf("status %d: answered %d with %q", status, resp.StatusCode, resp.Header.Get("Content-Type"))
+		}
+		var e echoAnswer
+		if err := json.Unmarshal([]byte(body), &e); err != nil {
+			t.Fatalf("status %d: body %q: %v", status, body, err)
+		}
+		if e.Error != "rejected the message to +905551234567: hello 482913" {
+			t.Errorf("status %d: error %q", status, e.Error)
+		}
+		if string(e.Request) != smsBody {
+			t.Errorf("status %d: request %s, want %s", status, e.Request, smsBody)
+		}
+	}
+}
+
+func TestEchoRequestOfAFailFirstAnswerAndOfANonJSONBody(t *testing.T) {
+	ts := newServer(t)
+	putConfig(t, ts, `{"channels":{"sms":{"fail_first":1,"fail_status":503,"echo_request":true}}}`)
+	h := map[string]string{"Idempotency-Key": "e"}
+	for _, want := range []int{503, 202} {
+		resp, body := doResp(t, http.MethodPost, ts.URL+"/", smsBody, h)
+		if resp.StatusCode != want || !strings.Contains(body, "+905551234567") || !strings.Contains(body, "hello 482913") {
+			t.Errorf("answer %d %q, want %d quoting the request", resp.StatusCode, body, want)
+		}
+	}
+	// Other channels keep their rule: no echo.
+	if resp, body := doResp(t, http.MethodPost, ts.URL+"/", emailBody, nil); resp.StatusCode != 202 || strings.Contains(body, "a@example.com") {
+		t.Errorf("email: %d %q", resp.StatusCode, body)
+	}
+	putConfig(t, ts, `{"default":{"status":400,"echo_request":true}}`)
+	_, body := doResp(t, http.MethodPost, ts.URL+"/", "not json at all", nil)
+	var e echoAnswer
+	if err := json.Unmarshal([]byte(body), &e); err != nil {
+		t.Fatalf("body %q: %v", body, err)
+	}
+	if e.Error != "rejected the message to : " || string(e.Request) != `"not json at all"` {
+		t.Errorf("non-JSON request: %+v", e)
+	}
+}
+
+func TestEchoRequestKeepsNoValueInTheReport(t *testing.T) {
+	ts := newServer(t)
+	putConfig(t, ts, `{"default":{"status":500,"echo_request":true}}`)
+	post(t, ts, smsBody, nil)
+	r, raw := report(t, ts)
+	if r.Total != 1 || len(r.FieldNameSets) != 1 || strings.Join(r.FieldNameSets[0], ",") != "channel,content,to" {
+		t.Fatalf("report: %+v", r)
+	}
+	for _, s := range []string{"+905551234567", "905551234567", "482913", "hello"} {
+		if strings.Contains(raw, s) {
+			t.Errorf("report contains %q", s)
+		}
+	}
+	code, b := do(t, http.MethodPut, ts.URL+"/admin/config", `{"default":{"echo_request":"yes"}}`, nil)
+	if code != http.StatusBadRequest {
+		t.Errorf("echo_request of the wrong type: %d %s", code, b)
+	}
+}
+
 func TestLatencyAndJitter(t *testing.T) {
 	q := &seq{vals: []float64{0, 0.5, 0.999999}}
 	w := &waits{}
