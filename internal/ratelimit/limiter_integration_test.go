@@ -52,23 +52,45 @@ func redisNowUS(t *testing.T, rdb *redis.Client) int64 {
 	return tm.UnixMicro()
 }
 
+// Zero burst: two slots are never closer than one interval, and a call that
+// arrives before the previous slot's interval has passed gets the slot
+// exactly one interval later. A call that arrives later than that gets the
+// time of the call, which is still at least one interval after the previous
+// slot. The second case depends on how fast this loop runs (seen once in P6,
+// on a loaded machine: the second call reached Redis 12.6 ms after the first,
+// with an interval of 10.2 ms), so it is accepted only when the slot lies
+// between two readings of the Redis clock taken around the call.
 func TestZeroBurstSlotsAreOneIntervalApart(t *testing.T) {
 	rdb := testutil.NewRedis(t)
 	l := newLimiter(t, rdb, 98, longHorizon)
 	prev := int64(-1)
+	exact, late := 0, 0
 	for i := 0; i < 500; i++ {
+		before := redisNowUS(t, rdb)
 		_, slot := mustReserve(t, l, domain.ChannelSMS)
+		after := redisNowUS(t, rdb)
 		if prev >= 0 {
 			d := slot - prev
-			if d < l.intervalUS {
+			switch {
+			case d < l.intervalUS:
 				t.Fatalf("slot %d is %dus after the previous, want >= %dus", i, d, l.intervalUS)
-			}
-			if d != l.intervalUS {
-				t.Fatalf("slot %d is %dus after the previous, want exactly %dus (calls are faster than the interval)", i, d, l.intervalUS)
+			case d == l.intervalUS:
+				exact++
+			case slot < before || slot > after:
+				t.Fatalf("slot %d is %dus after the previous (interval %dus) and is not the time of its call either: slot %d, Redis clock %d before and %d after the call",
+					i, d, l.intervalUS, slot, before, after)
+			default:
+				late++
 			}
 		}
 		prev = slot
 	}
+	// Every call is far faster than the interval once the schedule is ahead
+	// of the clock, so almost all slots are of the first kind.
+	if exact == 0 {
+		t.Fatalf("no slot was exactly one interval after the previous (%d calls arrived late)", late)
+	}
+	t.Logf("%d slots exactly one interval after the previous, %d at the time of a late call", exact, late)
 }
 
 func TestConcurrentClientsShareOneSchedule(t *testing.T) {
