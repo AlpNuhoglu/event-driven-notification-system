@@ -336,6 +336,7 @@ Every message from the server about a notification has this form, for the snapsh
 |---|---|
 | [Architecture overview](docs/architecture.md) | The system in one document: principles, requirements map, diagrams, failure handling |
 | [Architecture decision records](docs/adr/) | Ten ADRs, each with the decision, the alternatives rejected and the consequences |
+| [Decision tests](docs/decision-tests.md) | Every decision of the decision ledger with the tests that would fail without it, or the evidence instead, and the gaps |
 | [Known limitations and future work](docs/future-work.md) | Limitations, the interpretations adopted where the requirements are open, deferred items |
 | [Implementation plan](docs/plan/implementation-plan.md) | Phases, exit criteria, experiments, fallback order |
 | [Progress](docs/progress.md) | Current phase and session log |
