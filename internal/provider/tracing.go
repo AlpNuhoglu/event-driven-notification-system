@@ -1,10 +1,7 @@
 package provider
 
 import (
-	"bytes"
 	"context"
-	"fmt"
-	"io"
 	"net/http"
 
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
@@ -49,43 +46,7 @@ func (a annotating) RoundTrip(r *http.Request) (*http.Response, error) {
 	if attrs, ok := r.Context().Value(spanAttrsKey{}).([]attribute.KeyValue); ok {
 		trace.SpanFromContext(r.Context()).SetAttributes(attrs...)
 	}
-	r, err := inMemoryBody(r)
-	if err != nil {
-		return nil, err
-	}
 	return a.next.RoundTrip(r) //nolint:wrapcheck // a transport's error is passed through unchanged
-}
-
-// inMemoryBody returns r with its body read into memory, for the base
-// transport. otelhttp wraps the body of a request to count its bytes, and
-// net/http treats a body it does not know to be in memory differently: it
-// sends the headers first and every write of the body at once, so the whole
-// request can reach the provider, and the provider can answer or close the
-// connection, before the transport calls the WroteRequest hook. A call that
-// failed at that moment was reported as not written, and so classified as
-// unreachable instead of unknown (seen in P6 as a 202 with WroteRequest
-// false). With a body net/http knows to be in memory the transport calls
-// the hook when the request is in its buffer and flushes afterwards, so the
-// provider cannot have the whole request before the hook has run. The
-// bodies are the small JSON documents of Send.
-func inMemoryBody(r *http.Request) (*http.Request, error) {
-	if r.Body == nil || r.Body == http.NoBody {
-		return r, nil
-	}
-	b, err := io.ReadAll(r.Body)
-	if cerr := r.Body.Close(); err == nil {
-		err = cerr
-	}
-	if err != nil {
-		return nil, fmt.Errorf("provider: read request body: %w", err)
-	}
-	out := r.Clone(r.Context())
-	out.Body = io.NopCloser(bytes.NewReader(b))
-	out.ContentLength = int64(len(b))
-	// One attempt is exactly one request (Send): the copy cannot be replayed
-	// either.
-	out.GetBody = nil
-	return out, nil
 }
 
 type spanAttrsKey struct{}

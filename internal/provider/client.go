@@ -71,10 +71,10 @@ type Response struct {
 	Latency time.Duration
 	// Err is the transport error; nil when a response was received.
 	Err error
-	// WroteRequest reports that the request was fully written without error.
-	// The transport reports it before the last bytes of the request leave
-	// (see inMemoryBody), so it is true whenever the provider can have the
-	// whole request, also when the call then fails.
+	// WroteRequest reports that the request may have reached the provider
+	// completely: the transport read the request's body to the end and
+	// reported no failed write (written). It is true whenever the provider
+	// can have the whole request, also when the call then fails.
 	WroteRequest bool
 	// RetryAfter is the response's Retry-After header, verbatim; empty when
 	// the response has none. The caller decides whether to use it.
@@ -181,6 +181,66 @@ func (c *Client) InitSeries(ch domain.Channel) {
 	}
 }
 
+// sentBody is the body of one request. It records when the transport has
+// read it to the end, which is before the last of it can be on the wire.
+type sentBody struct {
+	r    *bytes.Reader
+	left atomic.Int64 // bytes the transport has not read yet
+}
+
+func newSentBody(b []byte) *sentBody {
+	s := &sentBody{r: bytes.NewReader(b)}
+	s.left.Store(int64(len(b)))
+	return s
+}
+
+// Read counts the bytes before it hands them to the transport.
+func (s *sentBody) Read(p []byte) (int, error) {
+	n, err := s.r.Read(p)
+	if n > 0 {
+		s.left.Add(-int64(n))
+	}
+	return n, err //nolint:wrapcheck // io.Reader: io.EOF must stay io.EOF
+}
+
+// Close implements io.Closer; there is nothing to release.
+func (s *sentBody) Close() error { return nil }
+
+// readToEnd reports that the transport has read the whole body.
+func (s *sentBody) readToEnd() bool { return s.left.Load() == 0 }
+
+// written decides whether a request counts as written, which is what the
+// classification asks when a call fails without a response: written means
+// the provider may have the request (unknown), not written means it cannot
+// (unreachable; ADR-0007 section 2).
+//
+// The rule: the transport has read the body to the end, and has not
+// reported a failed write. The provider cannot have the whole request before
+// its last bytes were read from the body, whatever the transport buffers and
+// whichever protocol it speaks, so the first part is true whenever the
+// provider can have the request. The second part keeps a write that failed
+// (a broken pipe on a kept-alive connection) at "not written"; if the
+// transport's report has not arrived when the call returns, the request
+// counts as written, which is the safe side.
+//
+// Until P6 the rule was the transport's WroteRequest hook alone: written when
+// the hook had fired without an error. That is only right while the hook
+// runs before the request leaves, and net/http (Go 1.27) does that in one
+// case only: HTTP/1, a body it knows to be in memory, and a request smaller
+// than the connection's write buffer (4096 bytes). Measured in P6 with a
+// server that reads the request while the hook is held: a request of 4095
+// bytes had not left; one of exactly 4096 bytes had (a buffer that the copy
+// of the body fills exactly is flushed at once); so had every larger one,
+// the 100 KB e-mail included (once the buffer is full, the rest of the body
+// goes to the connection directly). A body net/http does not know to be in
+// memory, which is what the tracing transport hands it, is sent as it is
+// read, and over HTTP/2 the hook is called after the body's frames. In all
+// of these a provider could answer, or close the connection, before the hook
+// had run, and a call that failed then was reported as not written.
+func written(body *sentBody, writeFailed *atomic.Bool) bool {
+	return body.readToEnd() && !writeFailed.Load()
+}
+
 // Name returns the provider name.
 func (c *Client) Name() string { return c.cfg.Name }
 
@@ -193,20 +253,24 @@ func (c *Client) Send(ctx context.Context, r Request) Response {
 	if err != nil {
 		return Response{Err: errors.New("provider: encode request")}
 	}
-	// The hook runs on the transport's write goroutine, which can still be
-	// writing when Do returns with an error, so the flag is atomic.
-	var wrote atomic.Bool
+	// Whether the request counts as written: see written. Both of its parts
+	// are set on the transport's goroutines, which can still be running when
+	// Do returns, so they are atomic.
+	sent := newSentBody(body)
+	var writeFailed atomic.Bool
 	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
 		WroteRequest: func(i httptrace.WroteRequestInfo) {
-			if i.Err == nil {
-				wrote.Store(true)
+			if i.Err != nil {
+				writeFailed.Store(true)
 			}
 		},
 	})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.cfg.URL, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.cfg.URL, sent)
 	if err != nil {
 		return Response{Err: errors.New("provider: build request")}
 	}
+	// net/http knows the length only of its own in-memory readers.
+	req.ContentLength = int64(len(body))
 	// One attempt is exactly one request: without GetBody the transport
 	// cannot replay the request on a broken keep-alive connection.
 	req.GetBody = nil
@@ -216,13 +280,13 @@ func (c *Client) Send(ctx context.Context, r Request) Response {
 	start := time.Now()
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return Response{Latency: time.Since(start), Err: err, WroteRequest: wrote.Load()}
+		return Response{Latency: time.Since(start), Err: err, WroteRequest: written(sent, &writeFailed)}
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	out := Response{
 		StatusCode:   resp.StatusCode,
-		WroteRequest: wrote.Load(),
+		WroteRequest: written(sent, &writeFailed),
 		RetryAfter:   resp.Header.Get("Retry-After"),
 	}
 	switch {
