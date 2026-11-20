@@ -201,18 +201,18 @@ func TestMetrics_GaugeLoopSetsEveryLaneFromEachMeasurement(t *testing.T) {
 	value := func(name string, l store.Lane) float64 {
 		return testutil.MetricValue(t, reg, name, laneLabels(l.Channel, l.Priority))
 	}
-	testutil.Eventually(t, func() bool { return value(LaneQueuedMetric, smsHigh) == 7 }, 5*time.Second)
-	if v := value(LaneOldestAgeMetric, smsHigh); v != 12.5 {
-		t.Errorf("oldest age sms/high = %v, want 12.5", v)
-	}
-	if v := value(BacklogDueMetric, smsHigh); v != 3 {
-		t.Errorf("backlog sms/high = %v, want 3", v)
-	}
-	if v := value(BacklogDueMetric, pushLow); v != 40 {
-		t.Errorf("backlog push/low = %v, want 40", v)
-	}
-	if v := testutil.MetricValue(t, reg, ScheduledFutureMetric, nil); v != 9 {
-		t.Errorf("scheduled_future = %v, want 9", v)
+	// The loop sets the gauges of one measurement one after the other, so
+	// the test waits for all of them: reading the rest as soon as the first
+	// is set can see a measurement half applied (seen in CI in P6: "backlog
+	// push/low = 0, want 40").
+	if !testutil.Within(func() bool {
+		return value(LaneQueuedMetric, smsHigh) == 7 && value(LaneOldestAgeMetric, smsHigh) == 12.5 &&
+			value(BacklogDueMetric, smsHigh) == 3 && value(BacklogDueMetric, pushLow) == 40 &&
+			testutil.MetricValue(t, reg, ScheduledFutureMetric, nil) == 9
+	}, 5*time.Second) {
+		t.Fatalf("after 5s: queued sms/high = %v (want 7), oldest age sms/high = %v (want 12.5), backlog sms/high = %v (want 3), backlog push/low = %v (want 40), scheduled_future = %v (want 9)",
+			value(LaneQueuedMetric, smsHigh), value(LaneOldestAgeMetric, smsHigh), value(BacklogDueMetric, smsHigh),
+			value(BacklogDueMetric, pushLow), testutil.MetricValue(t, reg, ScheduledFutureMetric, nil))
 	}
 
 	// The queue drains: the lane is absent from the next measurement.
