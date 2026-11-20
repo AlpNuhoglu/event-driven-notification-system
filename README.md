@@ -332,6 +332,17 @@ Every message from the server about a notification has this form, for the snapsh
 - A client that reads too slowly is disconnected with close status 1013; it reconnects, subscribes again and gets a fresh snapshot.
 - A browser page from another origin is refused unless its host matches `WS_ORIGIN_PATTERNS` (see `.env.example`).
 
+## Delivery guarantee
+
+Delivery is **at-least-once**: an accepted notification is sent, or ends `failed` or `cancelled` with its reason, and it can reach the provider more than once.
+
+- **Every request to the provider carries the notification's id in the `Idempotency-Key` header,** the same value on every attempt. A provider that honours the key can discard a repeat; webhook.site does not.
+- **A second send happens when the outcome of the first is not known:** the provider did not answer in time, the connection broke after the request was written, or the worker stopped before it recorded the answer. Such an attempt is recorded as `unknown`, and a cancel of that notification reports `may_have_been_sent`.
+- **A worker that is killed while it sends re-sends the notifications that were in flight.** Their rows stay `processing` until the lease expires (`LEASE_DURATION`, 30 s); the relay's lease sweeper then returns them to `retrying` and they are sent again, with the same `Idempotency-Key`. That is at most `WORKER_CONCURRENCY` notifications per channel and worker (25 by default). Notifications the worker had not started to send are not repeated. The chaos scenario that kills the worker with `SIGKILL` measures it; its numbers are in [the load-test results](docs/load-test.md#chaos-scenarios).
+- A worker that stops normally (`SIGTERM`) finishes the sends in flight within its 15-second drain and repeats nothing.
+
+Duplicates are counted at the provider, not in the database, in every chaos and load scenario ([limitations](docs/future-work.md)).
+
 ## Documentation
 
 | Document | Content |
