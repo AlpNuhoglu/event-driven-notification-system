@@ -14,11 +14,12 @@ import (
 
 // The chaos scenarios of P3 on the Compose stack (ADR-0010 §1, "Chaos
 // scenarios"): the real broker restarted and wiped, requeue-stale run as the
-// operator runs it, and the real Postgres restarted during sends. This file
-// sorts before the others, so its tests run first and every other test of
-// the package (load-smoke last) runs on the stack they leave: each one ends
-// with every service up and healthy, no backlog in the broker and a reset
-// mock (leaveClean).
+// operator runs it, and the real Postgres restarted during sends. The files
+// chaos_*_test.go sort before the others, so their tests run first and every
+// other test of the package (load-smoke last) runs on the stack they leave:
+// each one ends with every service up and healthy, no backlog in the broker
+// and a reset mock (leaveClean). Each one also ends with its chaos report
+// line (chaos_report_test.go).
 
 const (
 	// recoveryTimeout bounds the wait for reconciliation after the broker is
@@ -206,13 +207,15 @@ func TestComposeE2E_RabbitMQRestartEveryNotificationSent(t *testing.T) {
 	s := newStack(t)
 	s.resetMock(t)
 	t.Cleanup(func() { s.leaveClean(t) })
+	var ids []string
+	s.reportChaosAtEnd(t, label, &ids)
 
 	before, err := containerStates(observed...)
 	if err != nil {
 		t.Fatal(err)
 	}
 	runs, rows := relayRuns(t), relayReconciledRows(t)
-	ids := buildBacklog(t, s, label)
+	ids = buildBacklog(t, s, label)
 
 	since := time.Now()
 	during, err := createDuring(t, s, label, func() error {
@@ -245,6 +248,8 @@ func TestComposeE2E_RabbitMQWipedEveryNotificationSent(t *testing.T) {
 	s := newStack(t)
 	s.resetMock(t)
 	t.Cleanup(func() { s.leaveClean(t) })
+	var ids []string
+	s.reportChaosAtEnd(t, label, &ids)
 
 	volume := rabbitmqVolumeName(t)
 	before, err := containerStates(observed...)
@@ -253,7 +258,7 @@ func TestComposeE2E_RabbitMQWipedEveryNotificationSent(t *testing.T) {
 	}
 	runs, rows := relayRuns(t), relayReconciledRows(t)
 	created := volumeCreated(t, volume)
-	ids := buildBacklog(t, s, label)
+	ids = buildBacklog(t, s, label)
 
 	since := time.Now()
 	broker := false
@@ -348,6 +353,8 @@ func TestComposeE2E_RequeueStale(t *testing.T) {
 	s := newStack(t)
 	s.resetMock(t)
 	t.Cleanup(func() { s.leaveClean(t) })
+	var ids []string
+	s.reportChaosAtEnd(t, label, &ids)
 	stopped := false
 	t.Cleanup(func() {
 		if stopped {
@@ -361,7 +368,7 @@ func TestComposeE2E_RequeueStale(t *testing.T) {
 	if _, err := compose("stop", "worker"); err != nil {
 		t.Fatal(err)
 	}
-	ids := createN(t, s, createRequest{Channel: "sms", Recipient: fakePhone, Content: label, Priority: "high"}, total, label)
+	ids = createN(t, s, createRequest{Channel: "sms", Recipient: fakePhone, Content: label, Priority: "high"}, total, label)
 	waitCounts(t, ids, sendTimeout, "every notification queued", func(c map[string]int) bool { return c["queued"] == total })
 	if _, err := compose("stop", "relay"); err != nil {
 		t.Fatal(err)
@@ -471,12 +478,13 @@ func TestComposeE2E_PostgresRestartDuringSends(t *testing.T) {
 	s := newStack(t)
 	s.resetMock(t)
 	t.Cleanup(func() { s.leaveClean(t) })
+	var ids []string
+	s.reportChaosAtEnd(t, label, &ids)
 
 	before, err := containerStates("api", "relay", "worker", "mockprovider", "rabbitmq", "redis")
 	if err != nil {
 		t.Fatal(err)
 	}
-	var ids []string
 	ids = append(ids, createN(t, s, createRequest{Channel: "sms", Recipient: fakePhone, Content: label, Priority: "normal"}, sms, label)...)
 	ids = append(ids, createN(t, s, createRequest{Channel: "email", Recipient: fakeEmail, Content: label, Priority: "normal"}, email, label)...)
 	ids = append(ids, createN(t, s, createRequest{Channel: "push", Recipient: fakeDevice, Content: label, Priority: "normal"}, push, label)...)
