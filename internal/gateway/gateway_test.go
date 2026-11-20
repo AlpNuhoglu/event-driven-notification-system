@@ -394,7 +394,10 @@ func TestGateway_ClientThatDoesNotReadItsSnapshotIsDisconnected(t *testing.T) {
 	start := time.Now()
 	stalled.subscribe(nil, &batch)
 
-	testutil.Eventually(t, func() bool { return s.g.Connections() == 0 }, waitTimeout)
+	// Wait for the timeout itself, not only for "no connection": the server
+	// registers a connection after the handshake that dial returns from, so
+	// for a moment there is no connection yet, which is not this one gone.
+	testutil.Eventually(t, func() bool { return s.g.SnapshotTimeouts() == 1 && s.g.Connections() == 0 }, waitTimeout)
 	if took := time.Since(start); took < writeTimeout {
 		t.Errorf("the connection ended after %s, before the write timeout of %s", took, writeTimeout)
 	}
