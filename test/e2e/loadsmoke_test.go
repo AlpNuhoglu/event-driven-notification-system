@@ -14,11 +14,11 @@ import (
 )
 
 const (
-	// defaultLoadSmokeCount is about one minute of sending at 98 msg/s.
+	// defaultLoadSmokeCount is about one minute of sending at 97 msg/s.
 	defaultLoadSmokeCount = 6000
 	// pacingRate is the default RATE_LIMIT_PER_SECOND of the stack; it only
 	// sizes the drain deadline.
-	pacingRate = 98
+	pacingRate = 97
 	// rateLimit is the limit no one-second window may exceed (D24).
 	rateLimit = 100
 	// reportPollInterval is how often mockprovider's report is read during
@@ -35,7 +35,7 @@ const (
 // the stack and checks at the provider that no half-open one-second window
 // holds more than 100 arrivals. It logs one line with the measured margin:
 //
-//	load-smoke: 6000 sms in 61.2 s (98.0/s); largest one-second window: 99 (limit 100)
+//	load-smoke: 6000 sms in 61.9 s (97.0/s); largest one-second window: 98 (limit 100)
 //
 // and appends it to $GITHUB_STEP_SUMMARY when that is set.
 func TestLoadSmoke(t *testing.T) {
