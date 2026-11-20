@@ -16,15 +16,15 @@ The service accepts notification requests for three channels (SMS, Email, Push) 
 
 ### Capacity analysis
 
-The rate limit, not the broker, is the throughput ceiling. Each channel is paced at 97 msg/s so that no one-second window at the provider exceeds 100 ([ADR-0007](0007-retry-policy-and-circuit-breaker.md) §5):
+The rate limit, not the broker, is the throughput ceiling. Each channel is paced at 90 msg/s, which leaves a margin of ten under the limit of 100 per second at the provider ([ADR-0007](0007-retry-policy-and-circuit-breaker.md) §5):
 
 | Quantity | Value |
 |---|---|
-| Delivery capacity | 3 channels × 97 msg/s = **291 msg/s** |
-| Per hour | ≈ 1.06 M |
-| Per day | ≈ **25.4 M** |
+| Delivery capacity | 3 channels × 90 msg/s = **270 msg/s** |
+| Per hour | ≈ 0.97 M |
+| Per day | ≈ **23.3 M** |
 
-"Millions per day" is within the average capacity. Bursts are the problem: 1 M SMS submitted within ten minutes take 1,000,000 / 97 ≈ 10,300 s ≈ **2.9 hours** to drain through the SMS channel.
+"Millions per day" is within the average capacity. Bursts are the problem: 1 M SMS submitted within ten minutes take 1,000,000 / 90 ≈ 11,100 s ≈ **3.1 hours** to drain through the SMS channel.
 
 **The system therefore accumulates backlog by design.** Priority exists because of that backlog: a one-time password must not wait behind 1 M campaign messages. The messaging layer is judged by how well it orders and isolates work under backlog, not by raw throughput.
 
@@ -117,7 +117,7 @@ The topic exchange is also the extension point for future durable consumers such
 
 | Alternative | Why it was rejected |
 |---|---|
-| **Postgres `FOR UPDATE SKIP LOCKED` as the only queue** | At this volume (291 msg/s) a Postgres-only queue would be sufficient, and it is simpler: priority through `ORDER BY`, delay through a timestamp, no outbox and no second stateful system. The broker is chosen for three reasons that are not about capacity: the assessment frames the system as event-driven with queue workers; a broker gives standard consumer semantics (prefetch, acknowledgement, competing consumers) instead of hand-written polling workers; and its topic exchange is the extension point for status events. Much of the Postgres design is kept: Postgres remains the source of truth, the scheduler and the retry-delay store ([ADR-0002](0002-postgres-as-outbox-scheduler-and-retry-delay.md)). |
+| **Postgres `FOR UPDATE SKIP LOCKED` as the only queue** | At this volume (270 msg/s) a Postgres-only queue would be sufficient, and it is simpler: priority through `ORDER BY`, delay through a timestamp, no outbox and no second stateful system. The broker is chosen for three reasons that are not about capacity: the assessment frames the system as event-driven with queue workers; a broker gives standard consumer semantics (prefetch, acknowledgement, competing consumers) instead of hand-written polling workers; and its topic exchange is the extension point for status events. Much of the Postgres design is kept: Postgres remains the source of truth, the scheduler and the retry-delay store ([ADR-0002](0002-postgres-as-outbox-scheduler-and-retry-delay.md)). |
 | **Nine lane queues (channel × priority) with a weighted 6:3:1 dispatcher in the worker** | Under contention `high` would receive only 60 % of the channel's capacity, which contradicts the goal that an urgent message does not wait behind bulk traffic. The dispatcher is also custom code that needs its own tests. Built-in strict priority in quorum queues (RabbitMQ 4.3+) gives the stricter behaviour with no application code. |
 | **A custom `x-delivery-limit` of 5** | It cannot catch a real poison message, because the worker acknowledges before it sends, so the crashing delivery is never redelivered. A low limit can instead dead-letter healthy messages that were prefetched by a worker that crashed for another reason. The broker default (20) stays as a backstop. |
 | **Cancel and resubscribe the consumer during a long open circuit** | Extra state and code on the consume path to avoid a timeout that a queue argument removes. Kept only as the fallback if the argument does not behave as documented ([implementation plan](../plan/implementation-plan.md), experiment E6). |
