@@ -1,6 +1,6 @@
 # Event-Driven Notification System
 
-A notification service written in Go that accepts SMS, Email and Push notifications through a REST API and delivers them asynchronously through an external provider. It is built around a Postgres outbox, a RabbitMQ dispatch broker with strict priority, a per-channel rate limit of at most 100 messages per second, retries classified by failure scope, and real-time status tracking.
+A notification service written in Go that accepts SMS, Email and Push notifications through a REST API and delivers them asynchronously through an external provider. It is built around a Postgres outbox, a RabbitMQ dispatch broker with strict priority, a per-channel rate limit of at most 100 messages per second, retries classified by failure scope, and status updates in real time.
 
 ## Quick start
 
@@ -14,9 +14,9 @@ docker-compose up
 
 What you see, in this order:
 
-1. **Five lines that look like an error and are not:** `Image event-driven-notification-system:local … pull access denied … repository does not exist or may require 'docker login'`. Compose looks for the application image in a registry first, does not find it, and then builds it from this repository (`Building`, then `Built`).
-2. The build and the download of the six infrastructure images: about a minute on a fresh machine with a fast connection (74 s on the CI runner), longer on a slow one; about 20 s on later runs.
-3. The log lines of every container, interleaved, about 2,600 in the first half minute. Most are Grafana's start-up (its `level=warn` lines, and the start-up warnings of Postgres, RabbitMQ, Redis and Jaeger, are those programs' own and expected). The application's lines are JSON: `migrate-1 | migrate: up to date` and `migrate-1 exited with code 0` (it runs once), then `"msg":"service started"` from `api`, `relay`, `worker` and `gateway`.
+1. **A few lines near the top that look like an error and are not:** `Image event-driven-notification-system:local … pull access denied … repository does not exist or may require 'docker login'`. Compose looks for the application image in a registry first, does not find it, and then builds it from this repository (`Building`, then `Built`).
+2. The download of the six infrastructure images and the build: about a minute on a fresh machine with a fast connection (74 s on the CI runner), longer on a slow one; about 20 s on later runs.
+3. The log lines of every container, interleaved, about 2,600 in the first half minute. Most are Grafana's start-up; its `level=warn` lines and the start-up warnings of Postgres, RabbitMQ, Redis and Jaeger are those programs' own and expected. The application's own lines are few: `migrate-1 | migrate: up to date` and `migrate-1 exited with code 0` (it runs once), then JSON lines with `"msg":"service started"` from `api`, `relay`, `worker` and `gateway`, none of them a warning or an error.
 
 The command stays in the foreground. **The stack is ready when `api-1` has logged `"msg":"api listening"`** and the output slows down; ten containers keep running: `api`, `relay`, `worker`, `gateway`, and Postgres, RabbitMQ, Redis, Prometheus, Grafana and Jaeger.
 
@@ -53,7 +53,7 @@ https://webhook.site/7940ee46-a3b1-48b7-a29a-3056e46df5fb
 ```
 
 - **Created on 2026-11-20. It expires on 2026-11-27,** seven days later; a URL that no longer exists answers `404`.
-- **It accepts 50 requests in total. **On 2026-11-20 it had received 1, so 49 were left** (the one request is the quick start's create, sent in the clean-clone rehearsal).** Every notification you create on the default stack uses one, and so does every retry. After the 50th request the URL answers `429` (observed on a throwaway URL on 2026-11-18).
+- **It accepts 50 requests in total. On 2026-11-20 it had received 1, so 49 were left** (the one request is the quick start's create, sent in the clean-clone rehearsal). Every notification you create on the default stack uses one, and so does every retry. After the 50th request the URL answers `429` (observed on a throwaway URL on 2026-11-18).
 - **Every request sent to it is publicly visible** to anyone who has the URL, at https://webhook.site/#!/view/7940ee46-a3b1-48b7-a29a-3056e46df5fb. Use only the fake values shown above (`+905551234567`, `example.com` addresses), never a real recipient.
 - It is configured to answer `202` with a JSON body of `messageId`, `status` and `timestamp` (R24).
 - How many requests it has received (this call does not count as one): `curl -sS -H 'Accept: application/json' 'https://webhook.site/token/7940ee46-a3b1-48b7-a29a-3056e46df5fb/requests?per_page=1'`, member `total`. `make demo` reads the same number before it sends anything.

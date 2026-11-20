@@ -7,7 +7,7 @@ An event-driven notification service that accepts SMS, Email and Push notificati
 - a rate limit of at most **100 messages per second per channel**;
 - strict priority;
 - intelligent retries;
-- real-time status tracking.
+- status updates in real time.
 
 This document is the entry point. It gives the overall picture; every decision is explained in an [Architecture Decision Record](#architecture-decision-records), including the alternatives that were rejected and why. Known limitations, the interpretations adopted where the requirements are open, and deferred items are listed in [future work](future-work.md).
 
