@@ -31,6 +31,13 @@ type Rule struct {
 	CloseConnection bool    `json:"close_connection"`
 	Hang            bool    `json:"hang"`
 	MalformedBody   bool    `json:"malformed_body"`
+	// EchoRequest makes every answer of the rule quote the request it
+	// answers: its body names the request's "to" and "content" in an error
+	// text and repeats the request body (echoBody). It imitates a provider
+	// whose error text quotes the message, whatever the status, a 2xx
+	// included. It replaces malformed_body. The values are written into
+	// the answer only, never kept.
+	EchoRequest bool `json:"echo_request"`
 }
 
 func defaultRule() Rule {
@@ -71,6 +78,7 @@ type ruleIn struct {
 	CloseConnection *bool    `json:"close_connection"`
 	Hang            *bool    `json:"hang"`
 	MalformedBody   *bool    `json:"malformed_body"`
+	EchoRequest     *bool    `json:"echo_request"`
 }
 
 type configIn struct {
@@ -144,6 +152,9 @@ func (in *ruleIn) build(where string) (Rule, error) {
 	if in.MalformedBody != nil {
 		r.MalformedBody = *in.MalformedBody
 	}
+	if in.EchoRequest != nil {
+		r.EchoRequest = *in.EchoRequest
+	}
 	return r, nil
 }
 
@@ -193,6 +204,8 @@ type outcome struct {
 	rule    Rule
 	status  int
 	latency time.Duration
+	// echo is the body of an echo_request answer; nil otherwise.
+	echo []byte
 }
 
 // decideLocked applies a rule to a request. The caller holds s.mu; seen is
