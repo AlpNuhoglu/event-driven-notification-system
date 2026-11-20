@@ -32,8 +32,9 @@ API_PORT          ?= 8080
 PROMETHEUS_PORT   ?= 9090
 GATEWAY_PORT      ?= 8082
 MOCKPROVIDER_PORT ?= 8090
+JAEGER_UI_PORT    ?= 16686
 E2E_OVERRIDE       = test/e2e/docker-compose.e2e.yml
-E2E_COMPOSE        = API_PORT=$(API_PORT) GATEWAY_PORT=$(GATEWAY_PORT) PROMETHEUS_PORT=$(PROMETHEUS_PORT) MOCKPROVIDER_PORT=$(MOCKPROVIDER_PORT) $(COMPOSE_MOCK) -f $(E2E_OVERRIDE) -p $(E2E_PROJECT)
+E2E_COMPOSE        = API_PORT=$(API_PORT) GATEWAY_PORT=$(GATEWAY_PORT) PROMETHEUS_PORT=$(PROMETHEUS_PORT) MOCKPROVIDER_PORT=$(MOCKPROVIDER_PORT) JAEGER_UI_PORT=$(JAEGER_UI_PORT) $(COMPOSE_MOCK) -f $(E2E_OVERRIDE) -p $(E2E_PROJECT)
 
 TEST_CMD = go test -race -tags=integration -count=1 ./...
 
@@ -91,7 +92,7 @@ test-e2e: ## Compose stack with the mock override, e2e tests and load-smoke (nee
 	status=0; \
 	$(E2E_COMPOSE) up -d --build --wait || status=$$?; \
 	if [ $$status -eq 0 ]; then \
-		E2E_API_URL=http://localhost:$(API_PORT) E2E_GATEWAY_URL=ws://localhost:$(GATEWAY_PORT)/v1/ws E2E_MOCK_URL=http://localhost:$(MOCKPROVIDER_PORT) E2E_PROMETHEUS_URL=http://localhost:$(PROMETHEUS_PORT) E2E_PROJECT=$(E2E_PROJECT) \
+		E2E_API_URL=http://localhost:$(API_PORT) E2E_GATEWAY_URL=ws://localhost:$(GATEWAY_PORT)/v1/ws E2E_MOCK_URL=http://localhost:$(MOCKPROVIDER_PORT) E2E_PROMETHEUS_URL=http://localhost:$(PROMETHEUS_PORT) E2E_JAEGER_URL=http://localhost:$(JAEGER_UI_PORT) E2E_PROJECT=$(E2E_PROJECT) \
 			go test -tags e2e -count=1 -v -timeout $(E2E_TIMEOUT) ./test/e2e/... || status=$$?; \
 	fi; \
 	if [ $$status -ne 0 ]; then \
