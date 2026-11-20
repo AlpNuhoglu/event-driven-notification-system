@@ -54,7 +54,7 @@ Requirements are numbered R1 to R36 and paraphrased here. This table says where 
 | R27 | **Bonus:** template system with variable substitution | [ADR-0008](adr/0008-templates-and-scheduling.md) |
 | R28 | **Bonus:** WebSocket updates | [ADR-0005](adr/0005-service-topology-and-status-events.md); [ADR-0006](adr/0006-api-contract-and-three-layer-idempotency.md) §10 |
 | R29 | **Bonus:** distributed tracing | [ADR-0009](adr/0009-observability.md) §6 |
-| R30 | **Bonus:** GitHub Actions CI/CD | [ADR-0010](adr/0010-testing-and-ci.md) §5: the CI workflow. The release workflow of §6 was not built |
+| R30 | **Bonus:** GitHub Actions CI/CD | [ADR-0010](adr/0010-testing-and-ci.md) §5: the CI workflow; §6: the release workflow, which publishes the image on a version tag |
 | R31 | Source repository with a clean commit history | [ADR-0010](adr/0010-testing-and-ci.md) §7 |
 | R32 | README with setup instructions, architecture overview and API examples | README; this document |
 | R33 | Docker Compose, one-command setup | [ADR-0005](adr/0005-service-topology-and-status-events.md) |
@@ -253,7 +253,7 @@ Every container image is pinned to an exact tag in `docker-compose.yml`, and eve
 | Validation | `nyaruka/phonenumbers`, `net/mail` | |
 | Observability | `log/slog`, Prometheus client, OpenTelemetry SDK (`otelhttp`, `otelpgx`), Prometheus, Grafana, Jaeger | Prometheus 3.16.0, Grafana 13.3.1, Jaeger 2.23.0 |
 | Testing | `testing` with the race detector and fuzz targets, `testcontainers-go`, `kin-openapi`; a Go load harness (`load-smoke`, `make load`); mutation patches (`make verify-suite`). k6 is not used | |
-| CI | GitHub Actions, seven jobs, actions pinned by commit SHA; `golangci-lint`. No release workflow, security scan or image registry ([future work](future-work.md), item 21) | golangci-lint v2.15.0 |
+| CI and delivery | GitHub Actions, actions pinned by commit SHA. CI: seven jobs on every push and pull request, with `golangci-lint`. Release: on a version tag the image is built from the Dockerfile and published to GHCR, tagged with the version and the commit SHA (`linux/amd64`). No security scan and no deployment; Compose builds from source ([future work](future-work.md), item 21) | golangci-lint v2.15.0 |
 
 ## Repository layout
 
