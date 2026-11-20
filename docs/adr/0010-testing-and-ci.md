@@ -203,12 +203,15 @@ Runs on pushes and pull requests. A new push to the same branch cancels the runn
 
 ### 6. CD: `.github/workflows/release.yml`
 
-**Not built.** P6 was reduced by the author on 2026-11-20; no release workflow exists and no image is published ([future-work.md](../future-work.md), item 21). What was planned:
+**Built at the end of P7, smaller than planned** (P6 had been reduced without it; [future-work.md](../future-work.md), item 21).
 
-- Triggered by a `v*` tag.
-- Builds the image for **`linux/amd64` and `linux/arm64`**, so it also runs natively on Apple Silicon machines, and pushes it to GHCR, tagged with the version and the commit SHA and carrying OCI labels.
-- With no deployment target in scope, a versioned, published image is the delivery artifact.
-- **The workflow is run once with a test tag before submission,** so that its first execution is not after the fact.
+- Triggered by a pushed `v*` tag.
+- Builds the image with `docker build` from the repository's Dockerfile, the build that `docker-compose` and CI use, with the commit as `GIT_SHA`, and pushes it to `ghcr.io/<owner>/event-driven-notification-system`, **tagged with the version (the Git tag) and with the full commit SHA. There is no `latest` tag.** The image carries the Dockerfile's OCI labels.
+- Permissions: `contents: read` for the workflow, `packages: write` on the one job. The only action is the checkout, pinned by its full commit SHA; the registry login and the push are `docker` commands with the workflow's own token.
+- **`linux/amd64` only.** The plan named `linux/arm64` as well, so that the image runs natively on Apple Silicon; that needs a cross-build and was left out. On such a machine the image is pulled with `--platform linux/amd64`.
+- With no deployment target in scope, a versioned, published image is the delivery artifact. **`docker-compose.yml` does not use it:** the stack builds from source.
+- **The workflow was run once with a test tag, `v0.0.0-rc.1`, before it was merged,** so that its first execution was not after the fact; the published image was fetched from the registry and its `api` started against a Postgres container.
+- Not there: a vulnerability scan of the image, signing, an SBOM.
 
 ### 7. Commit history and pull requests
 
