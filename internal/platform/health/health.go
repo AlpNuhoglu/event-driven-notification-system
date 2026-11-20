@@ -1,4 +1,4 @@
-// Package health provides the admin endpoints (health and metrics) and a
+// Package health provides the admin endpoints (health, metrics, profiles) and a
 // probe for the health endpoints.
 package health
 
@@ -7,6 +7,9 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	// The import also registers the profiles on http.DefaultServeMux; no
+	// server of this module serves that mux.
+	"net/http/pprof" //nolint:gosec // G108: served on the admin port only, by AdminHandler (D33)
 	"time"
 )
 
@@ -20,10 +23,17 @@ func Handler() http.Handler {
 // AdminHandler is the handler of the admin port (ADR-0009 §8): GET /healthz
 // (liveness: the process serves, no dependency is checked), GET /readyz
 // (the checks of readiness, 503 when one fails) and GET /metrics, served by
-// metrics.
+// metrics, and the profiles of the Go runtime under GET /debug/pprof/. The
+// profiles are registered on this handler only, never on a public port: they
+// expose the process's internals and can be used to load it (D33).
 func AdminHandler(metrics http.Handler, readiness *Readiness) http.Handler {
 	mux := healthMux(readiness)
 	mux.Handle("GET /metrics", metrics)
+	mux.HandleFunc("GET /debug/pprof/", pprof.Index)
+	mux.HandleFunc("GET /debug/pprof/cmdline", pprof.Cmdline)
+	mux.HandleFunc("GET /debug/pprof/profile", pprof.Profile)
+	mux.HandleFunc("GET /debug/pprof/symbol", pprof.Symbol)
+	mux.HandleFunc("GET /debug/pprof/trace", pprof.Trace)
 	return mux
 }
 
