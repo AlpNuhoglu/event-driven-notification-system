@@ -32,7 +32,7 @@ Within a few seconds the notification shows `"status":"sent"`; `sent` means the 
 
 **One worker per channel** instead of the one worker for all three: add the override `docker-compose.override.worker-per-channel.yml` to the mock profile, `docker-compose -f docker-compose.yml -f docker-compose.mock.yml -f docker-compose.override.worker-per-channel.yml up -d --build --wait` (and the same three `-f` options for `ps`, `logs` and `down -v`). It runs the services `worker-sms`, `worker-email` and `worker-push`, so a crash of one stops only its channel; it works with the mock profile only.
 
-`make test` runs the tests (needs Go and Docker); `make fuzz` runs the fuzz targets for 30 seconds each. `make test-e2e` starts the stack with the mock profile under its own Compose project, runs the end-to-end tests, the chaos scenarios and `load-smoke` (a minute of SMS at the full rate, checked against the limit of 100 per second at the provider) against it, and removes it again; then it does the same with the per-channel worker override for the one scenario of that layout (needs Go and Docker). Every chaos scenario logs one `chaos report:` line with its counts and the duplicates the provider received.
+`make test` runs the tests (needs Go and Docker); `make fuzz` runs the fuzz targets for 30 seconds each. `make test-e2e` starts the stack with the mock profile under its own Compose project, runs the end-to-end tests, the chaos scenarios and `load-smoke` (a minute of SMS at the full rate, checked against the limit of 100 per second at the provider) against it, and removes it again; then it does the same with the per-channel worker override for the one scenario of that layout (needs Go and Docker). Every chaos scenario logs one `chaos report:` line with its counts and the duplicates the provider received. `make load` runs the rate scenario: 30,000 SMS at the configured rate on a stack of its own, about five minutes, with the same check (needs Go and Docker). `make verify-suite` applies each mutation patch of `test/mutations` to a temporary copy of the code and requires that the tests it names fail (needs Go and Docker). `make test-docker` runs `make test` inside a Go container (needs Docker only).
 
 ## API examples
 
@@ -332,6 +332,18 @@ Every message from the server about a notification has this form, for the snapsh
 - A client that reads too slowly is disconnected with close status 1013; it reconnects, subscribes again and gets a fresh snapshot.
 - A browser page from another origin is refused unless its host matches `WS_ORIGIN_PATTERNS` (see `.env.example`).
 
+## Load results
+
+The limit is 100 messages per second and channel, read as: no one-second window at the provider holds more than 100 messages of one channel. The worker paces each channel at **97 messages per second** (`RATE_LIMIT_PER_SECOND`), with no burst, so that three slots stay free under the limit.
+
+| | Result |
+|---|---|
+| Largest one-second window, 20 runs of `load-smoke` (6,000 SMS each) at 97 msg/s | **98** in every one of the 20 runs |
+| Largest one-second window, `make load` (30,000 SMS) at 97 msg/s | **98**; 30,000 SMS arrived in 309.3 s, 97.0 per second |
+| The same at 98 msg/s, the rate until P6 | 99 in 26 runs, 100 in one run on a busy machine, which is why the rate was lowered |
+
+Counts like these are exact. The machine, every run, the chaos scenarios' counts and what was **not** measured (the 1,000,000-message ingest, the 100,000-message drain, the saturation report, priority and isolation under load) are in [docs/load-test.md](docs/load-test.md).
+
 ## Delivery guarantee
 
 Delivery is **at-least-once**: an accepted notification is sent, or ends `failed` or `cancelled` with its reason, and it can reach the provider more than once.
@@ -361,5 +373,4 @@ Added in the phases named in the implementation plan:
 - How to create and configure your own webhook.site URL
 - Requirements map with evidence
 - Interpretations of the assessment and known limitations
-- Load-test results
 - How AI was used, and how AI output was verified

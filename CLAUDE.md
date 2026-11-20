@@ -101,7 +101,7 @@ Defined in P0; until then this table is the target.
 | `make test` | Unit, integration and contract tests with `-race` (needs Docker) |
 | `make test-docker` | The same inside a container (Docker only) |
 | `make test-e2e` | Compose stack, end-to-end and chaos scenarios, `load-smoke` |
-| `make load` | k6 load scenarios |
+| `make load` | The rate scenario: 30,000 SMS at the configured rate on a stack of its own |
 | `make verify-suite` | Mutation patches; each must fail a named test |
 | `make demo` | At most 10 requests through the running stack |
 | `make up-mock` | The stack with `docker-compose.mock.yml`: `mockprovider` as the provider |

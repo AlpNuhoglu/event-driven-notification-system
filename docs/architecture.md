@@ -26,7 +26,7 @@ Requirements are numbered R1 to R36 and paraphrased here. The Evidence column na
 | ID | Requirement | Where it is addressed | Evidence (planned) |
 |---|---|---|---|
 | R1 | Three channels: SMS, Email, Push | [ADR-0005](adr/0005-service-topology-and-status-events.md), [ADR-0006](adr/0006-api-contract-and-three-layer-idempotency.md) §5 | `make test-e2e`: one notification per channel reaches `sent` |
-| R2 | High volume, millions of notifications per day | [ADR-0001](adr/0001-rabbitmq-as-dispatch-broker.md): 294 msg/s, about 25.4 M per day | `make load`: phase 2 drain rate |
+| R2 | High volume, millions of notifications per day | [ADR-0001](adr/0001-rabbitmq-as-dispatch-broker.md): 291 msg/s, about 25.1 M per day | `make load`: phase 2 drain rate |
 | R3 | Burst traffic | [ADR-0003](adr/0003-bounded-relay-buffer-and-sweepers.md): HWM and backpressure | `make load`: phase 1, 1 M ingest with flat broker depth |
 | R4 | Reliable delivery | [ADR-0002](adr/0002-postgres-as-outbox-scheduler-and-retry-delay.md), [ADR-0003](adr/0003-bounded-relay-buffer-and-sweepers.md), [ADR-0004](adr/0004-data-model-state-machine-and-fencing.md) | `TestE2E_IdleSingleNotificationIsSent`, `TestClaim_WaitsForRelayCommit`; chaos: RabbitMQ wiped, all rows `sent` |
 | R5 | Intelligent retries | [ADR-0007](adr/0007-retry-policy-and-circuit-breaker.md) §1–4, §7 | `decideRetry` table tests; chaos: low-traffic provider outage ends with `failures = 0` |
@@ -39,7 +39,7 @@ Requirements are numbered R1 to R36 and paraphrased here. The Evidence column na
 | R12 | Cancel pending notifications | [ADR-0004](adr/0004-data-model-state-machine-and-fencing.md) transition 9; [ADR-0006](adr/0006-api-contract-and-three-layer-idempotency.md) §7 | `TestCancel_RacesWithClaim`, `TestCancel_DuringRelayPublish`, `TestCancel_Idempotent` |
 | R13 | List with filters (status, channel, date range) and pagination | [ADR-0006](adr/0006-api-contract-and-three-layer-idempotency.md) §8: keyset cursor | Pagination walk test (500 rows, `limit=7`); `EXPLAIN` check |
 | R14 | Asynchronous processing by queue workers | [ADR-0001](adr/0001-rabbitmq-as-dispatch-broker.md), [ADR-0005](adr/0005-service-topology-and-status-events.md) | `make test-e2e`; `TestClaim_TwoWorkersExactlyOne` |
-| R15 | At most 100 messages per second per channel | [ADR-0007](adr/0007-retry-policy-and-circuit-breaker.md) §5: GCRA at 98 msg/s, zero burst | `make load`: 30,000 SMS, no one-second window above 100; deterministic pacer test; `load-smoke` in CI |
+| R15 | At most 100 messages per second per channel | [ADR-0007](adr/0007-retry-policy-and-circuit-breaker.md) §5: GCRA at 97 msg/s, zero burst | `make load`: 30,000 SMS, no one-second window above 100; deterministic pacer test; `load-smoke` in CI |
 | R16 | Priority queue (high, normal, low) | [ADR-0001](adr/0001-rabbitmq-as-dispatch-broker.md): strict priority in quorum queues; [ADR-0003](adr/0003-bounded-relay-buffer-and-sweepers.md): HWM per lane | `TestRelay_PrioritySetOnEveryMessage`; `make load`: strict-priority ordering |
 | R17 | Content validation (character limits, required fields) | [ADR-0006](adr/0006-api-contract-and-three-layer-idempotency.md) §5: per channel, after rendering | SMS segment and validator unit tests; fuzz tests |
 | R18 | Idempotency to prevent duplicate sends | [ADR-0006](adr/0006-api-contract-and-three-layer-idempotency.md) §11: request, record and send layers | `TestIdempotencyKey_ConcurrentSameKey`; `dedupe_key` tests; `make load`: each key received exactly once |
@@ -183,8 +183,8 @@ stateDiagram-v2
 
 | Quantity | Value |
 |---|---|
-| Pacing rate | 98 msg/s per channel, so that no one-second window exceeds 100 |
-| Delivery capacity | 3 channels × 98 msg/s = **294 msg/s**, about **25.4 M per day** |
+| Pacing rate | 97 msg/s per channel, so that no one-second window exceeds 100 |
+| Delivery capacity | 3 channels × 97 msg/s = **291 msg/s**, about **25.1 M per day** |
 | 1 M SMS burst | About 2.8 hours to drain through the SMS channel |
 | RabbitMQ buffer | At most 2,000 distinct notifications per channel (HWM per lane: high 500, normal 1,000, low 500), about 20 seconds of work; duplicates possible |
 | Largest burst a channel can drain within the default TTL | `high` (10 min) ≈ 58,800; `normal` (6 h) ≈ 2.1 M; `low` (24 h) ≈ 8.5 M |
@@ -280,7 +280,7 @@ docs/          this document, ADRs, future work, plan, load-test results
 | [0004](adr/0004-data-model-state-machine-and-fencing.md) | Data model, the 12-transition state machine, the claim guard, leases and fencing tokens |
 | [0005](adr/0005-service-topology-and-status-events.md) | Service topology, a single relay, the worker's pacer loop, ordered status events with a snapshot on subscribe |
 | [0006](adr/0006-api-contract-and-three-layer-idempotency.md) | Contract-first API, validation, batch semantics, WebSocket protocol, three-layer idempotency |
-| [0007](adr/0007-retry-policy-and-circuit-breaker.md) | Failure classification by scope, back-off profiles, GCRA rate limiting at 98 msg/s, in-process circuit breaker, the provider contract |
+| [0007](adr/0007-retry-policy-and-circuit-breaker.md) | Failure classification by scope, back-off profiles, GCRA rate limiting at 97 msg/s, in-process circuit breaker, the provider contract |
 | [0008](adr/0008-templates-and-scheduling.md) | Constrained standard-library templates with immutable versions; scheduling rules |
 | [0009](adr/0009-observability.md) | Metrics and summary endpoint, PII-safe structured logging, hybrid tracing, health checks |
 | [0010](adr/0010-testing-and-ci.md) | Test layers, the actor-pair matrix, load-test evidence, suite verification by mutation, CI/CD pipelines |

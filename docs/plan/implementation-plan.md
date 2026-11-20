@@ -388,43 +388,43 @@ gh pr checks
 
 **Goal.** The evidence for every claim exists and is itself checked.
 
-**Implements.** D49, D50, D51, D52, D53, D54, D55, D61 (the release run), D66 and D74 (tuning of the first values). [ADR-0010](../adr/0010-testing-and-ci.md) in full.
+**Reduced on 2026-11-20 by the author,** with the submission a few hours away. The reduction goes beyond the fallback order of section 12, which would have dropped only the 1,000,000-message scenario with its latency measurements and the saturation report. What was planned and is not done is listed under "Not done" below and, with what is known about each item, in [future-work.md](../future-work.md) (item 21). The scope and the exit criteria below are the reduced ones.
+
+**Implements.** D49, D50, D52, D54 (seven mutations), D24 and D51 in part (the pacing margin, `load-smoke` and the 30,000-message rate scenario), D53 in part (actions pinned by SHA, minimal permissions; no new jobs). [ADR-0010](../adr/0010-testing-and-ci.md) §1 and §8 in full, §3 for the rate claim.
 
 **Scope.**
 
-- **Actor-pair matrix:** every cell of the matrix in ADR-0010 §1 maps to an existing test or is "n/a"; missing tests are written.
-- **A test for every ledger decision:** walk the ledger and name the test for each `D…`; gaps are filled or recorded.
-- **Chaos scenarios** scripted on the e2e stack: RabbitMQ wiped with its data, Postgres restart, low-traffic provider outage, worker `SIGKILL`, Redis stop, and one run with the per-channel worker override.
-- **Load scenarios** with k6: 30,000 SMS rate test, strict-priority ordering, saturation report, channel isolation, phase 1 (1 M ingest), phase 2 (100,000 drain), listing and summary latency on the phase-1 dataset. Results go to `docs/load-test.md`; the README gains its load results (day 3 of D57).
-- **Pacing margin:** the main loop reads the jitter measured by the rate scenario and confirms 98 msg/s or adjusts the configured rate (D24).
-- **Pacing margin, repeated `load-smoke`:** `load-smoke` is run 20 times. If any run shows a largest one-second window of 100, the configured rate is lowered (97 msg/s first) and the 20 runs are repeated, until no run shows 100. The README's load results state the margin: the limit of 100, the configured rate and the largest window seen over the 20 runs.
-- **Tuning:** the values that start as initial defaults are checked against the load and chaos results and adjusted: the event publisher buffer, the gateway queue's `x-max-length` and `x-message-ttl`, the per-connection send queue, and the alert thresholds.
-- **Tuning, statistics after a burst** (from the plan measurement of P3, [ADR-0003](../adr/0003-bounded-relay-buffer-and-sweepers.md) §6; D79 does not cover these, because the planner itself is misled until statistics are fresh): the relay's count of queued rows with statistics from a steady state without a backlog (100 to 200 ms per tick instead of 3 ms), and the lease sweeper's per-row update with 200,000 expired leases after statistics from a small table (about 30 ms per row, 15 s per sweep of 500 while holding its row locks). Decide a statistics-level remedy (analyse settings on `notifications` and `notification_attempts`, which is a migration, or an explicit `ANALYZE` by the relay after a jump in the backlog) and measure it in the burst scenario.
-- **Tuning, the claim after an idle period** (open issue 11 of P3, moved here by the author's decision; [ADR-0003](../adr/0003-bounded-relay-buffer-and-sweepers.md) §6). With statistics taken while the outbox was empty, the claim and the relay's update to `queued` look their row up through the partial expiry index: about 290 ms per claim and about 35 messages per second per channel instead of 98 in the first minute after 1,000,000 rows arrived. Two measurements decide the remedy:
-  - **The claim's cost against the backlog:** one claim with 1,000, 10,000, 100,000 and 1,000,000 pending rows under idle-state statistics. The expectation to confirm or refute: the cost grows with the backlog and is negligible for a batch of 1,000.
-  - **The remedies compared in the burst scenario:** (a) an explicit `ANALYZE notifications` by the relay when the backlog jumps, (b) per-table autovacuum analyse settings (a migration), (c) the claim's and the update's SQL changed so that a look-up by primary key cannot use the partial expiry index (this changes the statement ADR-0004 gives verbatim). With each, **the pool size of every role** is measured as well: `pgxpool`'s default (the larger of 4 and the number of CPUs) against the worker's 75 concurrent dispatches (25 per channel).
-- **`make verify-suite`:** the six mutation patches of ADR-0010 §8, each failing a named test. At least three of them are never dropped (section 12). The claim-guard mutation must fail `TestClaim_WaitsForRelayCommit` and `TestE2E_WorkerFasterThanRelayCommit` (not the idle end-to-end test). **Candidate for a seventh:** the missed-slot rule removed (a late claim sends at once, D77), which must fail the deterministic pacer test and the idle-batch window test.
-- **CI hardening:** every third-party action pinned by SHA; minimal permissions; `test-docker`, `migrations` and `compose-up` jobs (the last runs `docker-compose up` with the standalone binary); the scheduled, non-blocking `security` job.
-- **Release workflow,** run once with a test tag.
+- **Actor-pair matrix:** every cell of the matrix in ADR-0010 §1 maps to an existing test or is "n/a"; missing tests are written. *(Done in `p6/matrix-and-chaos`.)*
+- **A test for every ledger decision:** `docs/decision-tests.md` names the tests for each `D…`, with a guard test over the names; gaps are filled or recorded. *(Done in `p6/matrix-and-chaos`.)*
+- **Chaos scenarios** on the e2e stack: RabbitMQ wiped with its data, Postgres restart, low-traffic provider outage, worker `SIGKILL`, Redis stop with the fallback alert, and one run with the per-channel worker override. *(Done in `p6/matrix-and-chaos`.)*
+- **Pacing margin:** `load-smoke` showed a largest one-second window of 100 in one run at 98 msg/s, so the rule of this plan applies: the configured rate is lowered to **97 msg/s** and `load-smoke` is run 20 times at 97 on one stack. `docs/load-test.md` and the README state the limit of 100, the configured rate and the largest window of each run.
+- **The rate scenario:** 30,000 sms at the configured rate, per channel no one-second window above 100; this is `make load` (the Go harness of `load-smoke` at full size, traced at 1 %).
+- **Strict priority and channel isolation:** their existing tests are named in `docs/load-test.md`; no load scenario.
+- **`make verify-suite`:** the mutations that were run by hand in earlier phases, as patch files applied in a temporary worktree, each naming the tests that must fail: the claim guard (which must fail `TestClaim_WaitsForRelayCommit` and `TestE2E_WorkerFasterThanRelayCommit`, not the idle end-to-end test), the missed-slot rule (D77), `mandatory` removed from the publish, the idempotency-key guard, the cancel guard, the fence of transition 12, and the five-consecutive-failures rule of the breaker.
+- **CI:** every third-party action is pinned by a full commit SHA and each workflow declares minimal permissions (both since P0, and checked by `TestWorkflowActionsArePinnedBySHA`); no new jobs.
+- **No change to production code on the delivery path** in the second pull request, with two exceptions decided by the author: the configured rate, and the rule for a written request in the provider client (D27 as amended).
 
-**Files and packages.** `test/` (e2e, chaos, load scripts), `test/mutations/`, `Makefile`, `.github/workflows/{ci,release}.yml`, `docker-compose.override.*.yml`, `docs/load-test.md`, `docs/adr/0010-testing-and-ci.md` (matrix, if test names changed).
+**Not done** (future-work.md, item 21): k6 and every k6 scenario; the ingest of 1,000,000 messages with the listing and summary latencies; the drain of 100,000 messages; the saturation report; strict priority and channel isolation as load scenarios; the claim after an idle period (its cost against the backlog, a remedy, explicit pool sizes) and the statistics remedies for the relay's count and the lease sweeper; the tuning of the first values of D66 and D74; the CI jobs `test-docker`, `security` and the Markdown link check; the release workflow and its run with a test tag (D61: no `release.yml` exists).
 
-**Tests that must exist.** All of ADR-0010 §1, §3 and §8.
+**Files and packages.** `test/e2e/` (chaos scenarios, `load-smoke`), `test/load/docker-compose.load.yml`, `test/mutations/` (patches and `verify.sh`), `Makefile`, `docker-compose.override.worker-per-channel.yml`, `docs/load-test.md`, `docs/decision-tests.md`, `docs/adr/0010-testing-and-ci.md`.
+
+**Tests that must exist.** All of ADR-0010 §1; the seven mutations of §8 that `make verify-suite` holds.
 
 **Exit criteria.**
 
 ```
 make test && make test-e2e && make test-docker
-make load                                   # results written to docs/load-test.md
-make verify-suite                           # 6 of 6 mutations make a named test fail
-gh pr checks                                # every CI job green, including compose-up and test-docker
-gh run list --workflow release.yml          # one successful run for the test tag
-grep -rnE 'uses: [^@]+@v?[0-9]' .github/workflows   # no output: no action pinned by tag
+make load                                   # 30,000 sms at 97 msg/s: no one-second window above 100
+make verify-suite                           # 7 of 7 mutations make every test named for them fail
+gh pr checks                                # every CI job green
+grep -rn 'uses: ' .github/workflows | grep -vE '@[0-9a-f]{40}( |$)'   # no output: every action is pinned by a full commit SHA
 ```
 
-**Pull requests.** `p6/matrix-and-chaos`, `p6/load`, `p6/verify-suite`, `p6/ci-and-release`.
+The last command replaces `grep -rnE 'uses: [^@]+@v?[0-9]'`, which also matches a commit SHA that begins with a digit.
 
-**Delegation.** Main loop: reading the load and chaos results, the pacing-margin decision, checking that each mutation fails for the intended reason. Opus: chaos scripts, k6 scenarios, missing matrix tests. Sonnet: mutation patch files, CI and release YAML, the load-test write-up from the recorded numbers.
+**Pull requests.** `p6/matrix-and-chaos` (merged), then `p6/load`, which carries the rest of the phase.
+
+**Delegation.** Main loop: the pacing-margin runs and the rate scenario, the mutation patches and checking that each fails for the intended reason, the documents. Opus (in `p6/matrix-and-chaos`): chaos scenarios, the walk through the ledger, missing matrix tests.
 
 ---
 
