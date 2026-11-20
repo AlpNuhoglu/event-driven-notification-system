@@ -69,7 +69,8 @@ Critiques and proposals of the reviewer that were not adopted:
 | Keep the mock provider as the default target, disclosed as a deviation (T5 F8) | Rejected; webhook.site is the default (D44) | The author chose strict compliance with the assessment's explicit instruction (G1). The reviewer then challenged the form of that decision, because free URLs expire and are capped, and three safeguards were added |
 | Dated amendments inside each ADR, to show what the review changed (T12 P2) | Not adopted as proposed: each ADR keeps a clean final text and a short "Review history" section that links here (D56) | The outcome is recorded; the reason is not |
 | A "Deviations from the assessment" section in `future-work.md` (T11 P1) | Replaced by an "Interpretations" section (D56) | After the decision for strict compliance (G1) there was no deviation left to list; what remained were readings of open points |
-| Keep `subject` in the API without sending it to the provider (the author's first decision on T6 F4) | Reversed after the reviewer's objection: `subject` was removed entirely (D22) | The reviewer argued that a field that is stored and never used is the worst of both options |
+
+One choice of the author went the other way: the first decision on T6 F4 was to keep `subject` in the API without sending it to the provider; the reviewer argued that a field that is stored and never used is the worst of both options, and `subject` was removed entirely (D22).
 
 Two nits of Turn 3 were raised and left open as wording (the list of cases that leave a row to the lease sweeper is incomplete; the high-water marks have no derivation).
 
