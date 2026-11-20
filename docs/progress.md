@@ -60,7 +60,7 @@ Status is one of: `not started`, `in progress`, `in review` (pull requests open)
 | P3 | Delivery robustness | done | [#10](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/10) (`p3/classification-and-retry`, merged), [#11](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/11) (`p3/breaker-and-fallback`, merged), [#12](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/12) (`p3/recovery`, merged); follow-up [#13](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/13) (`p3/isopen-race`, merged) | 2026-11-19 |
 | P4 | Templates and scheduling | done | [#14](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/14) (`p4/templates`, merged), [#15](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/15) (`p4/scheduling`, merged) | 2026-11-19 |
 | P5 | Real-time and observability | done | [#16](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/16) (`p5/events-and-gateway`, merged), [#17](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/17) (`p5/metrics-and-summary`, merged), [#18](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/18) (`p5/logging-tracing-health`, merged) | 2026-11-20 |
-| P6 | Quality | in review | `p6/matrix-and-chaos` (in review) | |
+| P6 | Quality | in review | [#19](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/19) (`p6/matrix-and-chaos`, in review) | |
 | P7 | Delivery | not started | | |
 
 ## First-hour experiments
@@ -161,7 +161,7 @@ Newest entry first. One entry per session, in this form:
 
   The duplicates of the `SIGKILL` scenario are the sends that were in flight at the kill: the provider had the request, the worker died before its final write, the lease sweeper returned the row and it was sent again. A notification reached the provider twice only if the kill left it `processing`; the scenario asserts that.
 - **Each new scenario was shown to fail** by the delegate (all restored): the lease sweeper switched off by configuration ("`sweeper_recovered_total{kind="retrying"}` grew by 0 within 3m0s of the kill … want at least 25"); the alert's expression broken ("the alert LimiterFallbackActive is "inactive" … want firing"); `unreachable` made to consume budget, in an image of its own that was removed afterwards ("has failures = 1 after 3 attempts, want 0"); one per-channel worker not started ("worker-push is not running").
-- **Pull requests opened:** the pull request from `p6/matrix-and-chaos` (linked in the phase table).
+- **Pull requests opened:** [#19](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/19) from `p6/matrix-and-chaos`.
 - **Exit criteria** (P6's are for the phase; the ones this pull request can meet were run by the main loop on this branch, mock profile and test containers only; the default webhook.site URL received nothing, 48 of its 50 requests are left):
   - `make test`: green, 26 packages.
   - `make test-e2e`: green, 381 s (323 s and 20 s of tests in the two passes; 173 s before this pull request). `load-smoke`: 6,000 SMS in 61.2 s, 98.0/s, largest one-second window **99**. `TestCanaryScan`: 63 canaries, 22 sources, no match.
