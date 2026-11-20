@@ -4,7 +4,7 @@ The first file every session reads and the last one it updates. The phases and t
 
 ## Current phase
 
-**P7: delivery** — `p7/delivery` is merged and carried the phase, in the scope the author reduced on 2026-11-20; `main` is the submittable state. **`p7/rate-margin` is in review:** one more, time-boxed pull request that lowers the configured rate to 90 msg/s (the author's decision on open issue 16).
+**P7: delivery** — `p7/delivery` is merged and carried the phase, in the scope the author reduced on 2026-11-20; `main` is the submittable state. `p7/rate-margin` (the configured rate at 90 msg/s, the author's decision on open issue 16) is merged as well. **`p7/release-workflow` is in review:** a release workflow that publishes the image on a version tag, time-boxed to 30 minutes.
 
 **The project is complete with the merge of `p7/delivery`;** `p7/rate-margin` adds a margin to the rate and nothing else. Every requirement of the assessment (R1 to R36, the bonus features included) is implemented and has its evidence in the [README's requirements map](../README.md#requirements-map); P0 to P6 are merged. **One piece of that evidence is qualified:** at the rate of 97 the limit (R15) held in every run on an idle machine and was exceeded in one load run on a machine doing other work; the worker has an open defect that lets two sends start together after a stall (open issue 16). The rate is now 90, a margin of ten, with the largest windows 91 (idle) and 92 (host loaded).
 
@@ -14,7 +14,7 @@ The first file every session reads and the last one it updates. The phases and t
 |---|---|
 | The load evidence beyond the rate claim: k6, the 1,000,000-message ingest with the listing and summary latencies, the 100,000-message drain across three channels, the saturation report, strict priority and channel isolation under load | [load-test.md](load-test.md), "Not measured"; [future-work.md](future-work.md), item 21 |
 | The remedy for the slow first minute of a very large burst after an idle period (the claim misled by statistics), explicit pool sizes, the tuning of the first values of D66 and D74 | future-work.md, the limitation and item 21 |
-| A release workflow and its run with a test tag (D61); the CI jobs `test-docker`, `security` and the Markdown link check | future-work.md, items 21 and 22 |
+| The CI jobs `test-docker`, `security` and the Markdown link check. (The release workflow exists since `p7/release-workflow`: an image on a version tag, `linux/amd64` only, no scan, no deployment) | future-work.md, items 21 and 22 |
 | Nine of the sixteen mutations of ADR-0010 §8 as patch files (each was run by hand once) | future-work.md, item 21 |
 | `docs/architecture.md` regenerated from the code (it got a consistency pass) | future-work.md, item 22 |
 | The clean-clone rehearsal on another machine or user account; a Compose v2.24.0 binary | future-work.md, item 22 |
@@ -24,7 +24,7 @@ The first file every session reads and the last one it updates. The phases and t
 | **The rate limit under load on a machine in ordinary use:** one of four runs of the 30,000-message scenario at 97 msg/s logged 102 arrivals in a second and failed. A traced run then found a worker-side defect (two sends starting together after a stall; 99 in a second); it is described and **not fixed**, and it is not shown to be the cause of the 102 (open issue 16). The rate was lowered to 90 to bound its effect; at 90 no run beside ordinary light work was made, and only one run per condition | load-test.md, "Send side against receive side"; the README's load results and limitations; future-work.md |
 | The "largest window" of 118 in the pacing series that spanned the machine's sleep, which was not investigated | load-test.md |
 
-**Next step:** the author merges `p7/rate-margin` and submits; if its time box is exceeded, the author submits `main` as it is. Open issue 16 (the worker-side defect; below) stays open and is documented; nothing else follows. The default provider URL expires on 2026-11-27 and had 49 of its 50 requests left on 2026-11-20.
+**Next step:** the author merges `p7/release-workflow`; `main`'s head is then tagged `v1.0.0` and the release run is reported. If the time box is exceeded, `main` is submitted as it is. Open issue 16 (the worker-side defect; below) stays open and is documented; nothing else follows. The default provider URL expires on 2026-11-27 and had 49 of its 50 requests left on 2026-11-20.
 
 **How P7 was done** (the plan named three branches; the author made it one pull request with the submission about three hours away):
 
@@ -83,7 +83,7 @@ Status is one of: `not started`, `in progress`, `in review` (pull requests open)
 | P4 | Templates and scheduling | done | [#14](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/14) (`p4/templates`, merged), [#15](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/15) (`p4/scheduling`, merged) | 2026-11-19 |
 | P5 | Real-time and observability | done | [#16](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/16) (`p5/events-and-gateway`, merged), [#17](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/17) (`p5/metrics-and-summary`, merged), [#18](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/18) (`p5/logging-tracing-health`, merged) | 2026-11-20 |
 | P6 | Quality | done, in the reduced scope | [#19](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/19) (`p6/matrix-and-chaos`, merged), [#20](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/20) (`p6/load`, merged) | 2026-11-20 |
-| P7 | Delivery | done, in the reduced scope; one more pull request in review | [#21](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/21) (`p7/delivery`, merged), [#22](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/22) (`p7/rate-margin`, in review) | 2026-11-20 |
+| P7 | Delivery | done, in the reduced scope; one more pull request in review | [#21](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/21) (`p7/delivery`, merged), [#22](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/22) (`p7/rate-margin`, merged), [#23](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/23) (`p7/release-workflow`, in review) | 2026-11-20 |
 
 ## First-hour experiments
 
@@ -145,6 +145,31 @@ Newest entry first. One entry per session, in this form:
 - **Open issues:** new entries added to the table above.
 - **Next step:** the first thing the next session does.
 ```
+
+### 2026-11-20 — P7, after the merge of `p7/rate-margin`: the release workflow (`p7/release-workflow`)
+
+- **By the author, at the start:** PR #22 is merged. One more small pull request, time-boxed to 30 minutes; if it is not green by then, stop and report, and `main` is submitted as it is. No production code changes. A `release.yml` that, on a pushed tag `v*`, builds the image from the Dockerfile and pushes it to `ghcr.io/<owner>/event-driven-notification-system`, tagged with the version and the commit SHA, no `latest`; minimal permissions, every action pinned by its full SHA, the same build as CI. Tested before the merge with the tag `v0.0.0-rc.1` on the branch's head; the test tag and its image stay. The README, the limitations and `future-work.md` say what now exists, and that `docker-compose.yml` still builds from source. After the merge is confirmed, `main`'s head is tagged `v1.0.0`.
+- **The workflow** (`.github/workflows/release.yml`): one job. The checkout (the only action, pinned by the SHA that CI uses), `docker build --build-arg GIT_SHA=<commit>` from the repository's Dockerfile, a login to `ghcr.io` with the workflow's own token, two pushes: `<image>:<the Git tag>` and `<image>:<the full commit SHA>`. Permissions `contents: read` for the workflow and `packages: write` on the job. `TestWorkflowActionsArePinnedBySHA` covers it. **`linux/amd64` only;** no scan, no signing, no deployment.
+- **The test run:** tag `v0.0.0-rc.1` pushed on `bfee968`, the branch's first commit. [Run 44738535559](https://github.com/AlpNuhoglu/event-driven-notification-system/actions/runs/44738535559): success, every step. Published: `ghcr.io/alpnuhoglu/event-driven-notification-system:v0.0.0-rc.1` and `…:bfee96861dc51d2c116d0e8b62162ef3c91f8a80`, digest `sha256:6938dec596af170bfe5101a25e3f1bee09d6b8ae9f8efa0cf8a5d433261ebbba`.
+- **The image exists and is readable without credentials:** the manifest of `v0.0.0-rc.1` answers `200` to an anonymous token; its config and both layers (104,532 and 55,648,458 bytes) were downloaded and each matches its digest; the config says `linux/amd64` and carries the Dockerfile's two labels.
+- **`docker pull`: not completed cold on this machine.** Two pulls by the Docker daemon stalled on the large layer (more than four minutes and more than two); Docker Desktop's proxy log shows the connection to the registry's blob host open and unfinished, while the same layer downloads in about 3 s with `curl`, from the host and from inside a container. The image was therefore loaded from the bytes fetched above (its local id equals the published config digest), and **a `docker pull` after that answers "Image is up to date" with the published digest.** A pull that downloads the layers through the daemon was not seen to finish here.
+- **The `api` of the published image starts:** with a `postgres:18.7` container on one network, `migrate up` exits 0 and `api` logs `"msg":"api listening"` with `"version":"bfee96861dc51d2c116d0e8b62162ef3c91f8a80"`; `/healthz` answers `{"status":"ok"}`, `/readyz` its Postgres check, `/openapi.yaml` `200`. Run under emulation (the machine is arm64). The containers and the network were removed.
+- **Documents:** the README's row for the CI/CD bonus and its limitations; `future-work.md` items 21 and 22; the architecture document's two rows; ADR-0010 §6 as built; the D61 row of `docs/decision-tests.md`.
+- **Left in place, deleted nothing:** the Git tag `v0.0.0-rc.1` (on `bfee968`, a commit of this branch) and the two image tags named above.
+- **Pull requests opened:** [#23](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/23) from `p7/release-workflow`.
+- **Runs that failed in this session:** the two stalled `docker pull`s and one Python download of the same layer that hung; each was stopped. Nothing else.
+- **Decisions taken:**
+  1. **The image's version tag is the Git tag as pushed** (`v1.0.0`, not `1.0.0`), so that an image tag and a Git tag are the same string.
+  2. **No third-party action:** the login, the build and the push are `docker` commands on the runner, so the only pin is the checkout's.
+  3. **One architecture.** A second one needs a cross-build (QEMU or a changed Dockerfile); neither fits "no production code changes" and the time.
+  4. **The start check is done by hand, not in the workflow:** the `api` needs a Postgres to start, and a release that stands up a database is more than the time allowed.
+- **Observed:**
+  - **I ran `docker logout ghcr.io` on this machine before the first pull,** to make the pull anonymous. If a login to `ghcr.io` was stored in Docker's credential store, it is removed and `docker login ghcr.io` is needed again. It was not necessary for the test and I should not have changed the machine's credentials for it.
+  - `alpine:3.24.0` was pulled once, to see whether the daemon can pull at all (it can, from Docker Hub); the image is left on the machine.
+  - The CI workflow runs on every push, so a pushed tag starts a CI run next to the release run.
+  - The package on GHCR is public (it answers anonymously); nothing was changed in its settings.
+- **Not verified:** a cold `docker pull` through a Docker daemon; the image on a native `linux/amd64` machine; a tag that Docker cannot take as an image tag (one with `+`), which would fail the push; the workflow on `main` (the `v1.0.0` run follows the merge).
+- **Next step:** after the author confirms the merge, tag `main`'s head `v1.0.0`, wait for the release run and report it. Nothing else after that.
 
 ### 2026-11-20 — P7, after the merge of `p7/delivery`: the rate at 90 msg/s (`p7/rate-margin`)
 
