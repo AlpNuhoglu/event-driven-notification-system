@@ -1,0 +1,22 @@
+Mutation: the missed-slot rule removed (D77). A claim that returns after its
+slot plus the tolerance sends at once instead of reserving a new slot.
+Must-fail: ./internal/worker TestMissedSlot
+Must-fail: ./internal/integration TestE2E_LateRelayCommitKeepsRateLimit
+
+diff --git a/internal/worker/dispatch.go b/internal/worker/dispatch.go
+index 15fd4b9..6cdc2fe 100644
+--- a/internal/worker/dispatch.go
++++ b/internal/worker/dispatch.go
+@@ -204,11 +204,7 @@ func (w *Worker) awaitSlot(ctx context.Context, deadline, slot time.Time) bool {
+ 		case now.After(slot.Add(w.cfg.SlotTolerance)):
+ 			// Missed: give the slot up (never returned, never used) and
+ 			// reserve a new one, then re-evaluate.
+-			w.missed.Add(1)
+-			var ok bool
+-			if slot, ok = w.reserveBefore(ctx, deadline); !ok {
+-				return false
+-			}
++			return true
+ 		case slot.After(deadline):
+ 			return false
+ 		case now.Before(slot):

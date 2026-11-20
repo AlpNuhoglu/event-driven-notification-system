@@ -135,8 +135,22 @@ check-rules: ## Validate and unit-test the Prometheus alert rules (needs Docker)
 	docker run --rm --entrypoint promtool -v "$(CURDIR)/deploy/prometheus":/etc/prometheus:ro -w /etc/prometheus $(PROMETHEUS_IMAGE) check rules alerts.yml
 	docker run --rm --entrypoint promtool -v "$(CURDIR)/deploy/prometheus":/etc/prometheus:ro -w /etc/prometheus $(PROMETHEUS_IMAGE) test rules alerts_test.yml
 
-load: ## Not implemented yet
-	@echo "load: not implemented yet; see docs/plan/implementation-plan.md" >&2; exit 1
+# make load is the rate scenario (D51, ADR-0010 section 3): LOAD_COUNT sms at
+# the configured rate through a stack of its own with the mock provider, and
+# no one-second window at the provider may hold more than 100 arrivals. It is
+# load-smoke at full size (the same test, about five minutes instead of one)
+# on a stack that traces one request in a hundred. The k6 scenarios the plan
+# named are not built (docs/future-work.md).
+LOAD_PROJECT ?= edns-load
+LOAD_COUNT   ?= 30000
+LOAD_TIMEOUT ?= 25m
+LOAD_OVERRIDE = test/load/docker-compose.load.yml
+LOAD_COMPOSE  = $(E2E_PORTS) $(COMPOSE_MOCK) -f $(LOAD_OVERRIDE) -p $(LOAD_PROJECT)
+
+load: ## The rate scenario: LOAD_COUNT sms (30,000) at the configured rate; no one-second window above 100 (needs Go and Docker)
+	@rm -rf load-logs; \
+	trap 'exit 130' INT TERM; \
+	$(call e2e_pass,$(LOAD_COMPOSE),E2E_PROJECT=$(LOAD_PROJECT) LOAD_SMOKE_COUNT=$(LOAD_COUNT) $(E2E_GO_TEST) -timeout $(LOAD_TIMEOUT) -run '^TestLoadSmoke$$' ./test/e2e/...,load-logs,the rate scenario)
 
 demo: ## Send at most 10 notifications through the running stack and follow them (DEMO_ARGS="--count 3")
 	@if [ -z "$$(docker-compose ps --status running -q worker 2>/dev/null)" ]; then \
@@ -150,8 +164,8 @@ up-mock: ## Start the stack with mockprovider as the provider
 down: ## Stop the stack and remove its volumes
 	$(COMPOSE_MOCK) down -v
 
-verify-suite: ## Not implemented yet
-	@echo "verify-suite: not implemented yet; see docs/plan/implementation-plan.md" >&2; exit 1
+verify-suite: ## Apply each mutation patch of test/mutations to a temporary worktree; every test it names must fail (needs Go and Docker)
+	@sh test/mutations/verify.sh $(MUTATIONS)
 
 # Time box of each fuzz target. The minimisation of a new input is bounded
 # as well: by default the engine may spend up to 60s on each one, and with
