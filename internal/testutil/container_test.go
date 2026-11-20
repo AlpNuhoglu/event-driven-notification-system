@@ -2,6 +2,7 @@ package testutil
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -45,7 +46,7 @@ func TestStartRetrying(t *testing.T) {
 		if err == nil {
 			t.Fatal("no error after the last attempt failed")
 		}
-		for _, want := range []string{"attempt 1: docker says no", "attempt 4: docker says no"} {
+		for _, want := range []string{"attempt 1: docker says no", fmt.Sprintf("attempt %d: docker says no", startAttempts)} {
 			if !strings.Contains(err.Error(), want) {
 				t.Errorf("error %q does not contain %q", err, want)
 			}
