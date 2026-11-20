@@ -43,35 +43,46 @@ var (
 )
 
 func startRabbit() (*rabbitServer, error) {
+	s, err := startRetrying("rabbitmq", func() (*rabbitServer, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), startTimeout)
+		defer cancel()
+		c, err := tcrabbitmq.Run(ctx, RabbitMQImage,
+			testcontainers.WithFiles(testcontainers.ContainerFile{
+				Reader:            strings.NewReader(rabbitPlugins),
+				ContainerFilePath: "/etc/rabbitmq/enabled_plugins",
+				FileMode:          0o644,
+			}),
+		)
+		if err != nil {
+			if c != nil {
+				discard("rabbitmq", c)
+			}
+			return nil, fmt.Errorf("start rabbitmq: %w", err)
+		}
+		amqpURL, err := c.AmqpURL(ctx)
+		if err != nil {
+			discard("rabbitmq", c)
+			return nil, fmt.Errorf("amqp url: %w", err)
+		}
+		base, err := url.Parse(amqpURL)
+		if err != nil {
+			discard("rabbitmq", c)
+			return nil, fmt.Errorf("parse amqp url: %w", err)
+		}
+		base.Path = ""
+		httpURL, err := c.HttpURL(ctx)
+		if err != nil {
+			discard("rabbitmq", c)
+			return nil, fmt.Errorf("http url: %w", err)
+		}
+		return &rabbitServer{container: c, amqpBase: base, httpBase: httpURL, user: c.AdminUsername, pass: c.AdminPassword}, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	c := s.container
 	ctx, cancel := context.WithTimeout(context.Background(), startTimeout)
 	defer cancel()
-	c, err := tcrabbitmq.Run(ctx, RabbitMQImage,
-		testcontainers.WithFiles(testcontainers.ContainerFile{
-			Reader:            strings.NewReader(rabbitPlugins),
-			ContainerFilePath: "/etc/rabbitmq/enabled_plugins",
-			FileMode:          0o644,
-		}),
-	)
-	if err != nil {
-		if c != nil {
-			_ = testcontainers.TerminateContainer(c)
-		}
-		return nil, fmt.Errorf("start rabbitmq: %w", err)
-	}
-	amqpURL, err := c.AmqpURL(ctx)
-	if err != nil {
-		return nil, errors.Join(fmt.Errorf("amqp url: %w", err), testcontainers.TerminateContainer(c))
-	}
-	base, err := url.Parse(amqpURL)
-	if err != nil {
-		return nil, errors.Join(fmt.Errorf("parse amqp url: %w", err), testcontainers.TerminateContainer(c))
-	}
-	base.Path = ""
-	httpURL, err := c.HttpURL(ctx)
-	if err != nil {
-		return nil, errors.Join(fmt.Errorf("http url: %w", err), testcontainers.TerminateContainer(c))
-	}
-	s := &rabbitServer{container: c, amqpBase: base, httpBase: httpURL, user: c.AdminUsername, pass: c.AdminPassword}
 	// The management listener can start a moment after the broker logs
 	// that it is ready.
 	if !poll(func() bool { return s.api(ctx, http.MethodGet, "/api/overview", "") == nil }, time.Minute) {

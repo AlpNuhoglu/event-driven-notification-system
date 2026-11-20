@@ -2,7 +2,6 @@ package testutil
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -30,24 +29,37 @@ var (
 )
 
 func startRedis() (*redis.Options, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), startTimeout)
-	defer cancel()
-	c, err := tcredis.Run(ctx, RedisImage,
-		testcontainers.WithCmd("redis-server", "--save", "", "--appendonly", "no"))
-	if err != nil {
-		if c != nil {
-			_ = testcontainers.TerminateContainer(c)
+	type started struct {
+		container *tcredis.RedisContainer
+		opts      *redis.Options
+	}
+	st, err := startRetrying("redis", func() (started, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), startTimeout)
+		defer cancel()
+		c, err := tcredis.Run(ctx, RedisImage,
+			testcontainers.WithCmd("redis-server", "--save", "", "--appendonly", "no"))
+		if err != nil {
+			if c != nil {
+				discard("redis", c)
+			}
+			return started{}, fmt.Errorf("start redis: %w", err)
 		}
-		return nil, fmt.Errorf("start redis: %w", err)
-	}
-	u, err := c.ConnectionString(ctx)
+		u, err := c.ConnectionString(ctx)
+		if err != nil {
+			discard("redis", c)
+			return started{}, fmt.Errorf("connection string: %w", err)
+		}
+		opts, err := redis.ParseURL(u)
+		if err != nil {
+			discard("redis", c)
+			return started{}, fmt.Errorf("parse url: %w", err)
+		}
+		return started{container: c, opts: opts}, nil
+	})
 	if err != nil {
-		return nil, errors.Join(fmt.Errorf("connection string: %w", err), testcontainers.TerminateContainer(c))
+		return nil, err
 	}
-	opts, err := redis.ParseURL(u)
-	if err != nil {
-		return nil, errors.Join(fmt.Errorf("parse url: %w", err), testcontainers.TerminateContainer(c))
-	}
+	c, opts := st.container, st.opts
 	for i := 0; i < redisDatabases; i++ {
 		redisFree = append(redisFree, i)
 	}
