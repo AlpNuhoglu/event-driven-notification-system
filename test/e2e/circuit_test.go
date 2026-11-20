@@ -33,13 +33,19 @@ const (
 // workerSetting reads an environment variable of the running worker
 // container, as the worker sees it; false when it is not set.
 func workerSetting(name string) (string, bool, error) {
-	out, err := compose("ps", "-q", "worker")
+	return serviceSetting("worker", name)
+}
+
+// serviceSetting reads an environment variable of the one running container
+// of a service, as the service sees it; false when it is not set.
+func serviceSetting(service, name string) (string, bool, error) {
+	out, err := compose("ps", "-q", service)
 	if err != nil {
 		return "", false, err
 	}
 	id := strings.TrimSpace(out)
 	if id == "" || strings.Contains(id, "\n") {
-		return "", false, fmt.Errorf("want one running worker container, got %q", id)
+		return "", false, fmt.Errorf("want one running %s container, got %q", service, id)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), composeTimeout)
 	defer cancel()
@@ -52,7 +58,7 @@ func workerSetting(name string) (string, bool, error) {
 	}
 	var env []string
 	if err := json.Unmarshal(buf.Bytes(), &env); err != nil {
-		return "", false, fmt.Errorf("decode the worker's environment: %w", err)
+		return "", false, fmt.Errorf("decode the environment of %s: %w", service, err)
 	}
 	for _, kv := range env {
 		if v, ok := strings.CutPrefix(kv, name+"="); ok {

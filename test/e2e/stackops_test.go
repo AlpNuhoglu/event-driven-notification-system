@@ -77,6 +77,60 @@ func metric(service, name string) (float64, error) {
 	return 0, fmt.Errorf("%s not found in the %s's /metrics", name, service)
 }
 
+// metricSum reads a service's /metrics (as metric does) and returns the sum
+// of the samples of name whose labels include every pair of match: with an
+// empty match, the sum over all of its series. A name with no matching
+// sample sums to 0; a name the service does not serve at all is an error.
+// The parser is minimal: label values must hold no comma, which holds for
+// the labels these tests read (channel, provider, outcome, kind).
+func metricSum(service, name string, match map[string]string) (float64, error) {
+	out, err := compose("exec", "-T", "prometheus", "wget", "-q", "-O", "-", "http://"+service+":8081/metrics")
+	if err != nil {
+		return 0, err
+	}
+	sum, seen := 0.0, false
+	for _, line := range strings.Split(out, "\n") {
+		rest, ok := strings.CutPrefix(line, name)
+		if !ok || rest == "" || (rest[0] != '{' && rest[0] != ' ') {
+			continue
+		}
+		seen = true
+		labels := map[string]string{}
+		if rest[0] == '{' {
+			end := strings.LastIndexByte(rest, '}')
+			if end < 0 {
+				return 0, fmt.Errorf("%s of %s: malformed line %q", name, service, line)
+			}
+			for _, pair := range strings.Split(rest[1:end], ",") {
+				k, v, ok := strings.Cut(pair, "=")
+				if ok {
+					labels[k] = strings.Trim(v, `"`)
+				}
+			}
+			rest = rest[end+1:]
+		}
+		matches := true
+		for k, v := range match {
+			if labels[k] != v {
+				matches = false
+				break
+			}
+		}
+		if !matches {
+			continue
+		}
+		v, err := strconv.ParseFloat(strings.TrimSpace(rest), 64)
+		if err != nil {
+			return 0, fmt.Errorf("%s of %s: line %q: %w", name, service, line, err)
+		}
+		sum += v
+	}
+	if !seen {
+		return 0, fmt.Errorf("%s not found in the %s's /metrics", name, service)
+	}
+	return sum, nil
+}
+
 // psql runs one SQL statement in the postgres container and returns its
 // unaligned, tuples-only output.
 func psql(query string) (string, error) {
