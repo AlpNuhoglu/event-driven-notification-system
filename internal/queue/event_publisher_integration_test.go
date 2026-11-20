@@ -130,6 +130,19 @@ func received(t *testing.T, c *testutil.Collector) []domain.StatusChanged {
 // connection is dropped, not held.
 func publishUntilReceived(t *testing.T, p *EventPublisher, c *testutil.Collector) int {
 	t.Helper()
+	// handled counts the events the publisher has dealt with, one way or
+	// another. The publisher has one goroutine, and it takes nothing from
+	// the buffer while it dials; a loop that published on every poll would
+	// fill a small buffer during a dial that takes longer than a few polls
+	// (seen in P6 on a loaded machine: a dial of 130 ms, 14 events that
+	// found a buffer of 8 full). So the next event is published only when
+	// every earlier one has been dealt with, and the buffer never holds more
+	// than one event of this loop, however long a dial takes.
+	handled := func() uint64 {
+		s := p.Stats()
+		return s.Published + s.DroppedBufferFull + s.DroppedNotConnected + s.DroppedPublishError
+	}
+	base := handled()
 	var sent []uuid.UUID
 	testutil.Eventually(t, func() bool {
 		for _, e := range received(t, c) {
@@ -138,6 +151,9 @@ func publishUntilReceived(t *testing.T, p *EventPublisher, c *testutil.Collector
 					return true
 				}
 			}
+		}
+		if handled() < base+uint64(len(sent)) {
+			return false
 		}
 		e := statusEvent(domain.StatusQueued, 2)
 		sent = append(sent, e.ID)
