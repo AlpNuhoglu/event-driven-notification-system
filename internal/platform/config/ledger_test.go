@@ -36,8 +36,9 @@ func TestDefaults_AreTheLedgerValues(t *testing.T) {
 		{"D20", "LEASE_DURATION", c.Worker.LeaseDuration, 30 * time.Second},
 		{"D23", "WORKER_CONCURRENCY", c.Worker.Concurrency, 25},
 		// D24 decided 98 "with the margin derived from load-smoke"; the author
-		// lowered it to 97 in P6 after a run with a window of 100.
-		{"D24", "RATE_LIMIT_PER_SECOND", c.RateLimit.PerSecond, 97},
+		// lowered it to 97 in P6 after a run with a window of 100, and to 90 in
+		// P7 after a run with a window of 102 (a margin of ten).
+		{"D24", "RATE_LIMIT_PER_SECOND", c.RateLimit.PerSecond, 90},
 		{"D24", "RATE_LIMIT_HORIZON", c.RateLimit.Horizon, 250 * time.Millisecond},
 		{"D24", "RATE_LIMIT_RETRY_INTERVAL", c.RateLimit.RetryInterval, 50 * time.Millisecond},
 		{"D26", "BREAKER_WINDOW", c.Breaker.Window, 30 * time.Second},
