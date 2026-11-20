@@ -4,7 +4,7 @@ The first file every session reads and the last one it updates. The phases and t
 
 ## Current phase
 
-**P7: delivery** — `p7/delivery` is merged and carried the phase, in the scope the author reduced on 2026-11-20; `main` is the submittable state. `p7/rate-margin` (the configured rate at 90 msg/s, the author's decision on open issue 16) is merged as well. **`p7/release-workflow` is in review:** a release workflow that publishes the image on a version tag, time-boxed to 30 minutes.
+**P7: delivery** — `p7/delivery` is merged and carried the phase, in the scope the author reduced on 2026-11-20; `main` is the submittable state. `p7/rate-margin` (the configured rate at 90 msg/s, the author's decision on open issue 16) and `p7/release-workflow` (an image published on a version tag) are merged as well. **`p7/gateway-test-race` is in review:** a one-line fix of a test whose wait was ambiguous, after the `unit` job failed once on `main`.
 
 **The project is complete with the merge of `p7/delivery`;** `p7/rate-margin` adds a margin to the rate and nothing else. Every requirement of the assessment (R1 to R36, the bonus features included) is implemented and has its evidence in the [README's requirements map](../README.md#requirements-map); P0 to P6 are merged. **One piece of that evidence is qualified:** at the rate of 97 the limit (R15) held in every run on an idle machine and was exceeded in one load run on a machine doing other work; the worker has an open defect that lets two sends start together after a stall (open issue 16). The rate is now 90, a margin of ten, with the largest windows 91 (idle) and 92 (host loaded).
 
@@ -24,7 +24,7 @@ The first file every session reads and the last one it updates. The phases and t
 | **The rate limit under load on a machine in ordinary use:** one of four runs of the 30,000-message scenario at 97 msg/s logged 102 arrivals in a second and failed. A traced run then found a worker-side defect (two sends starting together after a stall; 99 in a second); it is described and **not fixed**, and it is not shown to be the cause of the 102 (open issue 16). The rate was lowered to 90 to bound its effect; at 90 no run beside ordinary light work was made, and only one run per condition | load-test.md, "Send side against receive side"; the README's load results and limitations; future-work.md |
 | The "largest window" of 118 in the pacing series that spanned the machine's sleep, which was not investigated | load-test.md |
 
-**Next step:** the author merges `p7/release-workflow`; `main`'s head is then tagged `v1.0.0` and the release run is reported. If the time box is exceeded, `main` is submitted as it is. Open issue 16 (the worker-side defect; below) stays open and is documented; nothing else follows. The default provider URL expires on 2026-11-27 and had 49 of its 50 requests left on 2026-11-20.
+**Next step:** the author merges `p7/gateway-test-race` or reruns the failed job on `main`, and says on which commit `v1.0.0` goes; the release run is then reported. Open issue 16 (the worker-side defect; below) stays open and is documented; nothing else follows. The default provider URL expires on 2026-11-27 and had 49 of its 50 requests left on 2026-11-20.
 
 **How P7 was done** (the plan named three branches; the author made it one pull request with the submission about three hours away):
 
@@ -83,7 +83,7 @@ Status is one of: `not started`, `in progress`, `in review` (pull requests open)
 | P4 | Templates and scheduling | done | [#14](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/14) (`p4/templates`, merged), [#15](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/15) (`p4/scheduling`, merged) | 2026-11-19 |
 | P5 | Real-time and observability | done | [#16](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/16) (`p5/events-and-gateway`, merged), [#17](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/17) (`p5/metrics-and-summary`, merged), [#18](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/18) (`p5/logging-tracing-health`, merged) | 2026-11-20 |
 | P6 | Quality | done, in the reduced scope | [#19](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/19) (`p6/matrix-and-chaos`, merged), [#20](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/20) (`p6/load`, merged) | 2026-11-20 |
-| P7 | Delivery | done, in the reduced scope; one more pull request in review | [#21](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/21) (`p7/delivery`, merged), [#22](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/22) (`p7/rate-margin`, merged), [#23](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/23) (`p7/release-workflow`, in review) | 2026-11-20 |
+| P7 | Delivery | done, in the reduced scope; one more pull request in review | [#21](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/21) (`p7/delivery`, merged), [#22](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/22) (`p7/rate-margin`, merged), [#23](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/23) (`p7/release-workflow`, merged), [#24](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/24) (`p7/gateway-test-race`, in review) | 2026-11-20 |
 
 ## First-hour experiments
 
@@ -145,6 +145,18 @@ Newest entry first. One entry per session, in this form:
 - **Open issues:** new entries added to the table above.
 - **Next step:** the first thing the next session does.
 ```
+
+### 2026-11-20 — P7, after the merge of `p7/release-workflow`: the `unit` job failed once on `main` (`p7/gateway-test-race`)
+
+- **Reported by the author:** the CI run of `main` after the merge of PR #23 failed in `unit`.
+- **The failure** ([run 44741783729](https://github.com/AlpNuhoglu/event-driven-notification-system/actions/runs/44741783729), the push run of `836524f`; the six other jobs passed; the job's log is kept): `internal/gateway` `TestGateway_ClientThatDoesNotReadItsSnapshotIsDisconnected`: "the connection ended after 100.812µs, before the write timeout of 150ms" and "0 connections closed for a full send queue and 0 for a snapshot not taken; want 0 and 1". The test is from P5 and was not changed since; PR #23 changed a workflow file and documents, and its head, which has the same tree as `836524f`, passed the job twice.
+- **Cause, a defect of the test and not of the gateway.** The test waited for `Connections() == 0` to learn that the stalled connection was closed. The gateway registers a connection (`admit`) after `websocket.Accept` has answered the handshake, and the client's `dial` returns on that answer, so for a moment after `dial` the gateway has no connection yet. A poll that falls into that moment takes "not registered yet" for "closed". On the CI runner the first poll came 0.1 ms after the subscribe.
+- **Shown, since 600 repetitions on this machine did not reproduce it:** with a temporary 50 ms delay before `admit` (never committed; the file restored and its checksum compared), the unchanged test fails 3 of 3 with the same two messages; the corrected test passes 5 of 5 with the delay, and 400 of 400 without it (`-race`, with one and two processors).
+- **The fix, in the test only:** it waits for the snapshot timeout itself and the empty table together (`SnapshotTimeouts() == 1 && Connections() == 0`), which cannot be true before the connection existed. The other waits on `Connections()` in the package were read: each waits for a count that only a registered connection gives.
+- **Pull requests opened:** [#24](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/24) from `p7/gateway-test-race`.
+- **Not done:** `v1.0.0` is not tagged; the author has not said on which commit it goes, and `main`'s latest run is red.
+- **Not verified:** the failure reproduced without the artificial delay; other packages for waits of the same shape (a condition that is also true before the thing waited for has started).
+- **Next step:** the author merges this pull request, or reruns the failed job on `main`, and says where `v1.0.0` goes.
 
 ### 2026-11-20 — P7, after the merge of `p7/rate-margin`: the release workflow (`p7/release-workflow`)
 
