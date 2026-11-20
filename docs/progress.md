@@ -48,7 +48,7 @@ Status is one of: `not started`, `in progress`, `in review` (pull requests open)
 | P2 | API completeness | done | [#7](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/7) (`p2/batch-and-idempotency`, merged), [#8](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/8) (`p2/cancel-redrive-listing`, merged), [#9](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/9) (`p2/validation`, merged) | 2026-11-19 |
 | P3 | Delivery robustness | done | [#10](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/10) (`p3/classification-and-retry`, merged), [#11](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/11) (`p3/breaker-and-fallback`, merged), [#12](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/12) (`p3/recovery`, merged); follow-up [#13](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/13) (`p3/isopen-race`, merged) | 2026-11-19 |
 | P4 | Templates and scheduling | done | [#14](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/14) (`p4/templates`, merged), [#15](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/15) (`p4/scheduling`, merged) | 2026-11-19 |
-| P5 | Real-time and observability | in review | [#16](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/16) (`p5/events-and-gateway`, merged), [#17](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/17) (`p5/metrics-and-summary`, merged), `p5/logging-tracing-health` (in review) | 2026-11-20 |
+| P5 | Real-time and observability | in review | [#16](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/16) (`p5/events-and-gateway`, merged), [#17](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/17) (`p5/metrics-and-summary`, merged), [#18](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/18) (`p5/logging-tracing-health`, in review) | 2026-11-20 |
 | P6 | Quality | not started | | |
 | P7 | Delivery | not started | | |
 
@@ -150,7 +150,7 @@ Newest entry first. One entry per session, in this form:
   - the webhook.site API answers as the probe assumes: `GET /token/<uuid>` `200`, `/requests?per_page=1` with `total`, `404` for a URL that does not exist; these calls do not count as requests to the URL;
   - against a URL that does not exist: "the webhook.site URL has been deleted or has expired; nothing was sent", exit 1;
   - against the throwaway URL: "the URL exists and has 50 requests left", three notifications followed to `sent`; a second run: "47 requests left", three replays, and the URL's total stayed 3.
-- **Pull requests opened:** see the phase table.
+- **Pull requests opened:** [#18](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/18) from `p5/logging-tracing-health`.
 - **Exit criteria of P5, all run by the main loop on this branch** (mock profile and test containers; the throwaway URL for the demo's probe only):
   - `make test`: green, 26 packages.
   - `make test-e2e`: green, 173 s, 15 tests. `TestCanaryScan`: no match. `TestDashboardSmoke`: the four targets up, the six rules loaded, every panel query returns data. `load-smoke`: 6,000 SMS in 61.2 s, 98.0/s, largest one-second window **99**.
