@@ -77,7 +77,10 @@ services:
     <<: *app
     command: ["worker"]
     environment:
-      PROVIDER_URL: ${PROVIDER_URL:-https://webhook.site/43b89abc-51c2-438c-9847-e1e8ccc8e078}
+      # The default provider: a free webhook.site URL created on 2026-11-20. It
+      # takes 50 requests in total and expires on 2026-11-27; the README says
+      # how many are left and how to use your own.
+      PROVIDER_URL: ${PROVIDER_URL:-https://webhook.site/7940ee46-a3b1-48b7-a29a-3056e46df5fb}
     depends_on:
       postgres:
         condition: service_healthy
