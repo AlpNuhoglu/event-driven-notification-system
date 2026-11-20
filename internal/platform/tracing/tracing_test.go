@@ -77,6 +77,69 @@ func TestSampler_Names(t *testing.T) {
 	}
 }
 
+// The span of a request the api received keeps only the attributes of its
+// list: everything else the instrumentation records there is text the
+// client chose (the path, the user agent, the Host header, X-Forwarded-For,
+// a method of its own), or is not known to be safe. The client span of the
+// provider call keeps its server.address: that is the configured provider.
+func TestExporter_ServerSpanKeepsOnlyItsList(t *testing.T) {
+	p, exp := newTest(t, SamplerAlwaysOn, 1)
+	chosen := "client-chosen-text"
+	tracer := p.TracerProvider().Tracer("go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp")
+
+	_, server := tracer.Start(context.Background(), "GET /v1/notifications/{id}", trace.WithSpanKind(trace.SpanKindServer))
+	server.SetAttributes(
+		attribute.String("http.request.method", "_OTHER"),
+		attribute.String("http.request.method_original", chosen),
+		attribute.Int("http.response.status_code", 404),
+		attribute.String("http.route", "/v1/notifications/{id}"),
+		attribute.String("url.scheme", "http"),
+		attribute.String("url.path", "/v1/notifications/"+chosen),
+		attribute.String("user_agent.original", chosen),
+		attribute.String("server.address", chosen+".example.com"),
+		attribute.Int("server.port", 8080),
+		attribute.String("client.address", chosen),
+		attribute.String("network.peer.address", "10.0.0.7"),
+		attribute.String("network.protocol.version", "1.1"),
+		attribute.String("an.attribute.of.a.later.version", chosen),
+	)
+	server.End()
+	_, client := tracer.Start(context.Background(), "HTTP POST", trace.WithSpanKind(trace.SpanKindClient))
+	client.SetAttributes(attribute.String("server.address", "provider.example.com"), attribute.String("url.full", "https://provider.example.com/send?x=1"))
+	client.End()
+
+	spans := exp.GetSpans()
+	if len(spans) != 2 {
+		t.Fatalf("%d spans", len(spans))
+	}
+	kept := map[attribute.Key]string{}
+	for _, kv := range spans[0].Attributes {
+		kept[kv.Key] = kv.Value.String()
+		if strings.Contains(kv.Value.String(), chosen) {
+			t.Errorf("the server span keeps %s = %q, which holds text the client chose", kv.Key, kv.Value.String())
+		}
+	}
+	want := map[attribute.Key]string{
+		"http.request.method": "_OTHER", "http.response.status_code": "404", "http.route": "/v1/notifications/{id}",
+		"url.scheme": "http", "server.port": "8080", "network.peer.address": "10.0.0.7", "network.protocol.version": "1.1",
+	}
+	if len(kept) != len(want) {
+		t.Errorf("the server span keeps %v, want exactly %v", kept, want)
+	}
+	for k, v := range want {
+		if kept[k] != v {
+			t.Errorf("%s = %q, want %q", k, kept[k], v)
+		}
+	}
+	of := map[attribute.Key]string{}
+	for _, kv := range spans[1].Attributes {
+		of[kv.Key] = kv.Value.String()
+	}
+	if of["server.address"] != "provider.example.com" || of["url.full"] != "https://provider.example.com/send" {
+		t.Errorf("the client span has %v, want its server.address and a url.full without the query", of)
+	}
+}
+
 // A span of third-party instrumentation leaves without error texts, URL
 // queries or SQL arguments; the application's own spans pass unchanged.
 func TestExporter_SanitizesThirdPartySpans(t *testing.T) {
@@ -87,9 +150,6 @@ func TestExporter_SanitizesThirdPartySpans(t *testing.T) {
 	span.SetAttributes(
 		attribute.String("url.full", "https://user:pw@provider.example.com/send?to="+secret+"#frag"),
 		attribute.String("url.query", "to="+secret),
-		attribute.String("url.path", "/v1/notifications/"+secret),
-		attribute.String("user_agent.original", "client for "+secret),
-		attribute.String("http.route", "/v1/notifications/{id}"),
 		attribute.String("db.query.parameter.0", secret),
 		attribute.String("server.address", "provider.example.com"),
 	)
@@ -113,9 +173,8 @@ func TestExporter_SanitizesThirdPartySpans(t *testing.T) {
 	want := map[attribute.Key]string{
 		"url.full":       "https://provider.example.com/send",
 		"server.address": "provider.example.com",
-		"http.route":     "/v1/notifications/{id}",
 	}
-	if len(got) != len(want) || got["url.full"] != want["url.full"] || got["server.address"] != want["server.address"] || got["http.route"] != want["http.route"] {
+	if len(got) != len(want) || got["url.full"] != want["url.full"] || got["server.address"] != want["server.address"] {
 		t.Errorf("attributes %v, want %v", got, want)
 	}
 	if third.Status.Code != codes.Error || third.Status.Description != "" {

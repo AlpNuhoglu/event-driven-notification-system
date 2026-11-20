@@ -576,7 +576,9 @@ func (f *frame) log(r *http.Request, st *requestState, status int, d time.Durati
 		route = "unmatched"
 	}
 	attrs := []slog.Attr{
-		slog.String("method", r.Method),
+		// The method as the metrics label it: a method outside the standard
+		// ones is text the client chose, and is logged as "OTHER".
+		slog.String("method", methodLabel(r.Method)),
 		slog.String("route", route),
 		slog.Int("status", status),
 		slog.Float64("duration_ms", float64(d.Microseconds())/1000),
