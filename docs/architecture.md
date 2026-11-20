@@ -187,7 +187,7 @@ stateDiagram-v2
 
 | Quantity | Value |
 |---|---|
-| Pacing rate | 97 msg/s per channel, chosen so that no one-second window at the provider exceeds 100. Measured: 98 on an idle machine, and 102 in one load run on a machine doing other work ([load-test results](load-test.md)); the limit applies to when a send starts |
+| Pacing rate | 97 msg/s per channel, chosen so that no one-second window at the provider exceeds 100. Measured: 98 on an idle machine, 99 on a loaded one, and 102 in one load run on a machine doing other work ([load-test results](load-test.md)). The limiter spaces the starts of the sends; a defect that lets two sends start together after a stall is open |
 | Delivery capacity | 3 channels × 97 msg/s = **291 msg/s**, about **25.1 M per day** |
 | 1 M SMS burst | About 2.9 hours to drain through the SMS channel |
 | RabbitMQ buffer | At most 2,000 distinct notifications per channel (HWM per lane: high 500, normal 1,000, low 500), about 21 seconds of work; duplicates possible |

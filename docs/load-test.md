@@ -83,8 +83,9 @@ The scenario was run twice more on 2026-11-20, in P7, from a fresh clone of the 
 | P6 (above) | Nothing else running | 30,000 in 309.3 s, 97.0 per second | **98** | Pass |
 | **P7, first** | **The session that wrote the documents was working on the machine:** shell commands, Git, a few HTTP requests, small scripts. No build, no test run, no other container | 30,000 in 309.5 s, 96.9 per second | **102** | **Fail:** "a one-second window at the provider holds 102 sms arrivals, more than 100". The mock's own figure and the window computed from its arrival times agree |
 | P7, second | Nothing else running; the session waited | 30,000 in 309.3 s, 97.0 per second | **98** | Pass |
+| P7, third (the comparison below) | **Four busy processes on the host for the whole run,** every request traced instead of one in a hundred, the stack kept afterwards | 30,000 in 309.8 s, 96.8 per second | **99** | Pass |
 
-**So the claim of this section does not hold unconditionally: at 97 msg/s, one of three runs of 30,000 sms put 102 arrivals into one second at the mock provider, on a machine that was only lightly used.** Two arrivals above the limit in the worst second of a run of 30,000.
+**So the claim of this section does not hold unconditionally: at 97 msg/s, one of four runs of 30,000 sms put 102 arrivals into one second at the mock provider, on a machine that was only lightly used.** Two arrivals above the limit in the worst second of a run of 30,000.
 
 What the failed run's logs show (they are kept outside the repository): the worker logged all 30,000 notifications as sent, no warning and no error, and its "sent" lines have three places where nothing completed for a moment and a bunch followed: two gaps of 51 and 57 ms eight seconds into the run, gaps of 53 and 99 ms at 3 min 27 s, and one of 178 ms at 4 min 22 s. Counted over the worker's own completion times, 16 one-second windows hold 100 or more (the largest 106); those are completions, not arrivals, and the arrivals are the mock's 102.
 
@@ -93,7 +94,36 @@ What the failed run's logs show (they are kept outside the repository): the work
 - The receiving side stalled (the mock's process, or the virtual machine's network path), while the worker went on starting sends at its slots. Requests then queue and are received together. This is the limitation the design already states: **the limit is enforced when a send starts, not when it arrives** ([future-work.md](future-work.md)). A stall of 50 ms holds about five sends; three free slots do not absorb that, and no rate close to 100 would.
 - The worker stalled and then sent late claims together. The missed-slot rule (D77) exists to prevent exactly this and has its tests and its mutation; nothing in this run contradicts them, and nothing in it confirms that they held.
 
-Neither was investigated further. The plan's pacing-margin rule (lower the rate when a run shows 100 or more, then repeat the runs) was **not** applied: it is a change of the configured rate and of D24, which is the author's decision, and by the first reading a rate of 96 would not have prevented this run. The 20 `load-smoke` runs and the two passing runs above were on an idle machine; **an idle machine is the condition under which "largest window 98" was measured.**
+The failed run itself cannot be examined any more. The next section is the comparison that was made instead, on a run of its own. The plan's pacing-margin rule (lower the rate when a run shows 100 or more, then repeat the runs) was **not** applied: it is a change of the configured rate and of D24, which is the author's decision, and by the first reading a rate of 96 would not have prevented this run. The 20 `load-smoke` runs and the two runs with 98 above were on an idle machine; **an idle machine is the condition under which "largest window 98" was measured.**
+
+### Send side against receive side (open issue 16)
+
+One run, time-boxed to 30 minutes on 2026-11-20, to find out on which side arrivals bunch. The rate stayed 97 and no code was changed. The host was loaded on purpose (four processes that only burn a processor, for the whole run), every request was traced (`OTEL_TRACES_SAMPLER_ARG=1.0` for this run only; the scenario normally traces 1 %), and the stack was kept afterwards.
+
+- **Receive side:** the mock provider's 30,000 arrival stamps.
+- **Send side:** the start of the worker's HTTP client span (`HTTP POST`) of each of the 30,000 provider calls, read from Jaeger. This is the moment the worker starts the call. Both sides read the clock of the same virtual machine.
+
+**The window above 100 was not reproduced:** the largest one-second window was 99, of arrivals and of starts alike.
+
+| | Result |
+|---|---|
+| The n-th start against the n-th arrival, all 30,000 | The arrival follows the start by 0.10 ms (median), 1.03 ms at the 99.9th percentile, 12.4 ms at most; 2 of 30,000 by more than 5 ms |
+| One-second windows of **starts** | 97 in 16,034 of them, 98 in 13,073, **99 in 2** |
+| One-second windows of **arrivals** | At most 99, at the same instant as the starts' 99 |
+| Gaps between consecutive starts | 10.32 ms (median). 14 gaps over 20 ms, 2 over 50 ms, one of 252 ms: the stalls are on the send side too |
+| After the gap of 252 ms | No catch-up: at most 98 starts in any second of the next two |
+| Calls that started less than 5 ms apart | **Two pairs, 0.22 ms and 0.07 ms apart,** both within a quarter of a second after a gap of 52 ms (which followed gaps of 42 and 33 ms). They are the two windows of 99 |
+| `pacer_slots_missed_total` for the run | 28: the missed-slot rule gave up 28 slots |
+
+**What the comparison shows, for this run:**
+
+1. **The arrivals were not bunched on the way.** Every irregularity in the arrivals is already in the starts; the receiving side and the path between the two added about a millisecond at most. The reading "the sends were on time and a stall of the receiver bunched them" is **not** what this run shows.
+2. **The stalls were on the send side, and the pacer did not catch up after them.** While the worker (or what it waits for: the claim in Postgres, the reservation in Redis) stood still, nothing was sent; afterwards the sends were one slot apart again. The longest stall, a quarter of a second, was followed by no window above 98.
+3. **Twice, after a shorter stall, two calls started within a millisecond of each other.** This is on the worker's side and it is outside what the missed-slot rule (D77) allows: a send may start up to 5 ms after its slot (`PACER_SLOT_TOLERANCE`), so two consecutive sends can be 5.3 ms apart by design, not 0.1 ms. In this run it cost one message per window: 99 instead of 98.
+
+**What is not established:** which step lets two calls start together. Read from the code, not measured: the rule is checked when the wait for the slot ends, so a goroutine that is held between that check and the start of its call starts late, next to the following one; and a reservation's wait is relative, so a reservation whose answer from Redis was delayed by the stall can land on a later slot's time. The spans do not record a call's slot, so neither reading could be checked. **Nor is it established that this effect produced the 102 of the failed run:** that run's data is gone, its stalls were longer (up to 178 ms), and it traced 1 % of the requests where this one traced all. What can be said is that the one mechanism observed is on the send side, that it appeared right after stalls, and that the failed run had stalls followed by bunches.
+
+**Stopped here, by the author's time box.** No fix was attempted, the rate was not changed, and the effect is recorded as a worker-side defect that is open ([future-work.md](future-work.md), the limitation on the rate limit; open issue 16 in [progress.md](progress.md)). The next step would be to record each call's slot next to its start (a span attribute) and to repeat the run until a window above 100 appears with that data kept.
 
 ## Strict priority and channel isolation
 
