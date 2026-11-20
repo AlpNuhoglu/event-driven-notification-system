@@ -97,7 +97,9 @@ Questions that the ledger and the ADRs do not answer, and problems that are not 
 
 | # | Raised on | Issue | Blocks |
 |---|---|---|---|
-| 15 | 2026-11-20 (P6) | **The ledger still gives the rate as 98 msg/s (D24) and the capacity as 294 msg/s (G4).** The author set the configured rate to 97 in `p6/load` (the plan's pacing-margin rule, after a window of 100). D24 says "98 msg/s per channel (configurable; margin derived from the jitter measured by load-smoke)", so the change is within the decision, but the two numbers in the ledger are now the old ones. The ADRs and the other documents say 97 and 291. **For the author:** amend D24 and G4, or leave them as the record of the first value. | Nothing |
+| — | | No open issue. | |
+
+Issue 15 (the ledger gave the rate as 98 msg/s in D24 and the capacity as 294 msg/s in G4) is **closed by the author's amendment of the ledger** in `p7/delivery`: D24 says 97 msg/s (the first value was 98, lowered in P6 after one run logged a window of 100) and G4 says 291 msg/s in total. D21 and D25 were not part of the amendment and still quote 294 and 98; the ledger's amendment note says so.
 
 Issue 14 (the last sentence of D27 no longer matched the provider client) is **closed by the author's amendment of D27** in `p6/load`: a request counts as written once its body has been read to the end and no failed write was reported (ledger, ADR-0007 §2, review log §6).
 
