@@ -22,7 +22,33 @@ The measurements behind the quantitative claims of the design ([ADR-0010](adr/00
 
 **The claim:** per channel, no half-open one-second window `[t, t + 1 s)` over the arrival times at the provider holds more than 100 messages (R15; [ADR-0007](adr/0007-retry-policy-and-circuit-breaker.md) §5). The mock provider records every arrival; the window is computed over the sorted arrivals (`internal/ratewindow`, with its own unit test) and cross-checked against the mock's own figure. The largest window is a count: it is exact.
 
-### The pacing margin: why the configured rate is 97
+### The configured rate is 90: a margin of ten
+
+**Decided by the author on 2026-11-20, at the end of P7** (ledger D24). The reason: the comparison below showed that a stall on the send side can add a send to a one-second window (two pairs of calls that started together, in 14 stalls over 30,000 sends), and the margin of three at 97 msg/s was exceeded once (a window of 102). A margin of ten absorbs several such stalls in one second. **The defect stays open and documented; the lower rate bounds its effect and does not fix it.** No pacer code was changed: the default, `.env.example` and the tests that pin the default.
+
+The evidence at 90, with **fewer runs than the plan's rule asks for** (ten `load-smoke` runs where the rule says twenty, and one run of the rate scenario per condition), because the change was made in the last hour before the submission:
+
+| Run at 90 msg/s | Conditions | Arrived | **Largest one-second window** |
+|---|---|---|---|
+| `load-smoke`, 10 runs of 6,000 sms on one stack | Nothing else running; the session waited | 6,000 in 66.7 s each (the tenth in 66.8 s), 89.8 to 90.0 per second | **91 in every one of the ten runs** |
+| `make load`, 30,000 sms | Nothing else running; the session waited | 30,000 in 333.4 s, 90.0 per second | **91** |
+| `make load`, 30,000 sms | **Four busy processes on the host for the whole run,** as in the comparison run; the session was editing documents as well | 30,000 in 333.5 s, 90.0 per second | **92** |
+
+All twelve runs passed. On an idle machine the largest window is one above the rate, as it was at 97 (98) and at 98 (99); with the host loaded it was two above, nine below the limit.
+
+At 90 msg/s a slot is 11.1 ms, a run of 30,000 sms takes 333 s and `load-smoke` 67 s. **Not shown at 90:** a run that shares the machine with ordinary light work of the kind that produced the 102 (the busy run above is the nearest); more than one run per condition; the send side against the receive side (the comparison below was made at 97).
+
+**The history, next to it:**
+
+| Rate | Largest one-second window |
+|---|---|
+| 98 msg/s (until P6) | 99 in 26 runs; **100** in one run on a busy machine |
+| 97 msg/s (P6 until the end of P7) | 98 in 20 `load-smoke` runs and in two runs of 30,000 on an idle machine; **102** in one run of 30,000 on a machine in use (the run failed); 99 in the run of 30,000 with four busy host processes and every send traced |
+| **90 msg/s** | 91 in ten `load-smoke` runs, 91 in the run of 30,000 on an idle machine, 92 with four busy host processes |
+
+The sections below are the measurements at the two earlier rates, as they were written when the rate was 97.
+
+### The pacing margin at 98 and at 97
 
 The worker starts each send at a slot of its own, `1 / rate` apart, with no burst. Arrivals can still bunch by a few milliseconds (scheduling, the network), so the configured rate must leave slots free under the limit. The plan's rule: `load-smoke` (6,000 sms, about a minute at the full rate) is run 20 times; **if any run shows a largest window of 100, the rate is lowered** and the runs are repeated.
 

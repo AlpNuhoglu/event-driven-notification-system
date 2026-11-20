@@ -154,10 +154,10 @@ A separate binary (`cmd/mockprovider`) with an admin API for fault injection. It
 | Nothing is lost or duplicated (phase 2: full drain) | 100,000 messages across the three channels | Every notification `sent`, and **each `Idempotency-Key` received exactly once** at `mockprovider` |
 | Reads stay fast on a large table | Listing and metrics summary on the phase-1 dataset | Latency reported |
 
-**As built (P6, reduced by the author on 2026-11-20).** Only the first row is run as a load scenario: `make load` sends 30,000 sms at the configured rate through a stack of its own and applies the criterion of the table; it is `load-smoke` at full size, written in Go, not in k6. The other six rows were not built. For strict priority and channel isolation the tests that exist are named in [the load-test results](../load-test.md); the saturation report, the two phases of the burst test and the read latencies are not measured ([future-work.md](../future-work.md), item 21). The configured rate is 97 msg/s since P6: one `load-smoke` run at 98 logged a largest window of 100.
+**As built (P6, reduced by the author on 2026-11-20).** Only the first row is run as a load scenario: `make load` sends 30,000 sms at the configured rate through a stack of its own and applies the criterion of the table; it is `load-smoke` at full size, written in Go, not in k6. The other six rows were not built. For strict priority and channel isolation the tests that exist are named in [the load-test results](../load-test.md); the saturation report, the two phases of the burst test and the read latencies are not measured ([future-work.md](../future-work.md), item 21). The configured rate was 97 msg/s from P6 (one `load-smoke` run at 98 had logged a largest window of 100) and is 90 msg/s since the end of P7 (one `make load` run at 97 logged 102; [the load-test results](../load-test.md)).
 
 - **`load-smoke`** is a 60-second version of the rate scenario that runs **in the end-to-end CI job from day 1**. It measures the jitter from which the pacing margin is derived ([ADR-0007](0007-retry-policy-and-circuit-breaker.md) §5).
-- **Why the burst test has two phases:** fully draining 1 M messages takes about 2.8 hours per channel, which is impractical for every run. Phase 1 proves the buffering behaviour at full scale; phase 2 proves completeness on a dataset that can be drained.
+- **Why the burst test has two phases:** fully draining 1 M messages takes about 3.1 hours per channel, which is impractical for every run. Phase 1 proves the buffering behaviour at full scale; phase 2 proves completeness on a dataset that can be drained.
 - **Duplicates are measured at the provider, not in the database.** `id` is the primary key, so `COUNT(DISTINCT id) = COUNT(*)` is always true and proves nothing. Duplicate *sends* happen at the provider, which is why `mockprovider` counts idempotency keys.
 - Chaos runs report their expected at-least-once duplicates separately. This is an honest measurement of the delivery semantics, not a pass/fail criterion.
 - Trace sampling is set to about 1 % during load tests ([ADR-0009](0009-observability.md)).
@@ -258,7 +258,7 @@ A test suite that passes proves little unless it can also fail. `make verify-sui
 | **A shared Compose stack for integration tests** | Shared state between tests and manual setup; testcontainers gives each suite a clean, isolated environment. |
 | **`time.Sleep` in tests** | Flaky and slow. |
 | **Duplicate checks in the database** | Meaningless, because `id` is a primary key (section 3). |
-| **A single 1 M full-drain run** | About 2.8 hours per run. |
+| **A single 1 M full-drain run** | About 3.1 hours per run. |
 | **Load testing against webhook.site** | Free URLs have a request cap; results would measure webhook.site, not the system. |
 | **E2E and load inside `make test`** | Would make the single test command slow and dependent on the whole stack. |
 | **A hard coverage threshold** | Encourages tests written for the number. |

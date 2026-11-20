@@ -26,7 +26,7 @@ Requirements are numbered R1 to R36 and paraphrased here. This table says where 
 | ID | Requirement | Where it is addressed |
 |---|---|---|
 | R1 | Three channels: SMS, Email, Push | [ADR-0005](adr/0005-service-topology-and-status-events.md), [ADR-0006](adr/0006-api-contract-and-three-layer-idempotency.md) §5 |
-| R2 | High volume, millions of notifications per day | [ADR-0001](adr/0001-rabbitmq-as-dispatch-broker.md): 291 msg/s, about 25.1 M per day |
+| R2 | High volume, millions of notifications per day | [ADR-0001](adr/0001-rabbitmq-as-dispatch-broker.md): 270 msg/s, about 23.3 M per day |
 | R3 | Burst traffic | [ADR-0003](adr/0003-bounded-relay-buffer-and-sweepers.md): HWM and backpressure |
 | R4 | Reliable delivery | [ADR-0002](adr/0002-postgres-as-outbox-scheduler-and-retry-delay.md), [ADR-0003](adr/0003-bounded-relay-buffer-and-sweepers.md), [ADR-0004](adr/0004-data-model-state-machine-and-fencing.md) |
 | R5 | Intelligent retries | [ADR-0007](adr/0007-retry-policy-and-circuit-breaker.md) §1–4, §7 |
@@ -39,7 +39,7 @@ Requirements are numbered R1 to R36 and paraphrased here. This table says where 
 | R12 | Cancel pending notifications | [ADR-0004](adr/0004-data-model-state-machine-and-fencing.md) transition 9; [ADR-0006](adr/0006-api-contract-and-three-layer-idempotency.md) §7 |
 | R13 | List with filters (status, channel, date range) and pagination | [ADR-0006](adr/0006-api-contract-and-three-layer-idempotency.md) §8: keyset cursor |
 | R14 | Asynchronous processing by queue workers | [ADR-0001](adr/0001-rabbitmq-as-dispatch-broker.md), [ADR-0005](adr/0005-service-topology-and-status-events.md) |
-| R15 | At most 100 messages per second per channel | [ADR-0007](adr/0007-retry-policy-and-circuit-breaker.md) §5: GCRA at 97 msg/s, zero burst |
+| R15 | At most 100 messages per second per channel | [ADR-0007](adr/0007-retry-policy-and-circuit-breaker.md) §5: GCRA at 90 msg/s, zero burst |
 | R16 | Priority queue (high, normal, low) | [ADR-0001](adr/0001-rabbitmq-as-dispatch-broker.md): strict priority in quorum queues; [ADR-0003](adr/0003-bounded-relay-buffer-and-sweepers.md): HWM per lane |
 | R17 | Content validation (character limits, required fields) | [ADR-0006](adr/0006-api-contract-and-three-layer-idempotency.md) §5: per channel, after rendering |
 | R18 | Idempotency to prevent duplicate sends | [ADR-0006](adr/0006-api-contract-and-three-layer-idempotency.md) §11: request, record and send layers |
@@ -187,11 +187,11 @@ stateDiagram-v2
 
 | Quantity | Value |
 |---|---|
-| Pacing rate | 97 msg/s per channel, chosen so that no one-second window at the provider exceeds 100. Measured: 98 on an idle machine, 99 on a loaded one, and 102 in one load run on a machine doing other work ([load-test results](load-test.md)). The limiter spaces the starts of the sends; a defect that lets two sends start together after a stall is open |
-| Delivery capacity | 3 channels × 97 msg/s = **291 msg/s**, about **25.1 M per day** |
-| 1 M SMS burst | About 2.9 hours to drain through the SMS channel |
-| RabbitMQ buffer | At most 2,000 distinct notifications per channel (HWM per lane: high 500, normal 1,000, low 500), about 21 seconds of work; duplicates possible |
-| Largest burst a channel can drain within the default TTL | `high` (10 min) ≈ 58,200; `normal` (6 h) ≈ 2.1 M; `low` (24 h) ≈ 8.4 M |
+| Pacing rate | 90 msg/s per channel: a margin of ten under the limit of 100 per second at the provider. The limiter spaces the starts of the sends; a defect that lets two sends start together after a stall is open, and the margin bounds its effect. At the earlier rate of 97 the largest window was 98 on an idle machine, 99 on a loaded one and 102 in one load run on a machine in use ([load-test results](load-test.md)) |
+| Delivery capacity | 3 channels × 90 msg/s = **270 msg/s**, about **23.3 M per day** |
+| 1 M SMS burst | About 3.1 hours to drain through the SMS channel |
+| RabbitMQ buffer | At most 2,000 distinct notifications per channel (HWM per lane: high 500, normal 1,000, low 500), about 22 seconds of work; duplicates possible |
+| Largest burst a channel can drain within the default TTL | `high` (10 min) = 54,000; `normal` (6 h) ≈ 1.9 M; `low` (24 h) ≈ 7.8 M |
 
 The burst backlog waits in Postgres. When a provider fails, the system slows down step by step without explicit coordination:
 
@@ -289,7 +289,7 @@ docs/            this document, ADRs, future work, plan, load-test results
 | [0004](adr/0004-data-model-state-machine-and-fencing.md) | Data model, the 12-transition state machine, the claim guard, leases and fencing tokens |
 | [0005](adr/0005-service-topology-and-status-events.md) | Service topology, a single relay, the worker's pacer loop, ordered status events with a snapshot on subscribe |
 | [0006](adr/0006-api-contract-and-three-layer-idempotency.md) | Contract-first API, validation, batch semantics, WebSocket protocol, three-layer idempotency |
-| [0007](adr/0007-retry-policy-and-circuit-breaker.md) | Failure classification by scope, back-off profiles, GCRA rate limiting at 97 msg/s, in-process circuit breaker, the provider contract |
+| [0007](adr/0007-retry-policy-and-circuit-breaker.md) | Failure classification by scope, back-off profiles, GCRA rate limiting at 90 msg/s, in-process circuit breaker, the provider contract |
 | [0008](adr/0008-templates-and-scheduling.md) | Constrained standard-library templates with immutable versions; scheduling rules |
 | [0009](adr/0009-observability.md) | Metrics and summary endpoint, PII-safe structured logging, hybrid tracing, health checks |
 | [0010](adr/0010-testing-and-ci.md) | Test layers, the actor-pair matrix, load-test evidence, suite verification by mutation, CI/CD pipelines |

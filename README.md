@@ -90,7 +90,7 @@ client ◀─WebSocket─ gateway ◀── status events (RabbitMQ) ◀── a
 
 - **`api`** validates a request and stores the notification in Postgres as `pending`; it needs nothing but Postgres. **Postgres is the source of truth** and holds the backlog.
 - **`relay`** (one instance) publishes due rows to RabbitMQ: new, scheduled and retried work alike. It keeps only a small, bounded buffer in the broker, expires notifications and recovers stuck ones.
-- **`worker`** consumes one queue per channel in strict priority order, paces each channel at 97 sends per second (a shared limiter in Redis), claims the row with a conditional `UPDATE`, calls the provider and records the result. A circuit breaker per channel stops sending while the provider fails.
+- **`worker`** consumes one queue per channel in strict priority order, paces each channel at 90 sends per second (a shared limiter in Redis), claims the row with a conditional `UPDATE`, calls the provider and records the result. A circuit breaker per channel stops sending while the provider fails.
 - **`gateway`** pushes status changes to WebSocket clients, with a snapshot on subscribe.
 - Every race on a notification (relay against worker, cancel against claim, a late result against a newer attempt) is decided by a conditional `UPDATE` on its row; there is no leader election and no distributed lock.
 
@@ -102,8 +102,8 @@ The overview with diagrams, the state machine and the failure table is in [docs/
 |---|---|---|
 | `make test` | Unit, integration and contract tests with the race detector; databases and brokers are started as containers | Go 1.27, Docker |
 | `make test-docker` | The same inside a Go container | Docker |
-| `make test-e2e` | Starts the stack with the mock profile under its own Compose project and runs the end-to-end tests, the chaos scenarios and `load-smoke` (a minute of SMS at the full rate, checked at the provider against the limit of 100 per second); then the same for the per-channel worker layout. About six minutes. Every chaos scenario logs one `chaos report:` line with its counts and the duplicates the provider received | Go, Docker |
-| `make load` | The rate scenario: 30,000 SMS at the configured rate on a stack of its own, about five minutes, with the same check | Go, Docker |
+| `make test-e2e` | Starts the stack with the mock profile under its own Compose project and runs the end-to-end tests, the chaos scenarios and `load-smoke` (67 seconds of SMS at the full rate, checked at the provider against the limit of 100 per second); then the same for the per-channel worker layout. About six minutes. Every chaos scenario logs one `chaos report:` line with its counts and the duplicates the provider received | Go, Docker |
+| `make load` | The rate scenario: 30,000 SMS at the configured rate on a stack of its own, about six minutes, with the same check | Go, Docker |
 | `make verify-suite` | Applies each mutation patch of `test/mutations` to a temporary copy of the code and requires that the tests it names fail | Go, Docker |
 | `make fuzz` | The five fuzz targets, 30 seconds each | Go |
 | `make lint`, `make check-rules` | `golangci-lint`; the Prometheus alert rules and their unit tests | Go; Docker |
@@ -468,7 +468,7 @@ The assessment's requirements, numbered R1 to R36 and paraphrased. "Evidence" na
 | ID | Requirement | Where | Evidence |
 |---|---|---|---|
 | R1 | Three channels: SMS, Email, Push | [ADR-0005](docs/adr/0005-service-topology-and-status-events.md), [ADR-0006](docs/adr/0006-api-contract-and-three-layer-idempotency.md) §5 | `TestComposeE2E_CreatedNotificationIsSent`: one notification per channel reaches `sent` on the Compose stack. `TestValidateCreate_PerChannel` |
-| R2 | High volume, millions per day | [ADR-0001](docs/adr/0001-rabbitmq-as-dispatch-broker.md): 3 × 97 = 291 msg/s, about 25.1 M per day | `make load`: 30,000 SMS arrive at 97.0 per second on one channel ([results](docs/load-test.md)). The three channels together at that rate were **not** measured |
+| R2 | High volume, millions per day | [ADR-0001](docs/adr/0001-rabbitmq-as-dispatch-broker.md): 3 × 90 = 270 msg/s, about 23.3 M per day | `make load`: 30,000 SMS arrive at 90.0 per second on one channel ([results](docs/load-test.md)). The three channels together at that rate were **not** measured |
 | R3 | Burst traffic | [ADR-0003](docs/adr/0003-bounded-relay-buffer-and-sweepers.md): the backlog waits in Postgres, the broker holds a bounded buffer | `TestRelay_LaneHWMHoldsOnRealRows`; `TestBatch_Thousand`; `make load` creates 30,000 in 3.6 s and drains them at the rate. The 1,000,000-message ingest was **not** run |
 | R4 | Reliable delivery | [ADR-0002](docs/adr/0002-postgres-as-outbox-scheduler-and-retry-delay.md), [ADR-0003](docs/adr/0003-bounded-relay-buffer-and-sweepers.md), [ADR-0004](docs/adr/0004-data-model-state-machine-and-fencing.md) | `TestClaim_WaitsForRelayCommit`, `TestE2E_WorkerFasterThanRelayCommit`, `TestRelay_UnroutablePublishStaysPending`; chaos: `TestComposeE2E_RabbitMQWipedEveryNotificationSent`, `TestComposeE2E_PostgresRestartDuringSends`, `TestComposeE2E_WorkerSIGKILLMidSend` end with every accepted notification `sent` |
 | R5 | Intelligent retries | [ADR-0007](docs/adr/0007-retry-policy-and-circuit-breaker.md) §1–4, §7 | `TestClassify`, `TestDecideRetry`, `TestDecideRetryBudget`; `TestComposeE2E_5xxRetriedUntilSent`; `TestComposeE2E_ProviderOutageLowTraffic`: a 60-second outage ends with no retry budget consumed |
@@ -481,7 +481,7 @@ The assessment's requirements, numbered R1 to R36 and paraphrased. "Evidence" na
 | R12 | Cancel pending notifications | [ADR-0004](docs/adr/0004-data-model-state-machine-and-fencing.md) transition 9; [ADR-0006](docs/adr/0006-api-contract-and-three-layer-idempotency.md) §7 | `TestCancel_FromEachState`, `TestCancel_RacesWithClaim`, `TestCancel_DuringRelayPublish`, `TestCancel_Idempotent`, `TestCancelBatch` |
 | R13 | List with filters (status, channel, date range) and pagination | [ADR-0006](docs/adr/0006-api-contract-and-three-layer-idempotency.md) §8 | `TestList_Filters`, `TestList_DateRangeIsHalfOpen`, `TestList_PaginationWalk`, `TestList_ExplainUsesIndex` |
 | R14 | Asynchronous processing by queue workers | [ADR-0001](docs/adr/0001-rabbitmq-as-dispatch-broker.md), [ADR-0005](docs/adr/0005-service-topology-and-status-events.md) | `TestE2E_IdleSingleNotificationIsSent`, `TestClaim_TwoWorkersExactlyOne`; the create answers `202` before anything is sent |
-| R15 | At most 100 messages per second per channel | [ADR-0007](docs/adr/0007-retry-policy-and-circuit-breaker.md) §5: paced at 97 msg/s, no burst | `TestLoadSmoke` on every CI run and `make load`: the largest one-second window at the provider was 98 on an idle machine, 99 on a loaded one, **and 102 in one `make load` run on a machine doing other light work** ([Load results](#load-results)). The limiter spaces the starts of the sends; a defect that lets two start together after a stall is open. `TestPacingAtFullRate`, `TestMissedSlot`, `TestZeroBurstSlotsAreOneIntervalApart` |
+| R15 | At most 100 messages per second per channel | [ADR-0007](docs/adr/0007-retry-policy-and-circuit-breaker.md) §5: paced at 90 msg/s, no burst, a margin of ten | `TestLoadSmoke` on every CI run and `make load`: at 90 msg/s the largest one-second window at the provider was 91 to 92, idle and loaded. **At the earlier rate of 97 one `make load` run on a machine in use logged 102** ([Load results](#load-results)). The limiter spaces the starts of the sends; a defect that lets two start together after a stall is open, and the margin of ten bounds its effect. `TestPacingAtFullRate`, `TestMissedSlot`, `TestZeroBurstSlotsAreOneIntervalApart` |
 | R16 | Priority queue (high, normal, low) | [ADR-0001](docs/adr/0001-rabbitmq-as-dispatch-broker.md): strict priority; [ADR-0003](docs/adr/0003-bounded-relay-buffer-and-sweepers.md) | `TestRelay_PrioritySetOnEveryMessage`, `TestCycle_LaneOrderHighFirstWithinEachChannel`, `TestHighestPriorityTaken`: each stage orders strictly. The whole path under a backlog was **not** measured |
 | R17 | Content validation | [ADR-0006](docs/adr/0006-api-contract-and-three-layer-idempotency.md) §5 | `TestValidateCreate_PerChannel`, `TestValidateCreate_Bounds`, `TestSMSInfo_StoredAndReturned`, `FuzzCountSMS` |
 | R18 | Idempotency against duplicate sends | [ADR-0006](docs/adr/0006-api-contract-and-three-layer-idempotency.md) §11: at the request, the record and the send | `TestIdempotencyKey_ConcurrentSameKey`, `TestIdempotencyKey_Replay`, `TestCreateBatch_Conflicts`, `TestE2E_DuplicateMessageIsSentOnce`, `TestSend_SentExactlyOnce`; every chaos and load scenario counts the keys the provider received twice |
@@ -512,7 +512,7 @@ Where the assessment leaves a point open, one reading was adopted and is stated 
 
 | Requirement | What is left open | Reading adopted |
 |---|---|---|
-| R15, rate limit | Scope and window of "100 per second" | One limit per channel across all workers: no one-second window at the provider holds more than 100 messages. Kept by pacing at 97 msg/s |
+| R15, rate limit | Scope and window of "100 per second" | One limit per channel across all workers: no one-second window at the provider holds more than 100 messages. Aimed at by pacing at 90 msg/s, a margin of ten |
 | R16, priority queue | Strict or weighted | Strict: `high` before `normal` before `low`, within a channel |
 | R12, cancel "pending" | One state, or "not yet sent" | Cancel works from `pending`, `queued` and `retrying`: any state in which no worker holds the notification. `processing`, `sent` and `failed` answer `409` |
 | R9, batch | All-or-nothing or not | Partial success: valid items are stored, invalid ones are reported by index; no valid item is `422` |
@@ -532,18 +532,18 @@ Where the assessment leaves a point open, one reading was adopted and is stated 
 
 The ones a reader should know first; [docs/future-work.md](docs/future-work.md) has all of them with their reasons, and the future work.
 
-- **The largest burst each priority can absorb is bounded by its TTL.** A notification that is not sent by its `expires_at` fails as `expired`. One channel sends 97 per second, so within the default TTLs it can send at most:
+- **The largest burst each priority can absorb is bounded by its TTL.** A notification that is not sent by its `expires_at` fails as `expired`. One channel sends 90 per second, so within the default TTLs it can send at most:
 
   | Priority | Default TTL | Largest burst one channel can send in time |
   |---|---|---|
-  | `high` | 10 minutes | about 58,200 |
-  | `normal` | 6 hours | about 2.1 million |
-  | `low` | 24 hours | about 8.4 million |
+  | `high` | 10 minutes | 54,000 |
+  | `normal` | 6 hours | about 1.9 million |
+  | `low` | 24 hours | about 7.8 million |
 
   The rest of a larger burst expires unsent. The TTLs are configuration (`TTL_HIGH`, `TTL_NORMAL`, `TTL_LOW`), and a request can set its own `expires_at`. The API does not refuse work it cannot deliver in time.
 - **Delivery is at-least-once, so a notification can reach the provider twice** ([Delivery guarantee](#delivery-guarantee)). webhook.site does not deduplicate.
 - **Strict priority can make `low` wait:** while `high` traffic fills a channel's rate, `normal` and `low` of that channel are not sent.
-- **The rate limit spaces the starts of the sends; it does not bound the arrivals in every second.** After a stall of the worker or its host, two sends were measured starting within a millisecond of each other (an open defect; 99 in a second instead of 98), and a stall of the receiver or the host can bunch arrivals that were sent on time. One load run measured 102 arrivals in a second, on a machine in use ([Load results](#load-results)).
+- **The rate limit spaces the starts of the sends; it does not bound the arrivals in every second.** After a stall of the worker or its host, two sends were measured starting within a millisecond of each other (an open defect), and a stall of the receiver or the host can bunch arrivals that were sent on time. At the earlier rate of 97 one load run measured 102 arrivals in a second, on a machine in use. The configured rate of 90 leaves a margin of ten for these effects; it bounds them and does not remove them ([Load results](#load-results)).
 - **The rate limit is approximate while Redis is down:** each worker then limits itself in-process, and an alert fires.
 - **After an idle period, the first minute of a very large burst runs at about a third of the rate,** until Postgres analyses its tables again. Measured in P3 with 1,000,000 rows; the remedy was planned and not built.
 - **One relay.** While it restarts, publishing, expiry and recovery pause; nothing is lost.
@@ -555,22 +555,28 @@ The ones a reader should know first; [docs/future-work.md](docs/future-work.md) 
 
 ## Load results
 
-The limit is 100 messages per second and channel, read as: no one-second window at the provider holds more than 100 messages of one channel. The worker paces each channel at **97 messages per second** (`RATE_LIMIT_PER_SECOND`), with no burst, so that three slots stay free under the limit.
+The limit is 100 messages per second and channel, read as: no one-second window at the provider holds more than 100 messages of one channel. The worker paces each channel at **90 messages per second** (`RATE_LIMIT_PER_SECOND`), with no burst, so that **ten slots stay free under the limit**.
 
-| | Result |
-|---|---|
-| Largest one-second window, 20 runs of `load-smoke` (6,000 SMS each) at 97 msg/s | **98** in every one of the 20 runs |
-| Largest one-second window, `make load` (30,000 SMS) at 97 msg/s, machine idle | **98** in two runs; 30,000 SMS arrived in 309.3 s, 97.0 per second |
-| The same, while the machine did other light work (shell commands, Git, a few HTTP requests) | **102 in one run: above the limit, and the run failed** |
-| The same, with four busy processes on the host and every request traced, to compare the send side with the receive side | **99**; the 102 was not reproduced |
-| The same at 98 msg/s, the rate until P6 | 99 in 26 runs, 100 in one run on a busy machine, which is why the rate was lowered |
+| Rate | Runs | Largest one-second window at the provider |
+|---|---|---|
+| **90 msg/s, the configured rate** | 10 runs of `load-smoke` (6,000 SMS each), machine idle | **91 in every one of the 10 runs** |
+| | `make load` (30,000 SMS), machine idle | **91**; 30,000 SMS arrived in 333.4 s, 90.0 per second |
+| | `make load` with four busy processes on the host | **92** |
+| 97 msg/s, until the end of P7 | 20 runs of `load-smoke` and two of `make load`, machine idle | 98 every time |
+| | `make load` while the machine did other light work (shell commands, Git, a few HTTP requests) | **102: above the limit, and the run failed** |
+| | `make load` with four busy processes on the host and every request traced, to compare the send side with the receive side | 99; the 102 was not reproduced |
+| 98 msg/s, until P6 | 27 runs of `load-smoke` | 99 in 26 runs, 100 in one run on a busy machine |
 
-**What is guaranteed, precisely.** The limiter spaces the *sends* of a channel: the worker starts one provider call per slot, 10.3 ms apart, with no burst and no catching up. The windows in this table are measured where the requests *arrive*, at a mock provider on the same host as the worker. Two things can put more arrivals into a second than the spacing allows:
+The rate was lowered twice on these results: to 97 after the window of 100, and to 90 after the window of 102. The runs at 90 are fewer than at 97 (ten `load-smoke` runs, one `make load` per condition), because the change was made in the last hour before the submission.
 
-- **A stall on the worker's side.** In the instrumented run every send start was compared with its arrival (30,000 of each). The arrivals followed the starts within about a millisecond, so nothing bunched on the way; but twice, right after a stall of about 50 ms, two calls *started* within a millisecond of each other, which the pacer's rules do not allow (a send may be up to 5 ms late, not a whole slot). That gave 99 in a second instead of 98. **This is an open defect on the worker's side;** which step lets it happen is not established, and it was not fixed.
+**What is guaranteed, precisely.** The limiter spaces the *sends* of a channel: the worker starts one provider call per slot, 11.1 ms apart, with no burst and no catching up. The windows in this table are measured where the requests *arrive*, at a mock provider on the same host as the worker. Two things can put more arrivals into a second than the spacing allows:
+
+- **A stall on the worker's side.** In the instrumented run, at 97 msg/s, every send start was compared with its arrival (30,000 of each). The arrivals followed the starts within about a millisecond, so nothing bunched on the way; but twice, right after a stall of about 50 ms, two calls *started* within a millisecond of each other, which the pacer's rules do not allow (a send may be up to 5 ms late, not a whole slot). That gave 99 in a second instead of 98. **This is an open defect on the worker's side;** which step lets it happen is not established, and it was not fixed.
 - **A stall of the receiver or of the host,** which bunches arrivals that were sent on time. It was not observed in the instrumented run, and it cannot be excluded for a provider that is reached over a network.
 
-**The limit was exceeded once: 102.** Of four runs of `make load`, the one that shared the machine with other light work put 102 arrivals into one second and failed. Its data was not kept, so it is not known whether the effect above caused it; its log shows stalls of 0.1 to 0.2 s, each followed by a bunch. So "at most 100 per second at the provider" is what was measured on an idle machine against a local provider (98 every time), not a guarantee under any load. The comparison in full is in [docs/load-test.md](docs/load-test.md#send-side-against-receive-side-open-issue-16).
+**The configured rate leaves a margin of ten for both:** at 90 sends per second, ten more starts or arrivals than the spacing allows fit into a second before the limit is reached, which absorbs several such stalls in one second. The margin bounds the effect of the open defect; it does not fix it.
+
+**The limit was exceeded once, at 97 msg/s: 102.** Of four runs of `make load` at that rate, the one that shared the machine with other light work put 102 arrivals into one second and failed. Its data was not kept, so it is not known whether the effect above caused it; its log shows stalls of 0.1 to 0.2 s, each followed by a bunch. So "at most 100 per second at the provider" is what was measured, at 90 on an idle and on a loaded machine and at 97 on an idle one, against a local provider; it is not a guarantee under any load. The comparison in full is in [docs/load-test.md](docs/load-test.md#send-side-against-receive-side-open-issue-16).
 
 Counts like these are exact. The machine, every run, the chaos scenarios' counts and what was **not** measured (the 1,000,000-message ingest, the 100,000-message drain, the saturation report, priority and isolation under load) are in [docs/load-test.md](docs/load-test.md).
 

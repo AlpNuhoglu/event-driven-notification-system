@@ -30,7 +30,7 @@ A **lane** is a channel × priority pair. The broker has one queue per channel (
 
 - **Per lane, not per channel.** With a single per-channel limit, 2,000 `low` messages could fill the buffer and stop the relay from publishing a newly arrived `high` message. Per-lane limits keep headroom for `high` at all times; the broker's strict priority then delivers it first.
 - **Headroom calculation.** Each relay cycle runs a single query, `SELECT channel, priority, count(*) FROM notifications WHERE status = 'queued' GROUP BY channel, priority`, served by the partial index `(channel, priority, queued_at) WHERE status = 'queued'`. Each lane's `LIMIT` is `min(200, HWM − queued count)` ([ADR-0002](0002-postgres-as-outbox-scheduler-and-retry-delay.md)).
-- **Drain time.** A full channel buffer of 2,000 messages is about 20 seconds of work at 98 msg/s.
+- **Drain time.** A full channel buffer of 2,000 messages is about 22 seconds of work at 90 msg/s.
 - **The values are starting points,** chosen so that a full buffer is seconds of work, not derived from a model. They are **counted per lane and configured per priority**: one value for `high`, one for `normal` and one for `low`, each applied to every channel. The load tests check that the relay refills the buffer faster than the workers drain it ([ADR-0010](0010-testing-and-ci.md)).
 - **Soft limit.** If two relay instances ever run at the same time, both may see the same headroom and exceed the HWM by up to one batch each. This does not affect correctness.
 
@@ -194,7 +194,7 @@ So D79 removes the stale cached plans, and on a stack whose tables were analysed
 **Negative / costs**
 
 - Every relay cycle runs a count query. It is cheap, but it is extra load.
-- The relay must refill buffers faster than workers drain them (up to 98 msg/s per channel). Batch size and tick interval are tuned together and verified by the load tests ([ADR-0010](0010-testing-and-ci.md)).
+- The relay must refill buffers faster than workers drain them (up to 90 msg/s per channel). Batch size and tick interval are tuned together and verified by the load tests ([ADR-0010](0010-testing-and-ci.md)).
 - Reconciliation covers reconnections only. A message lost while the connection stays up waits for the alert and the manual command, or for expiry.
 - Every reconnection republishes up to an HWM's worth of rows per lane. The duplicates are harmless, but they are wasted work.
 - The Postgres backlog has no upper limit other than expiry; admission control is [future work](../future-work.md).

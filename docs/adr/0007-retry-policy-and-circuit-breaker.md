@@ -62,9 +62,9 @@ The delay uses **full jitter**: `delay = jitter × min(cap, base × 2^failures)`
 
 | Priority | `base` | `cap` | `max_failures` | Default TTL (`expires_at`) | Largest burst one channel can drain within the TTL |
 |---|---|---|---|---|---|
-| `high` | 1 s | 30 s | 5 | due time + **10 minutes** | 600 s × 97 ≈ 58,200 |
-| `normal` | 5 s | 10 min | 8 | due time + **6 hours** | 21,600 s × 97 ≈ 2.1 M |
-| `low` | 30 s | 1 h | 10 | due time + **24 hours** | 86,400 s × 97 ≈ 8.4 M |
+| `high` | 1 s | 30 s | 5 | due time + **10 minutes** | 600 s × 90 = 54,000 |
+| `normal` | 5 s | 10 min | 8 | due time + **6 hours** | 21,600 s × 90 ≈ 1.9 M |
+| `low` | 30 s | 1 h | 10 | due time + **24 hours** | 86,400 s × 90 ≈ 7.8 M |
 
 - **In the formula, `failures` is the count before the current outcome** (the argument of `decideRetry`). The first retry of a `high` notification therefore draws from `[0, 1 s)` and is lifted to the floor; the second draws from `[0, 2 s)`. For an outcome that does not consume budget the count does not grow, so its back-off stays where the last budget-consuming failure left it.
 - **`max_failures` is the total number of budget-consuming failures** a notification may have: the row fails on the failure that makes `failures` equal to `max_failures` (with `max_failures = 1`, on the first one). `failures` is also incremented on that last failure, so an exhausted row shows `failures = max_failures` ([ADR-0004](0004-data-model-state-machine-and-fencing.md) §5).
@@ -86,12 +86,12 @@ The delay uses **full jitter**: `delay = jitter × min(cap, base × 2^failures)`
 
 ### 5. Rate limiting: GCRA in Redis
 
-**The guarantee.** "Maximum 100 messages per second per channel" is read as: across all workers, no one-second window at the provider contains more than 100 messages of one channel. The system guarantees this by **pacing each channel at 97 msg/s with zero burst**. Pacing at exactly 100 cannot give the guarantee: with a 10 ms interval, any timing jitter between the slot and the arrival puts 101 messages into some one-second window. The margin of two is derived from the jitter that the load-smoke test measures, and the rate is configurable.
+**The guarantee.** "Maximum 100 messages per second per channel" is read as: across all workers, no one-second window at the provider contains more than 100 messages of one channel. The system aims at this by **pacing each channel at 90 msg/s with zero burst**. Pacing at exactly 100 cannot give the guarantee: with a 10 ms interval, any timing jitter between the slot and the arrival puts 101 messages into some one-second window. **What the pacing gives is the spacing of the sends;** the margin of ten is for what can still add a send or an arrival to a window: jitter, a stall of the receiver or the host, and an open defect that lets two sends start together after a stall on the worker's side ([load results](../load-test.md)). The rate is configurable.
 
 | Aspect | Rule |
 |---|---|
 | Algorithm | GCRA (generic cell rate algorithm), implemented as a Lua script in Redis with key `rl:{channel}` |
-| Rate | **97 msg/s per channel**, one slot about every 10.3 ms. It was 98 until P6: 18 quiet `load-smoke` runs at 98 logged a largest window of 99 each, and one run on a busy machine logged 100, which the plan's rule answers by lowering the rate ([load results](../load-test.md)) |
+| Rate | **90 msg/s per channel**, one slot about every 11.1 ms. It was 98 until P6: 18 quiet `load-smoke` runs at 98 logged a largest window of 99 each, and one run on a busy machine logged 100, which the plan's rule answers by lowering the rate. It was 97 until the end of P7: every run on an idle machine logged 98, one run on a machine in use logged 102, and a run with every send traced showed two sends starting together after a stall (99). The author then chose a margin of ten ([load results](../load-test.md)) |
 | Burst tolerance | **Zero.** Sends are spaced evenly. |
 | Clock | The script reads Redis `TIME`, so every worker uses the same clock and local clock skew is irrelevant |
 | Result | A **relative wait** until the caller's slot, not an absolute time, so the caller's clock does not matter either |
@@ -99,12 +99,12 @@ The delay uses **full jitter**: `delay = jitter × min(cap, base × 2^failures)`
 | Missed slot (D77) | A send starts within `PACER_SLOT_TOLERANCE` (5 ms) after its slot. A claim that returns later than that gives the slot up (it is not returned to the limiter) and reserves a new one through the same script, horizon included. The same holds for a slot kept after a zero-row claim that is stale when the next message is ready. Counted in `pacer_slots_missed_total{channel}` ([ADR-0009](0009-observability.md)). |
 | Send deadline (D77) | If the send cannot start within `lease − HTTP timeout − 5 s` of issuing the claim call (15 s with the defaults; derived, not configured), the attempt is closed as `aborted` and the row returns to `retrying` without consuming budget (section 2) |
 | Never nack on limit | A message is never pulled and then put back because of the rate limit: that would cause a spin loop or needless write amplification. A late claim **holds its message** (claimed, acked, the row `processing`) while it waits for a new slot. |
-| Redis unavailable | Fall back to an **in-process limiter** at `97 / WORKER_REPLICAS`. Sending does not stop. The limit is then **approximate**: replicas no longer share a clock or a schedule, and while some replicas use Redis and others the fallback, the channel can briefly exceed its rate. `limiter_fallback_active` is set and alerts ([ADR-0009](0009-observability.md)). |
+| Redis unavailable | Fall back to an **in-process limiter** at `90 / WORKER_REPLICAS`. Sending does not stop. The limit is then **approximate**: replicas no longer share a clock or a schedule, and while some replicas use Redis and others the fallback, the channel can briefly exceed its rate. `limiter_fallback_active` is set and alerts ([ADR-0009](0009-observability.md)). |
 | How the fallback works | The in-process limiter is the same algorithm (GCRA, zero burst, relative wait, reservation horizon) on the process's monotonic clock, one schedule per channel. Every Redis call is bounded by `RATE_LIMIT_REDIS_TIMEOUT` (250 ms), so an unreachable or hanging Redis cannot stall the pacer. A call that fails switches to the fallback and is itself answered locally. While the fallback is active, Redis is asked again at most once per `RATE_LIMIT_FALLBACK_PROBE_INTERVAL` (1 s), by one caller; the first answer ends the fallback. Nothing is carried over between the two schedules: at each switch, slots already reserved on one side can lie closer than one interval to slots of the other, which is part of the approximation. A worker also **starts** while Redis is unreachable. |
 
 **Why a missed slot is given up.** The pacer claims during the wait, and a claim can outlast it: a worker that receives a message before the relay commits waits on the relay's row lock ([ADR-0002](0002-postgres-as-outbox-scheduler-and-retry-delay.md)) while the pacer goes on reserving the following slots. If each late claim sent at once, several sends would leave together, next to slots that are used on time. Three are enough: a batch arrives on an idle channel, the relay commits 30 ms later, the claims for the slots at 0, 10 and 20 ms send at 30 ms, and the window `[30 ms, 1030 ms)` holds 101 arrivals. With the rule, every send leaves at a slot that was reserved for it, so the spacing of the script is also the spacing at the provider, up to the tolerance.
 
-**Why 5 ms.** At 97 msg/s the limit of 100 leaves three slots, about 31 ms, of total lateness in a window. The tolerance must stay well below that; the rest is for scheduler and network jitter, which `load-smoke` measures.
+**Why 5 ms.** At 90 msg/s the limit of 100 leaves ten slots, about 111 ms, of total lateness in a window (at the first rate of 98 it was two slots, about 20 ms, which is what the tolerance was sized against). The tolerance must stay well below that; the rest is for scheduler and network jitter, which `load-smoke` measures.
 
 Adding workers beyond the point where the limit is reached does not increase throughput. Workers scale to *reach* the limit (by Little's law, about 20 concurrent sends per channel at 200 ms latency) and for availability, not to exceed it.
 
@@ -227,7 +227,7 @@ The RabbitMQ, Postgres, Redis, provider and worker rows each have a chaos scenar
 
 **Negative / costs**
 
-- Each channel delivers at 97 msg/s, not 100.
+- Each channel delivers at 90 msg/s, not 100.
 - While Redis is down the rate limit is approximate.
 - Breaker state is per replica.
 - Against a provider that ignores idempotency keys, including the default one, every `unknown` attempt can produce a duplicate.
@@ -241,6 +241,7 @@ Changes made after the design review, recorded in the [design review log](../ai/
 
 - The rate became 98 msg/s per channel and the guarantee was restated, because pacing at exactly 100 cannot keep every one-second window at or below 100; the Redis fallback is described as approximate. (D24, D25)
 - In P6 the rate became 97 msg/s: one `load-smoke` run at 98 logged a largest window of 100, and the plan's rule for the pacing margin lowers the rate then. In P6 the rule for a written request was also replaced (section 2; D27 amended).
+- At the end of P7 the rate became 90 msg/s, by the author's decision on open issue 16: one load run at 97 had logged a window of 102, and the comparison of send starts with arrivals showed a worker-side defect (two sends starting together after a stall). The lower rate bounds the defect's effect and does not fix it.
 - The circuit breaker moved from Redis into the worker process and gained a consecutive-failure rule; connection failures before the request is written became the provider-scoped outcome `unreachable`. (D26, D27)
 - Redirects are no longer followed and transport replays are disabled, because either could turn one attempt into a different or repeated request. (D27, D29)
 - The provider contract (request body, `202` response, other `2xx`, headers, webhook.site as default) was written down; it had been defined nowhere. (D28, D44)
