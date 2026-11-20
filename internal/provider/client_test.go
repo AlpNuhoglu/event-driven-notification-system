@@ -376,6 +376,50 @@ func (s *rawServer) requests() int {
 	return s.count
 }
 
+// The provider cannot have the whole request before the client knows that
+// it wrote it: a call that fails right after the provider received the
+// request must be reported as written (unknown, not unreachable). The
+// test's own WroteRequest hook runs on the transport's write goroutine,
+// after the client's hook, and holds that goroutine: while it has not
+// returned, the write of the request has not finished. If the server has
+// read the whole request meanwhile, the request left before the hook ran.
+// That was so in P5 and P6 with the traced transport, which made net/http
+// send every write of the body at once (inMemoryBody).
+func TestSend_ProviderCannotHaveTheRequestBeforeWroteRequestIsReported(t *testing.T) {
+	const hold = 250 * time.Millisecond
+	got := make(chan struct{})
+	var once sync.Once
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		once.Do(func() { close(got) })
+		accept(w, r)
+	}))
+	defer srv.Close()
+	c, _ := newClient(t, srv.URL, nil)
+
+	var hooked, early atomic.Bool
+	ctx := httptrace.WithClientTrace(context.Background(), &httptrace.ClientTrace{
+		WroteRequest: func(httptrace.WroteRequestInfo) {
+			hooked.Store(true)
+			select {
+			case <-got:
+				early.Store(true)
+			case <-time.After(hold):
+			}
+		},
+	})
+	r := c.Send(ctx, req(phone))
+	if !hooked.Load() {
+		t.Fatal("the test's WroteRequest hook was not called; the test proves nothing")
+	}
+	if early.Load() {
+		t.Fatal("the server had read the whole request while the transport had not yet finished reporting it as written: a call that fails at that moment is reported as not written")
+	}
+	if r.StatusCode != http.StatusAccepted || r.Err != nil || !r.WroteRequest {
+		t.Fatalf("response = %+v", r)
+	}
+}
+
 func TestSend_SentExactlyOnce(t *testing.T) {
 	s := startRaw(t)
 	c, _ := newClient(t, "http://"+s.ln.Addr().String(), nil)

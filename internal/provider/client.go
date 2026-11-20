@@ -72,6 +72,9 @@ type Response struct {
 	// Err is the transport error; nil when a response was received.
 	Err error
 	// WroteRequest reports that the request was fully written without error.
+	// The transport reports it before the last bytes of the request leave
+	// (see inMemoryBody), so it is true whenever the provider can have the
+	// whole request, also when the call then fails.
 	WroteRequest bool
 	// RetryAfter is the response's Retry-After header, verbatim; empty when
 	// the response has none. The caller decides whether to use it.
