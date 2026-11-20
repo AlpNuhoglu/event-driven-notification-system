@@ -40,7 +40,7 @@ Integration tests are organised by **pairs of actors** acting on the same notifi
 
 | | api | relay | worker | lease sweeper | late worker |
 |---|---|---|---|---|---|
-| **api** | `TestCancel_Idempotent`; `TestIdempotencyKey_ConcurrentSameKey` | `TestCancel_DuringRelayPublish`; `TestRedrive_VersusExpiry` | `TestCancel_RacesWithClaim` (never both) | `TestCancel_WhileProcessingReturns409` | `TestLateSuccess_AfterCancel` (`cancelled → sent`); `TestLateSuccess_AfterRedrive` |
+| **api** | `TestCancel_Idempotent`; `TestCancel_ConcurrentSameNotification` (of several concurrent cancels exactly one applies); `TestIdempotencyKey_ConcurrentSameKey` | `TestCancel_DuringRelayPublish`; `TestRedrive_VersusExpiry` | `TestCancel_RacesWithClaim` (never both) | `TestCancel_VersusLeaseSweep` (a cancel never applies to a row the sweeper holds, and applies after the sweep with `may_have_been_sent`); `TestCancel_WhileProcessingReturns409` | `TestLateSuccess_AfterCancel` (`cancelled → sent`); `TestLateSuccess_AfterRedrive` |
 | **relay** | — | `TestRelay_TwoRelaysNeverPublishSameRow` | **`TestClaim_WaitsForRelayCommit`**; **`TestE2E_WorkerFasterThanRelayCommit`** (the same race forced through the real broker: the relay's transaction is held open until the claim is seen waiting); `TestE2E_IdleSingleNotificationIsSent`; `TestClaim_DirectAfterRelayRollback`; `TestExpiry_VersusClaim` | n/a (disjoint states) | `TestLateSuccess_AfterReconcile`; `TestLateSuccess_AfterExpiry` (`failed → sent`) |
 | **worker** | — | — | `TestClaim_TwoWorkersExactlyOne` | `TestLeaseSweeper_VersusFinalWrite` | `TestFencing_LateWriteAffectsZeroRows` |
 | **lease sweeper** | — | — | — | `TestLeaseSweeper_TwoSweepersSkipLocked` | `TestLateSuccess_AfterLeaseSweep` |
@@ -92,7 +92,7 @@ The two tests in bold are the ones that catch the dropped-message defect: a clai
 | Demo | The provider probe against test servers: reachable, unreachable, a webhook.site URL with room, with too few requests left, expired, with an unreadable count; the provider URL itself never receives a request (`TestProbe…`). The run against fakes: only the reserved fake values, one request through the batch endpoint, an `Idempotency-Key` on each, events printed with the version rule, a replay said so, a count above 10 refused before anything is sent (`TestRun…`) |
 | Observability | Metrics summary values on a known dataset; the rows above ([ADR-0009](0009-observability.md)) |
 
-**Every decision in the [decision ledger](../ai/decision-ledger.md) has at least one test.**
+**Every decision in the [decision ledger](../ai/decision-ledger.md) has at least one test.** [Decision tests](../decision-tests.md) names them decision by decision, with the evidence for the decisions a Go test cannot check and the gaps that remain.
 
 #### Chaos scenarios
 
