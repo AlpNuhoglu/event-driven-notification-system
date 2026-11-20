@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -53,7 +54,12 @@ func req(to string) Request {
 	return Request{NotificationID: uuid.New(), Channel: domain.ChannelSMS, To: to, Content: content}
 }
 
-func accept(w http.ResponseWriter, _ *http.Request) {
+// accept answers as a provider does, after it has read the request. A server
+// that answers on the headers alone can be faster than the client's write of
+// the body, and the response then carries WroteRequest false, which no rule
+// reads when there is a response (seen in CI in P6).
+func accept(w http.ResponseWriter, r *http.Request) {
+	_, _ = io.Copy(io.Discard, r.Body)
 	w.WriteHeader(http.StatusAccepted)
 	_, _ = io.WriteString(w, `{"messageId":"m-1","status":"accepted","timestamp":"2026-01-01T00:00:00Z"}`)
 }
@@ -376,47 +382,167 @@ func (s *rawServer) requests() int {
 	return s.count
 }
 
-// The provider cannot have the whole request before the client knows that
-// it wrote it: a call that fails right after the provider received the
-// request must be reported as written (unknown, not unreachable). The
-// test's own WroteRequest hook runs on the transport's write goroutine,
-// after the client's hook, and holds that goroutine: while it has not
-// returned, the write of the request has not finished. If the server has
-// read the whole request meanwhile, the request left before the hook ran.
-// That was so in P5 and P6 with the traced transport, which made net/http
-// send every write of the body at once (inMemoryBody).
-func TestSend_ProviderCannotHaveTheRequestBeforeWroteRequestIsReported(t *testing.T) {
-	const hold = 250 * time.Millisecond
-	got := make(chan struct{})
-	var once sync.Once
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.Copy(io.Discard, r.Body)
-		once.Do(func() { close(got) })
-		accept(w, r)
-	}))
-	defer srv.Close()
-	c, _ := newClient(t, srv.URL, nil)
+// countingListener counts the bytes its connections receive.
+type countingListener struct {
+	net.Listener
+	read *atomic.Int64
+}
 
-	var hooked, early atomic.Bool
-	ctx := httptrace.WithClientTrace(context.Background(), &httptrace.ClientTrace{
-		WroteRequest: func(httptrace.WroteRequestInfo) {
-			hooked.Store(true)
-			select {
-			case <-got:
-				early.Store(true)
-			case <-time.After(hold):
+func (l countingListener) Accept() (net.Conn, error) {
+	c, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err //nolint:wrapcheck // a listener's error is passed through
+	}
+	return countingConn{c, l.read}, nil
+}
+
+type countingConn struct {
+	net.Conn
+	read *atomic.Int64
+}
+
+func (c countingConn) Read(p []byte) (int, error) {
+	n, err := c.Conn.Read(p)
+	c.read.Add(int64(n))
+	return n, err //nolint:wrapcheck // io.Reader
+}
+
+// dropAfterRequest starts a server that reads each request to its end and
+// then closes the connection without an answer. got receives the number of
+// bytes of the request as it arrived on the wire.
+func dropAfterRequest(t *testing.T) (url string, got <-chan int64) {
+	t.Helper()
+	var read atomic.Int64
+	ch := make(chan int64, 1)
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		ch <- read.Swap(0)
+		conn, _, err := w.(http.Hijacker).Hijack() //nolint:forcetypeassert // an HTTP/1 test server
+		if err == nil {
+			_ = conn.Close()
+		}
+	}))
+	srv.Listener = countingListener{srv.Listener, &read}
+	srv.Start()
+	t.Cleanup(srv.Close)
+	return srv.URL, ch
+}
+
+func emailOf(contentBytes int) Request {
+	return Request{
+		NotificationID: uuid.New(), Channel: domain.ChannelEmail, To: "user@example.com",
+		Content: strings.Repeat("a", contentBytes),
+	}
+}
+
+// The provider cannot have the whole request before the client reports it
+// as written: a call that fails right after the provider received the
+// request must be WroteRequest true (unknown, not unreachable). Each server
+// here reads the whole request and then closes the connection without an
+// answer. The sizes are the ones at which the old rule, the transport's
+// WroteRequest hook alone, was measured to be late (written): a request of
+// exactly the transport's write buffer, one byte more, and the largest
+// e-mail the API accepts, beside an ordinary sms, at which it was not.
+func TestSend_ProviderCannotHaveTheRequestBeforeWroteRequestIsReported(t *testing.T) {
+	const writeBuffer = 4096 // net/http's default; the client does not change it
+
+	// The size of a request on the wire, to choose the content that makes it
+	// exactly the buffer: the headers do not change with the content as long
+	// as the number of digits of Content-Length stays.
+	const probeContent = 3000
+	url, got := dropAfterRequest(t)
+	c, _ := newClient(t, url, nil)
+	c.Send(context.Background(), emailOf(probeContent))
+	exact := probeContent + writeBuffer - int(<-got)
+	if exact < 1000 || exact > 9999 {
+		t.Fatalf("content of %d bytes for a request of %d: the Content-Length would change its digits", exact, writeBuffer)
+	}
+
+	cases := []struct {
+		name     string
+		req      Request
+		wantWire int64 // 0: not checked
+	}{
+		{"an sms", req(phone), 0},
+		{"a request of exactly the write buffer", emailOf(exact), writeBuffer},
+		{"one byte more than the write buffer", emailOf(exact + 1), writeBuffer + 1},
+		{"the largest e-mail the API accepts", emailOf(domain.MaxEmailContentBytes), 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for range 20 {
+				url, got := dropAfterRequest(t)
+				c, _ := newClient(t, url, nil)
+				r := c.Send(context.Background(), tc.req)
+				wire := <-got
+				if tc.wantWire != 0 && wire != tc.wantWire {
+					t.Fatalf("the request was %d bytes on the wire, want %d: the case does not test what it names", wire, tc.wantWire)
+				}
+				if r.Err == nil || r.StatusCode != 0 {
+					t.Fatalf("response = %+v, want an error without a status: the server closes the connection", r)
+				}
+				if !r.WroteRequest {
+					t.Fatalf("the server had read the whole request (%d bytes) and the call reports it as not written: %+v", wire, r)
+				}
 			}
-		},
-	})
-	r := c.Send(ctx, req(phone))
-	if !hooked.Load() {
-		t.Fatal("the test's WroteRequest hook was not called; the test proves nothing")
+		})
 	}
-	if early.Load() {
-		t.Fatal("the server had read the whole request while the transport had not yet finished reporting it as written: a call that fails at that moment is reported as not written")
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// What decides WroteRequest, on a transport the test controls: the body read
+// to its end, and no failed write reported. The first case is the one the
+// transport's hook alone got wrong: the call returns before the hook has
+// run.
+func TestSend_WrittenWhenTheBodyWasReadToTheEnd(t *testing.T) {
+	errGone := errors.New("connection gone")
+	cases := []struct {
+		name      string
+		transport func(body []byte, r *http.Request)
+		want      bool
+	}{
+		{"the body was read to the end and the transport's hook has not run", func(_ []byte, r *http.Request) {
+			_, _ = io.Copy(io.Discard, r.Body)
+		}, true},
+		{"the body was read to the end and the hook reports a write without error", func(_ []byte, r *http.Request) {
+			_, _ = io.Copy(io.Discard, r.Body)
+			httptrace.ContextClientTrace(r.Context()).WroteRequest(httptrace.WroteRequestInfo{})
+		}, true},
+		{"the body was read to the end and the hook reports a failed write", func(_ []byte, r *http.Request) {
+			_, _ = io.Copy(io.Discard, r.Body)
+			httptrace.ContextClientTrace(r.Context()).WroteRequest(httptrace.WroteRequestInfo{Err: errGone})
+		}, false},
+		{"all of the body but its last byte was read", func(body []byte, r *http.Request) {
+			_, _ = io.ReadFull(r.Body, make([]byte, len(body)-1))
+		}, false},
+		{"nothing of the body was read", func([]byte, *http.Request) {}, false},
 	}
-	if r.StatusCode != http.StatusAccepted || r.Err != nil || !r.WroteRequest {
-		t.Fatalf("response = %+v", r)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c, _ := newClient(t, "http://provider.invalid/", nil)
+			request := emailOf(10_000)
+			body, err := json.Marshal(payload{To: request.To, Channel: string(request.Channel), Content: request.Content})
+			if err != nil {
+				t.Fatal(err)
+			}
+			c.http.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				if r.ContentLength != int64(len(body)) {
+					t.Errorf("Content-Length %d, want %d", r.ContentLength, len(body))
+				}
+				tc.transport(body, r)
+				return nil, errGone
+			})
+			r := c.Send(context.Background(), request)
+			if r.Err == nil || r.StatusCode != 0 {
+				t.Fatalf("response = %+v, want the transport's error", r)
+			}
+			if r.WroteRequest != tc.want {
+				t.Errorf("WroteRequest = %v, want %v", r.WroteRequest, tc.want)
+			}
+		})
 	}
 }
 
