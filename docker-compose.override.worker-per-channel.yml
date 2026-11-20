@@ -1,0 +1,75 @@
+# Per-channel worker layout: an override file that replaces the one worker
+# of docker-compose.yml, which serves all three channels, by one worker per
+# channel (WORKER_CHANNELS). The default stays one worker: channel isolation
+# for pacing, concurrency, circuit state and provider connections already
+# lives inside that process; this layout adds process isolation, so that a
+# crash of one channel's worker stops only that channel (ADR-0005, "Channel
+# isolation inside one worker"). Use it on top of the mock profile:
+#
+#   docker-compose -f docker-compose.yml -f docker-compose.mock.yml \
+#     -f docker-compose.override.worker-per-channel.yml up -d --build --wait
+#
+# and the same three -f options for every other docker-compose command on
+# that stack (ps, logs, down -v). make test-e2e runs one scenario on this
+# layout in its second pass (test/e2e/layout_worker_per_channel_test.go).
+#
+# The per-channel workers point at mockprovider, as the mock profile does
+# for the one worker, and depend on it: without docker-compose.mock.yml the
+# configuration is refused (mockprovider is not defined), so this layout
+# never sends anything to the public webhook.site URL.
+#
+# Rate limit: the limiter's Redis key is per channel, and each channel has
+# one worker, so each channel is paced at RATE_LIMIT_PER_SECOND as in the
+# default layout. WORKER_REPLICAS divides the rate of the Redis-down fallback
+# by the number of workers that serve the same channel, so it stays 1 here:
+# three workers, one per channel. Concurrency (WORKER_CONCURRENCY) is per
+# channel in both layouts.
+#
+# Prometheus scrapes the three workers as its job "worker", so the dashboard
+# and the alert rules read them as they read the one worker.
+#
+# make demo needs the service worker; in this layout run the demo in one of
+# the workers instead: docker-compose <the three -f options> exec -T worker-sms demo
+services:
+  worker:
+    # Not started in this layout: a service of a profile is started only
+    # when that profile is enabled, and nothing enables this one.
+    profiles: ["single-worker"]
+
+  worker-sms:
+    extends:
+      file: docker-compose.yml
+      service: worker
+    environment:
+      WORKER_CHANNELS: sms
+      PROVIDER_URL: http://mockprovider:8090/
+    depends_on:
+      mockprovider:
+        condition: service_healthy
+
+  worker-email:
+    extends:
+      file: docker-compose.yml
+      service: worker
+    environment:
+      WORKER_CHANNELS: email
+      PROVIDER_URL: http://mockprovider:8090/
+    depends_on:
+      mockprovider:
+        condition: service_healthy
+
+  worker-push:
+    extends:
+      file: docker-compose.yml
+      service: worker
+    environment:
+      WORKER_CHANNELS: push
+      PROVIDER_URL: http://mockprovider:8090/
+    depends_on:
+      mockprovider:
+        condition: service_healthy
+
+  prometheus:
+    volumes:
+      # Replaces the mount of the same target in docker-compose.yml.
+      - ./deploy/prometheus/prometheus.worker-per-channel.yml:/etc/prometheus/prometheus.yml:ro

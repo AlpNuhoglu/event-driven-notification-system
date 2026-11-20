@@ -20,21 +20,59 @@ COMPOSE_MOCK = docker-compose -f docker-compose.yml -f docker-compose.mock.yml
 
 # make test-e2e runs the stack under its own Compose project, so it never
 # reuses or removes the stack of make up-mock. The host ports can be changed
-# when the defaults are taken (the other host ports as in .env.example).
-# The tests receive E2E_PROJECT too: the Redis fallback scenario stops and
-# starts the stack's redis service and reads the worker's /metrics through
-# docker-compose. E2E_OVERRIDE shortens the durations the scenarios wait for
-# (the circuit's open period after a provider_fatal answer); it is used here
-# only, never by make up-mock.
-E2E_PROJECT       ?= edns-e2e
-E2E_TIMEOUT       ?= 10m
-API_PORT          ?= 8080
-PROMETHEUS_PORT   ?= 9090
-GATEWAY_PORT      ?= 8082
-MOCKPROVIDER_PORT ?= 8090
-JAEGER_UI_PORT    ?= 16686
-E2E_OVERRIDE       = test/e2e/docker-compose.e2e.yml
-E2E_COMPOSE        = API_PORT=$(API_PORT) GATEWAY_PORT=$(GATEWAY_PORT) PROMETHEUS_PORT=$(PROMETHEUS_PORT) MOCKPROVIDER_PORT=$(MOCKPROVIDER_PORT) JAEGER_UI_PORT=$(JAEGER_UI_PORT) $(COMPOSE_MOCK) -f $(E2E_OVERRIDE) -p $(E2E_PROJECT)
+# when the defaults are taken. The tests receive E2E_PROJECT too: the chaos
+# scenarios stop, kill and start the stack's services and read their
+# /metrics through docker-compose. E2E_OVERRIDE shortens the durations the
+# scenarios wait for (the circuit's open period after a provider_fatal
+# answer); it is used here only, never by make up-mock.
+#
+# make test-e2e has two passes, each on a stack of its own that is always
+# removed afterwards: the whole suite on the default layout, then the one
+# scenario of the per-channel worker layout (E2E_LAYOUT_FILE) under the
+# project E2E_LAYOUT_PROJECT. Both passes run; the target fails when either
+# fails, and a failed pass leaves its service logs in e2e-logs/ (the second
+# in e2e-logs/worker-per-channel/).
+E2E_PROJECT        ?= edns-e2e
+E2E_TIMEOUT        ?= 10m
+E2E_LAYOUT_PROJECT ?= $(E2E_PROJECT)-per-channel
+E2E_LAYOUT_TIMEOUT ?= 5m
+API_PORT           ?= 8080
+PROMETHEUS_PORT    ?= 9090
+GATEWAY_PORT       ?= 8082
+MOCKPROVIDER_PORT  ?= 8090
+JAEGER_UI_PORT     ?= 16686
+GRAFANA_PORT       ?= 3000
+E2E_OVERRIDE        = test/e2e/docker-compose.e2e.yml
+E2E_LAYOUT_FILE     = docker-compose.override.worker-per-channel.yml
+E2E_PORTS           = API_PORT=$(API_PORT) GATEWAY_PORT=$(GATEWAY_PORT) PROMETHEUS_PORT=$(PROMETHEUS_PORT) MOCKPROVIDER_PORT=$(MOCKPROVIDER_PORT) JAEGER_UI_PORT=$(JAEGER_UI_PORT) GRAFANA_PORT=$(GRAFANA_PORT)
+E2E_COMPOSE         = $(E2E_PORTS) $(COMPOSE_MOCK) -f $(E2E_OVERRIDE) -p $(E2E_PROJECT)
+E2E_LAYOUT_COMPOSE  = $(E2E_PORTS) $(COMPOSE_MOCK) -f $(E2E_OVERRIDE) -f $(E2E_LAYOUT_FILE) -p $(E2E_LAYOUT_PROJECT)
+E2E_ENV             = E2E_API_URL=http://localhost:$(API_PORT) E2E_GATEWAY_URL=ws://localhost:$(GATEWAY_PORT)/v1/ws E2E_MOCK_URL=http://localhost:$(MOCKPROVIDER_PORT) E2E_PROMETHEUS_URL=http://localhost:$(PROMETHEUS_PORT) E2E_JAEGER_URL=http://localhost:$(JAEGER_UI_PORT)
+E2E_GO_TEST         = go test -tags e2e -count=1 -v
+
+# One pass of make test-e2e, in a subshell: start the stack with the Compose
+# command $(1), run the tests command $(2) against it, write every service's
+# log to the directory $(3) when the pass fails, and always remove the stack
+# and its volumes. $(4) names the pass in the failure message. The subshell
+# exits with the pass's status.
+define e2e_pass
+( trap '$(1) down -v --remove-orphans' EXIT; \
+  trap 'exit 130' INT TERM; \
+  status=0; \
+  $(1) up -d --build --wait || status=$$?; \
+  if [ $$status -eq 0 ]; then \
+    $(E2E_ENV) $(2) || status=$$?; \
+  fi; \
+  if [ $$status -ne 0 ]; then \
+    mkdir -p $(3); \
+    $(1) ps -a > $(3)/ps.log 2>&1; \
+    for svc in $$($(1) config --services); do \
+      $(1) logs --no-color --timestamps $$svc > $(3)/$$svc.log 2>&1; \
+    done; \
+    echo "test-e2e: $(4) failed (exit $$status); service logs are in $(3)/" >&2; \
+  fi; \
+  exit $$status )
+endef
 
 TEST_CMD = go test -race -tags=integration -count=1 ./...
 
@@ -85,24 +123,12 @@ tools: ## Print the version of each pinned tool
 image: ## Build the container image notifications:dev
 	docker build --build-arg GIT_SHA=$(GIT_SHA) -t notifications:dev .
 
-test-e2e: ## Compose stack with the mock override, e2e tests and load-smoke (needs Go and Docker)
+test-e2e: ## Compose stack with the mock override: e2e and chaos scenarios, load-smoke, then the per-channel worker layout (needs Go and Docker)
 	@rm -rf e2e-logs; \
-	trap '$(E2E_COMPOSE) down -v --remove-orphans' EXIT; \
 	trap 'exit 130' INT TERM; \
 	status=0; \
-	$(E2E_COMPOSE) up -d --build --wait || status=$$?; \
-	if [ $$status -eq 0 ]; then \
-		E2E_API_URL=http://localhost:$(API_PORT) E2E_GATEWAY_URL=ws://localhost:$(GATEWAY_PORT)/v1/ws E2E_MOCK_URL=http://localhost:$(MOCKPROVIDER_PORT) E2E_PROMETHEUS_URL=http://localhost:$(PROMETHEUS_PORT) E2E_JAEGER_URL=http://localhost:$(JAEGER_UI_PORT) E2E_PROJECT=$(E2E_PROJECT) \
-			go test -tags e2e -count=1 -v -timeout $(E2E_TIMEOUT) ./test/e2e/... || status=$$?; \
-	fi; \
-	if [ $$status -ne 0 ]; then \
-		mkdir -p e2e-logs; \
-		$(E2E_COMPOSE) ps -a > e2e-logs/ps.log 2>&1; \
-		for svc in $$($(E2E_COMPOSE) config --services); do \
-			$(E2E_COMPOSE) logs --no-color --timestamps $$svc > e2e-logs/$$svc.log 2>&1; \
-		done; \
-		echo "test-e2e: failed (exit $$status); service logs are in e2e-logs/" >&2; \
-	fi; \
+	$(call e2e_pass,$(E2E_COMPOSE),E2E_PROJECT=$(E2E_PROJECT) $(E2E_GO_TEST) -timeout $(E2E_TIMEOUT) ./test/e2e/...,e2e-logs,the default layout) || status=$$?; \
+	$(call e2e_pass,$(E2E_LAYOUT_COMPOSE),E2E_PROJECT=$(E2E_LAYOUT_PROJECT) E2E_LAYOUT_FILE=$(E2E_LAYOUT_FILE) $(E2E_GO_TEST) -timeout $(E2E_LAYOUT_TIMEOUT) -run '^TestComposeE2E_WorkerPerChannel$$' ./test/e2e/...,e2e-logs/worker-per-channel,the per-channel worker layout) || status=$$?; \
 	exit $$status
 
 check-rules: ## Validate and unit-test the Prometheus alert rules (needs Docker)

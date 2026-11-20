@@ -204,9 +204,11 @@ jobs:
           echo "${COMPOSE_SHA256}  $RUNNER_TEMP/docker-compose" | sha256sum -c -
           sudo install -m 0755 "$RUNNER_TEMP/docker-compose" /usr/local/bin/docker-compose
           test "$(docker-compose version --short)" = "${COMPOSE_VERSION#v}"
-      # The stack with the mock override, the e2e tests and load-smoke; the
-      # load-smoke line also goes to the job summary. On failure the target
-      # writes every service's log to e2e-logs/ before it stops the stack.
+      # The stack with the mock override, the e2e tests, the chaos scenarios
+      # and load-smoke, then a second stack with the per-channel worker
+      # override for its one scenario; the load-smoke line and the chaos
+      # report lines also go to the job summary. On failure the target writes
+      # every service's log to e2e-logs/ before it stops the stack.
       - run: make test-e2e
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
