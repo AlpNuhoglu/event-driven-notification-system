@@ -171,6 +171,9 @@ Newest entry first. One entry per session, in this form:
   - The pinned-action check: no output (above).
   - `make lint`: 0 issues; `go vet` with the integration and e2e tags: clean. No SQL and no OpenAPI source changed.
   - `gh pr checks` is reported on the pull request.
+- **Runs that failed in this session** (each kept as a file):
+  - **One of the two CI runs of the pull request's first head commit:** `internal/integration` `TestWorker_ConnectionLossWithBufferedMessages`, "condition not met within 10s" where the test waits for four deliveries to be dropped from the worker's buffer; the push run of the same commit was green. Read from the run's log: the broker had sent the fourth delivery 2.5 ms before the test broke the connection, and the worker dropped it when the consumer handed it over, with the line "delivery from an older connection epoch dropped", instead of purging it from the buffer (count 3). Both are the rule of D76; the test counted only the purge. It counts both now (5 of 5 locally, with the two neighbouring epoch tests). **Not reproduced locally;** the worker is unchanged.
+  - The pacing runs that spanned the machine's sleep (above). The first build of the new provider test (a helper's name was taken). The deliberate mutation runs of the written rule and of `make verify-suite`.
 - **Decisions taken** (within the author's instructions of this session):
   1. **The written rule has two halves,** the body read to the end and no failed write reported, and not the first alone: a write that fails on a broken kept-alive connection stays `unreachable`, as ADR-0007 had it.
   2. **The test server of the provider tests reads the request before it answers,** as a provider does; a server that answers on the headers alone can return a `202` before the body was read, and no rule reads the flag when there is a response.
