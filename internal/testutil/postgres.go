@@ -78,26 +78,40 @@ func onExit(name string, c testcontainers.Container) {
 }
 
 func start() (*server, error) {
+	type started struct {
+		container *tcpostgres.PostgresContainer
+		adminURL  string
+	}
+	st, err := startRetrying("postgres", func() (started, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), startTimeout)
+		defer cancel()
+		c, err := tcpostgres.Run(ctx, PostgresImage,
+			tcpostgres.WithDatabase("edns"),
+			tcpostgres.WithUsername("edns"),
+			tcpostgres.WithPassword("edns"),
+			tcpostgres.BasicWaitStrategies(),
+			testcontainers.WithCmdArgs("-c", "synchronous_commit=off", "-c", "full_page_writes=off",
+				"-c", "max_connections=300"),
+		)
+		if err != nil {
+			if c != nil {
+				discard("postgres", c)
+			}
+			return started{}, fmt.Errorf("start postgres: %w", err)
+		}
+		adminURL, err := c.ConnectionString(ctx, "sslmode=disable")
+		if err != nil {
+			discard("postgres", c)
+			return started{}, fmt.Errorf("connection string: %w", err)
+		}
+		return started{container: c, adminURL: adminURL}, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	c, adminURL := st.container, st.adminURL
 	ctx, cancel := context.WithTimeout(context.Background(), startTimeout)
 	defer cancel()
-	c, err := tcpostgres.Run(ctx, PostgresImage,
-		tcpostgres.WithDatabase("edns"),
-		tcpostgres.WithUsername("edns"),
-		tcpostgres.WithPassword("edns"),
-		tcpostgres.BasicWaitStrategies(),
-		testcontainers.WithCmdArgs("-c", "synchronous_commit=off", "-c", "full_page_writes=off",
-			"-c", "max_connections=300"),
-	)
-	if err != nil {
-		if c != nil {
-			_ = testcontainers.TerminateContainer(c)
-		}
-		return nil, fmt.Errorf("start postgres: %w", err)
-	}
-	adminURL, err := c.ConnectionString(ctx, "sslmode=disable")
-	if err != nil {
-		return nil, errors.Join(fmt.Errorf("connection string: %w", err), testcontainers.TerminateContainer(c))
-	}
 	s := &server{container: c, adminURL: adminURL}
 	if err := s.exec(ctx, "CREATE DATABASE "+templateDB); err != nil {
 		return nil, errors.Join(err, testcontainers.TerminateContainer(c))
