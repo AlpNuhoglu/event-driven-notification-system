@@ -23,11 +23,16 @@ import (
 //     without the host port its configuration asks for: the container runs,
 //     its port map is empty and stays empty.
 //
-// A new container starts normally in both cases, so a helper starts its
-// container up to startAttempts times. Only the start is repeated: nothing a
-// test asserts runs inside an attempt. Every failed attempt is written to
-// standard error, so the output of a run shows how often it happened.
-const startAttempts = 4
+// A new container starts normally after the first; the second comes in
+// bursts: the containers one test binary starts lack their port for a while
+// (60 seconds and more in one run, three containers in a row over 35 seconds
+// in another), and then a new one is normal again. So a helper starts its
+// container up to startAttempts times, with a pause that doubles. Only the
+// start is repeated: nothing a test asserts runs inside an attempt. Every
+// failed attempt is written to standard error, so the output of a run shows
+// how often it happened. A burst longer than the attempts still fails the
+// package; why Docker leaves the port out is not known.
+const startAttempts = 6
 
 // startPause is the wait before the second attempt; it doubles from there.
 var startPause = 250 * time.Millisecond
