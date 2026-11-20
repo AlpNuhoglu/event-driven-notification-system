@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -570,5 +571,74 @@ func TestGateway_ReadLimitFitsAThousandIDs(t *testing.T) {
 	c.sendRaw(websocket.MessageText, []byte(big))
 	if status, _ := c.closeStatus(); status != websocket.StatusMessageTooBig {
 		t.Errorf("close status %d, want %d (message too big)", status, websocket.StatusMessageTooBig)
+	}
+}
+
+// A refused handshake is answered with the gateway's own text. The
+// WebSocket library's answer quotes the request (the Origin of a refused
+// origin, the header that broke the protocol); none of that reaches the
+// client, and the status stays.
+func TestGateway_RefusedHandshakeRepeatsNothingOfTheRequest(t *testing.T) {
+	const marker = "marker-7f3a9c"
+	s := startServer(t, testOptions(newFakeSnapshots()))
+	url := "http" + strings.TrimPrefix(s.url, "ws")
+	upgrade := http.Header{
+		"Connection":            {"Upgrade"},
+		"Upgrade":               {"websocket"},
+		"Sec-Websocket-Version": {"13"},
+		"Sec-Websocket-Key":     {"dGhlIHNhbXBsZSBub25jZQ=="},
+	}
+	with := func(name, value string) http.Header {
+		h := upgrade.Clone()
+		h.Set(name, value)
+		return h
+	}
+	cases := []struct {
+		name       string
+		header     http.Header
+		wantStatus int
+		wantBody   string
+	}{
+		{"an origin that is not allowed", with("Origin", "https://"+marker+".example.com"), http.StatusForbidden, originRefused},
+		{"a request that is not an upgrade", http.Header{"X-Anything": {marker}}, 0, handshakeRefused},
+		{"an Upgrade header of another protocol", with("Upgrade", marker), 0, handshakeRefused},
+		{"a version the library does not speak", with("Sec-Websocket-Version", marker), 0, handshakeRefused},
+		{"a malformed key", with("Sec-Websocket-Key", marker), 0, handshakeRefused},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), waitTimeout)
+			defer cancel()
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header = tc.header
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resp.StatusCode < http.StatusBadRequest || (tc.wantStatus != 0 && resp.StatusCode != tc.wantStatus) {
+				t.Fatalf("status %d, want a refusal (%d)", resp.StatusCode, tc.wantStatus)
+			}
+			if string(body) != tc.wantBody {
+				t.Errorf("status %d, body %q, want %q", resp.StatusCode, body, tc.wantBody)
+			}
+			for name, values := range resp.Header {
+				for _, v := range values {
+					if strings.Contains(v, marker) {
+						t.Errorf("response header %s repeats the request: %q", name, v)
+					}
+				}
+			}
+			if n := s.g.Connections(); n != 0 {
+				t.Errorf("%d connections after a refused handshake", n)
+			}
+		})
 	}
 }

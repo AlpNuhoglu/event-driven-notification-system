@@ -122,7 +122,7 @@ func (g *Gateway) Handler() http.Handler {
 // serveWS upgrades the request and serves the connection until it ends. A
 // disallowed origin is refused before the upgrade with 403.
 func (g *Gateway) serveWS(w http.ResponseWriter, r *http.Request) {
-	ws, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: g.opts.OriginPatterns})
+	ws, err := websocket.Accept(&handshakeWriter{ResponseWriter: w}, r, &websocket.AcceptOptions{OriginPatterns: g.opts.OriginPatterns})
 	if err != nil {
 		// Accept has answered (403 for a disallowed origin). Its error is
 		// not logged: it quotes the request's Origin header.
@@ -140,6 +140,51 @@ func (g *Gateway) serveWS(w http.ResponseWriter, r *http.Request) {
 	// connection is hijacked); the connection has its own (client.serve).
 	c.serve(context.WithoutCancel(r.Context()))
 }
+
+// The bodies of a refused handshake.
+const (
+	originRefused    = "the request's origin is not allowed\n"
+	handshakeRefused = "the WebSocket handshake was refused\n"
+)
+
+// handshakeWriter is the response writer the WebSocket library gets for the
+// handshake. When the library refuses a request, it answers with a text
+// that quotes the request: the Origin header of a refused origin, the
+// header that broke the protocol. A gateway message never repeats what the
+// client sent (ADR-0006 §10), so the status stays and the body is replaced
+// by a fixed one. A handshake that succeeds passes through: the library
+// takes the connection over through Unwrap.
+type handshakeWriter struct {
+	http.ResponseWriter
+	refused bool
+}
+
+// WriteHeader writes a refusal's status with the gateway's own body.
+func (h *handshakeWriter) WriteHeader(status int) {
+	if status < http.StatusBadRequest {
+		h.ResponseWriter.WriteHeader(status)
+		return
+	}
+	h.refused = true
+	body := handshakeRefused
+	if status == http.StatusForbidden {
+		body = originRefused
+	}
+	h.ResponseWriter.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	h.ResponseWriter.WriteHeader(status)
+	_, _ = h.ResponseWriter.Write([]byte(body))
+}
+
+// Write drops the library's text of a refusal and reports it written.
+func (h *handshakeWriter) Write(p []byte) (int, error) {
+	if h.refused {
+		return len(p), nil
+	}
+	return h.ResponseWriter.Write(p)
+}
+
+// Unwrap lets the library reach the connection to take it over.
+func (h *handshakeWriter) Unwrap() http.ResponseWriter { return h.ResponseWriter }
 
 // admit registers a new connection, unless the gateway is shutting down.
 func (g *Gateway) admit(c *client) bool {

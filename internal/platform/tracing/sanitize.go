@@ -7,6 +7,7 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // sanitizing is the exporter every span passes on its way out. The
@@ -20,12 +21,18 @@ import (
 //     error can quote a value. The status code and the exception type stay.
 //   - url.full keeps scheme, host and path; userinfo, query and fragment are
 //     removed. url.query is dropped.
-//   - url.path and user_agent.original of a request the api received are
-//     dropped: both are text the client chose, and a path that is not a
-//     route can hold anything. The span keeps http.route, the route
-//     template, and the delivery's spans carry notification.id.
 //   - any db.query.parameter.* attribute is dropped (otelpgx records none
 //     unless asked to; this guards the configuration).
+//   - **the span of a request the api received (a server span) keeps only
+//     the attributes of serverAttrs.** Most of what the instrumentation
+//     records there is text the client chose: the path (anything, when it
+//     is not a route), the user agent, the Host header (server.address),
+//     X-Forwarded-For (client.address), a method of its own
+//     (http.request.method_original). The canary scan found each of them
+//     (ADR-0010). It is a list of what stays, so that an attribute a later
+//     version of the instrumentation adds is dropped until it is looked at.
+//     The span keeps http.route, the route template, and the delivery's
+//     spans carry notification.id.
 type sanitizing struct {
 	sdktrace.SpanExporter
 }
@@ -42,9 +49,13 @@ func sanitize(sp sdktrace.ReadOnlySpan) sdktrace.ReadOnlySpan {
 	if own(sp.InstrumentationScope().Name) {
 		return sp
 	}
+	attrs := sanitizeAttrs(sp.Attributes())
+	if sp.SpanKind() == trace.SpanKindServer {
+		attrs = keepServerAttrs(attrs)
+	}
 	return sanitized{
 		ReadOnlySpan: sp,
-		attrs:        sanitizeAttrs(sp.Attributes()),
+		attrs:        attrs,
 		events:       sanitizeEvents(sp.Events()),
 		status:       sdktrace.Status{Code: sp.Status().Code},
 	}
@@ -68,11 +79,42 @@ func (s sanitized) Attributes() []attribute.KeyValue { return s.attrs }
 func (s sanitized) Events() []sdktrace.Event         { return s.events }
 func (s sanitized) Status() sdktrace.Status          { return s.status }
 
+// serverAttrs are the attributes a server span keeps: values the server
+// determines (the matched route, the status, sizes, the peer's address as
+// the connection has it) or that come from a small fixed set (the
+// normalised method, the scheme, the protocol version). The port of the
+// Host header is a number.
+var serverAttrs = map[attribute.Key]bool{
+	"http.request.method":       true,
+	"http.response.status_code": true,
+	"http.route":                true,
+	"url.scheme":                true,
+	"network.protocol.name":     true,
+	"network.protocol.version":  true,
+	"network.peer.address":      true,
+	"network.peer.port":         true,
+	"server.port":               true,
+	"http.request.body.size":    true,
+	"http.response.body.size":   true,
+	"error.type":                true,
+}
+
+// keepServerAttrs returns the attributes of in that a server span keeps.
+func keepServerAttrs(in []attribute.KeyValue) []attribute.KeyValue {
+	out := make([]attribute.KeyValue, 0, len(in))
+	for _, kv := range in {
+		if serverAttrs[kv.Key] {
+			out = append(out, kv)
+		}
+	}
+	return out
+}
+
 func sanitizeAttrs(in []attribute.KeyValue) []attribute.KeyValue {
 	out := make([]attribute.KeyValue, 0, len(in))
 	for _, kv := range in {
 		switch k := string(kv.Key); {
-		case k == "url.query", k == "url.path", k == "user_agent.original", strings.HasPrefix(k, "db.query.parameter"):
+		case k == "url.query", strings.HasPrefix(k, "db.query.parameter"):
 			continue
 		case k == "url.full":
 			out = append(out, attribute.String(k, stripURL(kv.Value.AsString())))
