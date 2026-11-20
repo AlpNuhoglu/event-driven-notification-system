@@ -4,7 +4,7 @@ The first file every session reads and the last one it updates. The phases and t
 
 ## Current phase
 
-**P5: real-time and observability** — in progress: `p5/events-and-gateway` and `p5/metrics-and-summary` are merged; `p5/logging-tracing-health` is the third and last pull request.
+**P5: real-time and observability** — in review: `p5/events-and-gateway` and `p5/metrics-and-summary` are merged; `p5/logging-tracing-health`, the third and last pull request, is open with every exit criterion of the phase run.
 
 **Next step:** the author merges `p5/logging-tracing-health`. Then P6 (quality) from the updated `main`.
 
@@ -14,7 +14,7 @@ The first file every session reads and the last one it updates. The phases and t
 |---|---|
 | `p5/events-and-gateway` (merged) | The repetition of the P4 tests and the three timing dependencies it led to. The status event's message, the lazy and bounded event publisher in api, relay and worker, the gateway with subscribe-then-snapshot, origin patterns, the bounded send queue and its own event queue, the `gateway` service in Compose, the Compose scenario create → subscribe → snapshot → events → `sent`. Mutation check: the snapshot read before the registration. |
 | `p5/metrics-and-summary` (merged) | By the author's decisions after the first pull request: ids in the canonical spelling only (open issue 12), a deadline for the whole snapshot of a subscribe request, `.claude/worktrees/` ignored, and the gateway's readiness check. Then: every metric of ADR-0009 §1 with the ones later decisions added (`expired_total` by priority and `notifications_finished_total`, D75; `pacer_slots_missed_total`, D77; `limiter_fallback_active`; the reconciliation counters), `GET /v1/metrics/summary` with its two caches, the "Overview" dashboard with its smoke test, `alerts.yml` with the thresholds of D74 and `promtool check rules`, Prometheus scraping the roles. |
-| `p5/logging-tracing-health` (in progress) | `slog` with the central handler and the three redaction layers, the request log brought in line with ADR-0009 §4, correlation IDs, hybrid tracing, the health endpoints in full, the canary scan, `make demo`. |
+| `p5/logging-tracing-health` (in review) | `slog` with the central handler and the three redaction layers, the request log brought in line with ADR-0009 §4, correlation IDs, hybrid tracing, the health endpoints in full, the canary scan, `make demo`. |
 
 **How P4 was split** (the plan names the two branches):
 
@@ -48,7 +48,7 @@ Status is one of: `not started`, `in progress`, `in review` (pull requests open)
 | P2 | API completeness | done | [#7](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/7) (`p2/batch-and-idempotency`, merged), [#8](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/8) (`p2/cancel-redrive-listing`, merged), [#9](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/9) (`p2/validation`, merged) | 2026-11-19 |
 | P3 | Delivery robustness | done | [#10](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/10) (`p3/classification-and-retry`, merged), [#11](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/11) (`p3/breaker-and-fallback`, merged), [#12](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/12) (`p3/recovery`, merged); follow-up [#13](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/13) (`p3/isopen-race`, merged) | 2026-11-19 |
 | P4 | Templates and scheduling | done | [#14](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/14) (`p4/templates`, merged), [#15](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/15) (`p4/scheduling`, merged) | 2026-11-19 |
-| P5 | Real-time and observability | in progress | [#16](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/16) (`p5/events-and-gateway`, merged), [#17](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/17) (`p5/metrics-and-summary`, merged) | |
+| P5 | Real-time and observability | in review | [#16](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/16) (`p5/events-and-gateway`, merged), [#17](https://github.com/AlpNuhoglu/event-driven-notification-system/pull/17) (`p5/metrics-and-summary`, merged), `p5/logging-tracing-health` (in review) | 2026-11-20 |
 | P6 | Quality | not started | | |
 | P7 | Delivery | not started | | |
 
@@ -106,6 +106,92 @@ Newest entry first. One entry per session, in this form:
 - **Open issues:** new entries added to the table above.
 - **Next step:** the first thing the next session does.
 ```
+
+### 2026-11-20 — P5: logging, tracing and health (pull request 3 of 3)
+
+- **By the author, at the start:** `p5/metrics-and-summary` is merged, its fifteen decisions are accepted, and the readiness split was read as intended. **Before other work on this branch, the unexplained failure of `internal/api`:** the package with `-race -shuffle=on -count=30`, and once more while `make test-e2e` runs beside it; a failing run's full output is kept with its seed; if it fails the cause is found first, if not the commands and counts are recorded as an open observation, not as resolved. **From now on a failing run's output is always saved before the next command.** Reminders for the phase: the canary scan's coverage, the request log by ADR-0009, `make demo` on the mock profile and a throwaway URL only, the P5 exit criteria in full.
+- **The `internal/api` investigation, done first** (on `main` at `6b099cb`, before any change):
+  - `go test -race -tags=integration -shuffle=on -count=30 ./internal/api/`: **30 of 30 passed**, 326 s. Without `-v` a passing run prints no seed.
+  - The same command with `-v`, while `make test-e2e` ran beside it twice: **30 of 30 passed** (4,890 passed runs of 163 tests), seed `1795128933152865000`, 324 s; both end-to-end runs green.
+  - **Not reproduced, not resolved:** open observation 13 holds the commands and counts. The package also passed in every later run of this session (the list is under "Runs that failed").
+- **Done:**
+  - **Logging:** the central handler (`internal/platform/logging`) in every role; key-based redaction; the correlation id in the context of the api, the relay and the worker; levels by ADR-0009 §4; no error text of a request in a log line.
+  - **The provider's error body is stored for the first time,** after the value-based redaction (below).
+  - **Tracing:** `internal/platform/tracing`; the api's request span, `relay.publish` by the hybrid rule (D13), `worker.process`, the provider call, the statements; a sanitising exporter.
+  - **Readiness** of the api, the relay and the worker on the admin port; `Consumer.Active`.
+  - **`make demo`** (`cmd/demo`, `internal/demo`), built into the image and run in the worker container.
+  - **The canary scan** (`TestCanaryScan`) in `make test-e2e`, and the mock provider's `echo_request` option.
+  - **The version** in every log line and span is the commit the image was built from (`GIT_SHA`, passed by `make`).
+  - **Documents:** ADR-0009 (§4, §5, §6, §7 as built, the scan and its findings), ADR-0006 (a refused handshake), ADR-0002 (the lane query's columns), ADR-0010 (five rows), `future-work.md` (three rows), the README (logs and traces, `make demo`), `.env.example` (`TRACING_SHUTDOWN_TIMEOUT`).
+- **The request log follows ADR-0009** (point 4 of the phase): the line per request is `debug`; a `5xx` is `error` with the method (normalised), the route template, the status, the duration and the class of its cause. At the default level a notification that is sent produces one line in the whole stack, the worker's `notification sent`.
+- **The redaction paths, read line by line by the main loop:**
+  - **Key-based** (`logging.Redact`, `redactAttrs`, the handler): every attribute of a record and of `With` passes the walk before the JSON handler sees it; a dropped name removes its whole group; a map with string keys becomes a group so its keys are seen; the context's fields cannot be overridden. Its limit: a struct logged as one value is not looked into (`future-work.md`).
+  - **Value-based** (`domain.RedactProviderError`): the replacements are made before the cut; overlapping matches are merged; if replacing keeps forming a value, the whole text becomes a marker. **Two additions by the main loop:** a phone number without its plus sign is a spelling of the recipient, and a body that was read up to its limit loses its end first, as many bytes as the longest spelling minus one, so that a value broken off there cannot stay.
+  - **A finding of the delegate's report, acted on by the main loop: no provider body was ever stored.** The client discarded the body of an answer that is not a `2xx`; only a transport error's text reached `notification_attempts.error`. ADR-0009 §4 and the API's description ("what the provider answered, shortened") both describe the stored body. The client now keeps up to 8 KB of it, and the worker stores it redacted and cut to 1 KB. On the stack, a provider answer that repeats the request is stored as `{"error":"rejected the message to c***@example.com: [content redacted]","request":{"to":"c***@example.com","channel":"email","content":"[content redacted]"}}`.
+- **The concurrency-critical code, read line by line by the main loop:**
+  - **The relay's publish:** a span per row is started before `PublishBatch` and ended after it returns; the message's `traceparent` is the span's own context. Select, publish with confirms and returns, and commit keep their order. The lane query returns two more columns (`attempt_count`, `scheduled_at`); its filter, order and locking clause are unchanged.
+  - **The worker's dispatch:** the span starts before the claim and ends when `deliver` returns; the correlation id enters the context after the claim; the transition's line is written after its event is published. Ack and nack are where they were.
+  - **`Consumer.Active`:** set inside the read lock under which a subscription is made, cleared inside the write lock under which the epoch advances, and where the broker's cancel drops the subscription and where `Run` ends, all under the consumer's own lock; a subscription made before an advance cannot mark the consumer active after it. No existing statement moved.
+- **The canary scan** (point 3 of the phase): 63 canaries, 22 sources.
+  - **Sources:** the logs of all twelve services; every span Jaeger has; `/metrics` of api, relay, worker, gateway and RabbitMQ; the series Prometheus stored; the mock provider's report; **the 77 answers to failed requests, with their headers; the 11 gateway messages.** Each source has a control that must be found in it.
+  - **First run: no recipient and no content anywhere.** Four findings of other text a client chose, all fixed by the main loop (one commit):
+
+    | Finding | Where | Fix |
+    |---|---|---|
+    | The `Host` header | `server.address` of the api's request spans | A received request's span keeps only a list of attributes |
+    | `X-Forwarded-For` | `client.address` of the same spans | The same |
+    | A method of the client's own | `http.request.method_original` of the same spans; and the api's `debug` request line | The same; the line logs the label the metrics use |
+    | The `Origin` header | The body of the gateway's `403` to a refused handshake, written by the WebSocket library | The status stays; the body is the gateway's own, for every refused handshake |
+
+  - **After the fixes:** `canary scan: 63 canaries, 22 sources, no match`.
+  - **Shown to fail** by the delegate, with five leaks planted and removed again: the content in a worker log line, the recipient as a span attribute, a metric label (found in `/metrics` and in the Prometheus series), a problem detail that echoes a value (and a copy cut to 21 characters), a gateway error that echoes an id.
+- **Tracing, checked on a running stack by the main loop** (a stack of its own, the worker's provider a throwaway webhook.site URL): one trace of 18 spans from `POST /v1/notifications` through `relay.publish` and `worker.process` to the provider call and the final write; the `traceparent` the provider received carries that trace's id; the provider's request body has exactly `channel`, `content` and `to`. The delegate's mutation: with the rule always choosing "child", the retry and the scheduled test fail.
+- **`make demo`** (point 5): developed on the mock profile. **Its probe against a throwaway URL** (created and deleted by the main loop; the default URL was never used, 48 of its 50 requests are left):
+  - the webhook.site API answers as the probe assumes: `GET /token/<uuid>` `200`, `/requests?per_page=1` with `total`, `404` for a URL that does not exist; these calls do not count as requests to the URL;
+  - against a URL that does not exist: "the webhook.site URL has been deleted or has expired; nothing was sent", exit 1;
+  - against the throwaway URL: "the URL exists and has 50 requests left", three notifications followed to `sent`; a second run: "47 requests left", three replays, and the URL's total stayed 3.
+- **Pull requests opened:** see the phase table.
+- **Exit criteria of P5, all run by the main loop on this branch** (mock profile and test containers; the throwaway URL for the demo's probe only):
+  - `make test`: green, 26 packages.
+  - `make test-e2e`: green, 173 s, 15 tests. `TestCanaryScan`: no match. `TestDashboardSmoke`: the four targets up, the six rules loaded, every panel query returns data. `load-smoke`: 6,000 SMS in 61.2 s, 98.0/s, largest one-second window **99**.
+  - `promtool check rules deploy/prometheus/alerts.yml` (`make check-rules`): `SUCCESS: 6 rules found`; the rule unit tests `SUCCESS`.
+  - `curl -fsS localhost:8080/v1/metrics/summary` on the mock stack: 9 lanes, 3 channels, attempts, `success_rate` 1 and the latencies of the demo's five notifications.
+  - `make demo` on the mock stack: five notifications created (one through the batch endpoint) and followed to `sent`, exit 0; the second run replays all five.
+  - On the same stack, `/readyz` of the admin port: api `postgres`; relay `postgres`; worker `postgres`, `rabbitmq`, `consumer`; gateway `postgres`, `rabbitmq`, `event_consumer`; all ok. A worker log line carries `version` equal to the commit.
+  - `make generate`: no drift. `make lint`: 0 issues.
+  - `gh pr checks` is reported on the pull request.
+- **Runs that failed in this session** (every one kept as a file; none of `internal/api` again):
+  - **The delegates' own first runs.** Readiness: two of its new tests read an empty registry as ready before the service had registered its check ("checks [], want exactly postgres"); the tests now wait for a check. Demo: one expectation about the order of a printed list. Logging: two store tests compared an event with the row after `CorrelationID` was added to the event ("event {... CorrelationID:} does not match stored row {... CorrelationID:corr-1}", transition 8, which returns the event's columns only); the helper now compares the published members. Canary: Jaeger's v1 query API answers `404` (v3 is used); the scan's findings above; the five planted leaks.
+  - **The main loop's.** `make lint`: 3 findings in a test it wrote (a deprecated call), fixed. The first of the two logging commits did not build on its own (it used a field the second added); both were local and were cut again so that each builds. One shell command that only edited files was refused by the tool's safety check and was redone with the editor.
+- **Decisions taken** (within the latitude of the ledger and the ADRs; the ADRs are updated):
+  1. **The provider's error body is stored** (up to 8 KB read, 1 KB stored, redacted), as ADR-0009 §4 and the API's description say; the code had not done it.
+  2. **Value-based redaction also matches a phone number without its plus sign, and drops the end of a body that was cut at the read limit.**
+  3. **A received request's span keeps a list of attributes;** everything else the instrumentation records there is dropped. Client and database spans keep theirs, cleaned of error texts, queries and arguments.
+  4. **A refused WebSocket handshake is answered with the gateway's own text** (the status of the library stays).
+  5. **No error text of a request is logged:** the `5xx` line names the error's class; an unknown error is named by its type. Operators lose the text of an unexpected error; the trace id on the line leads to its span.
+  6. **The api's request line logs the normalised method.**
+  7. **`StatusChanged` carries the row's correlation id** (not on the wire), so the relay can log it without a change to its SQL. Reconciliation and `requeue-stale` return the event's columns only: a line per run, none per row.
+  8. In the api a notification's cancel and redrive lines carry that request's correlation id, not the one of the request that created it.
+  9. "… succeeded after retries" and "late success applied" stay at `info`: they close an episode that was logged at `warn`, and state a final outcome.
+  10. **The stored `trace_parent` is the api's request span's context;** the provider's `traceparent` is the worker's provider-call span's. Before, the stored value was sent to the provider.
+  11. `attempt` on `relay.publish` is the attempt the claim will open. Span outcomes for a delivery that made no attempt: `requeued`, `not_applied`, `expired`; for a publish: `published`, `not_confirmed`, `failed`.
+  12. **Tracing is optional:** an empty endpoint turns it off; a collector that does not answer never fails a start; `TRACING_SHUTDOWN_TIMEOUT` (new, 2 s) bounds the stop. An unsupported sampler name is a configuration error.
+  13. **One version for logs and spans:** the commit, a build argument that `make` passes; `dev` for a plain `docker-compose up`.
+  14. **The worker's readiness** has `consumer` next to `rabbitmq`; `Consumer.Active` is true from a subscription that succeeded until the epoch advances.
+  15. **`make demo` runs inside the worker container** (`docker-compose exec -T worker demo`), with the worker's own `PROVIDER_URL`; its probe never sends a request to the provider URL; its idempotency keys are fixed per position, so a second run replays. Timeouts are flags.
+  16. **The scan's rule for answers:** a `2xx` that documents a notification may hold its recipient; every other answer and every other canary is searched everywhere. The constant example in the `invalid_e164` message (the reserved number) is cut out before the search. The scan runs before `load-smoke` and at the default log level; `debug` is covered by the roles' log-capture tests.
+  17. The mock provider's `echo_request` answers with a body that repeats the request, for every status.
+- **Observed:**
+  - `log/slog`'s JSON handler (Go 1.27.1) writes an invalid line when `ReplaceAttr` empties a group, and then loses the attributes after it; the handler therefore redacts before the JSON handler sees the record.
+  - Jaeger 2.23.0 serves only `/api/v3/*` on its UI port; a search without a match is a `404`.
+  - `otelhttp`'s transport does not pass `CloseIdleConnections` on; its client sets `url.full` and an error's text after the span starts, so they are cleaned in the exporter. `otelpgx` starts a statement span only under a span that is recorded.
+  - Each statement appears as two spans in a trace (prepare and query).
+  - While the collector is unreachable, a failed export is logged at `warn` about every 5 s.
+  - With logging and tracing in place (Jaeger running, every trace sampled), `load-smoke` is as before: 98.0/s with a largest window of 99.
+- **Not verified:** the scan at `debug` level on the stack; the `500` and `503` problem types, `snapshot_unavailable` and the redrive's `expires_at` codes in the scan; a canary cut to fewer than 16 characters; the metrics endpoints of Grafana, Jaeger and Prometheus themselves; the demo's "too few requests left" against the real webhook.site API (unit-tested against a fake; it would need 41 requests to a throwaway URL); the TLS branch of the demo's connection check in a test (it ran against webhook.site by hand); the span attribute keys on the running stack by hand (the main loop's query used Jaeger's v1 API and got no JSON; the scan reads every span through v3); tracing under load with sampling below 100 %; a v2.24.0 Compose binary (the Compose files gained `build.args`, which is older than every feature that decides the minimum); `make test-docker`.
+- **Delegation:** five delegates, each in its own worktree. **Opus** for logging and redaction, for tracing, and (after those two were merged) for the canary scan, each from a brief that fixed the rules and the tests and left the structure to it. **Sonnet** for the readiness of three roles and for `make demo`, from briefs with the files, the steps and the tests. The main loop ran the `internal/api` investigation first, wrote the five briefs, verified the webhook.site API on a throwaway URL, read the redaction paths and the changes to the relay's publish, the worker's dispatch and the consumer line by line, stored the provider's error body and extended its redaction, made the version one value, merged the five diffs (seven conflicts between logging and tracing, both sides kept), fixed the scan's four findings, cut two commits again so that each builds, ran every exit criterion and the stack checks itself, and wrote the documents.
+- **Open issues:** 13 (the unreproduced failure of `internal/api`), open.
+- **Next step:** after the merge, P6 (quality): the actor-pair matrix, a test for every ledger decision, the chaos and load scenarios, the tuning lists, `make verify-suite`, CI hardening and the release workflow.
 
 ### 2026-11-20 — P5: metrics and summary (pull request 2 of 3)
 

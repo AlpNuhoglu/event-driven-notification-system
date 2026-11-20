@@ -148,12 +148,26 @@ The thresholds are first values, set when the rules are written and tuned agains
 
 A one-time password appearing in a log is a security incident, which is why `content` is never logged at any level.
 
+**As built (P5):**
+
+| Topic | Rule |
+|---|---|
+| The handler | `internal/platform/logging`, built once per process. Every line has `time`, `level`, `msg`, `service` (the role) and `version` (the commit the image was built from; `make` passes it as a build argument, and an image built by a plain `docker-compose up` reports `dev`). `correlation_id`, `trace_id` and `span_id` come from the record's context, stay at the top level and cannot be overridden by an attribute. |
+| A notification's lines | `notification <status>`: `info` for `sent`, `failed` and `cancelled`, `debug` for every other status, with `notification_id`, `batch_id`, `channel`, `priority`, `status`, `attempt`, and for the worker `outcome` and `http_status`. At the default level a notification that is sent produces one line. |
+| The api's request line | `debug`; a `5xx` answer is `error`, with the method, the route template, the status, the duration and the **class** of its cause. No error text of a request is logged: the text of a JSON or template error can quote its input. |
+| Key-based redaction | Applied to every attribute before the JSON handler sees the record, and again as its `ReplaceAttr`: `content`, `variables`, `template_vars` dropped at any depth, also through `With`, inside a group of such a name, and as a member of a map with string keys; `recipient` masked whatever its type. Names are compared without regard to case. **It cannot see inside a struct that is logged as one value;** no struct that carries a content is logged. |
+| Value-based redaction | What is stored in `notification_attempts.error`: the body of a provider answer that is not a `2xx` (up to 8 KB of it is read), or the transport error's text. The message's own recipient (matched without regard to case; a phone number also without its plus sign) and content are replaced, in their plain and JSON-escaped spellings, **before** the text is cut to 1 KB; a value broken off at the read limit is dropped; if replacing keeps forming a value again, the whole text becomes a marker. Before P5 no body was stored. |
+| Not caught | A value in another encoding (URL-encoded, base64, re-formatted), and personal data that is not the message's own. |
+| The canary scan | `TestCanaryScan` in the end-to-end run, at the default log level. Its canaries are recipients, contents and template variables that occur nowhere else (the SMS recipient is the reserved fake number, D71, whose full form is a canary), and markers in every other place a client can put text: body members, headers, query values, path ids, a method. It searches the logs of all twelve services, every span Jaeger has, the `/metrics` of the four roles and of RabbitMQ, the series Prometheus stored, the mock provider's report, **every answer of a failed request with its headers and every gateway message**. Every source has a control that must be found in it. A `2xx` answer that documents a notification may hold its recipient; nothing may hold a content. |
+| What the first run found | No recipient and no content anywhere. Four places held other text the client chose: the `Host` header, `X-Forwarded-For` and a method of the client's own in the api's request spans, and the `Origin` header in the gateway's answer to a refused handshake. All four were closed: a received request's span keeps only a list of attributes (§6), and a refused handshake is answered with the gateway's own text. |
+
 ### 5. Correlation IDs
 
 - `X-Request-ID` is accepted from the client if it is at most 128 characters of `[A-Za-z0-9._-]`; otherwise it is ignored and a UUIDv7 is generated. An unvalidated header would let a client write arbitrary text into every log line. It is echoed in the response and stored in `notifications.correlation_id`.
 - It reaches workers **through the database row, not the message**: the message carries only the `id` and `traceparent` ([ADR-0001](0001-rabbitmq-as-dispatch-broker.md)).
 - All notifications in a batch share the request's correlation ID.
 - `correlation_id` is immutable ([ADR-0004](0004-data-model-state-machine-and-fencing.md)).
+- **In the logs (P5):** in the api every line of a request carries the request's id (also the cancel or redrive of a notification that another request created); in the relay and the worker every line of a notification carries the notification's own, read from its row. Lines before the worker's claim (a claim that fails, a stale delivery) have none yet. Reconciliation and `requeue-stale` write a line per run, not per row.
 
 ### 6. Distributed tracing (OpenTelemetry)
 
@@ -184,6 +198,19 @@ Retries and scheduled deliveries: a new trace, linked to the request
 - **Export:** OTLP directly to **Jaeger 2.x** (the image is pinned; the v1 all-in-one image is not used), with the SDK's `BatchSpanProcessor`. There is no Collector container ([ADR-0005](0005-service-topology-and-status-events.md)); a production deployment would add one for tail sampling and routing.
 - **Sampling:** parent-based, configured with the standard `OTEL_TRACES_SAMPLER` variables: 100 % for the demo, about 1 % during load tests to protect Jaeger's in-memory storage.
 
+**As built (P5):**
+
+| Topic | Rule |
+|---|---|
+| Spans | The api's request span, named `<METHOD> <route template>`; `relay.publish`, one per notification published; `worker.process`, from before the claim to after the final write; the provider call (`otelhttp`) as its child; the database statements (`otelpgx`), named by their query, only under a span that is recorded, so the relay's and the sweepers' polling creates no traces. |
+| The stored `trace_parent` | The context of the api's request span: a child of the client's `traceparent` when it sent a valid one, a root otherwise. |
+| The provider's `traceparent` | The context of the worker's provider-call span, which is what "the worker continues from the header" means; before P5 the stored value was sent. |
+| Outcomes | `relay.publish` ends `published`, `not_confirmed` or `failed`; `worker.process` with the attempt's outcome, or `requeued`, `not_applied`, `expired`. A span that failed is an error whose description is the outcome's name, never an error text. `attempt` on `relay.publish` is the attempt the claim will open. |
+| What leaves | Every span passes an exporter that cleans the spans of third-party instrumentation: no status description and no exception message (a transport error quotes the URL, a database error can quote a value), no URL query, no statement argument. **The span of a request the api received keeps only a list of attributes:** the route template, the normalised method, the status, the scheme and protocol, the peer's address as the connection has it, the port and the sizes. What the instrumentation records beyond that is text the client chose (the path, the user agent, the `Host` header, `X-Forwarded-For`, a method of its own), and an attribute a later version adds is dropped until it is looked at. |
+| Optional | An empty `OTEL_EXPORTER_OTLP_ENDPOINT` turns tracing off. A collector that does not answer never fails a role's start; a role's stop waits for the buffered spans at most `TRACING_SHUTDOWN_TIMEOUT` (2 s). An unsupported sampler name is a configuration error. While the collector is unreachable, a failed export is a `warn` line about every 5 s. |
+| The transaction | The lane query also returns `attempt_count` and `scheduled_at` for the rule. The spans are created around the publish call; select, publish with confirms and returns, and commit keep their order. A publish span ends before the commit, so a confirmed message whose transaction then rolls back is still `published` in its span. |
+| Not instrumented | The gateway and the mock provider. |
+
 ### 7. Health checks
 
 `/healthz` and `/readyz` are served on **the api's public port** and are part of the OpenAPI spec, so the health check endpoint is reachable by anyone who can reach the API. Every service also serves both on its admin port for the container runtime; the Go binaries' `healthcheck` subcommand calls them ([ADR-0005](0005-service-topology-and-status-events.md)).
@@ -198,7 +225,7 @@ Retries and scheduled deliveries: a new trace, linked to the request
 
 The readiness response is JSON, with the status and duration of each check. On the api's public port a failed readiness is a `503` problem document ([ADR-0006](0006-api-contract-and-three-layer-idempotency.md) §9) that carries the same list in its `checks` member.
 
-**On the admin port** a role registers its checks when it starts, and `/readyz` runs them on every request: `{"status":"ok"|"fail","checks":[{"name","status","duration_ms"}]}`, `200` when all pass and `503` otherwise. Each check gets `READINESS_CHECK_TIMEOUT` (1 s); one that has not answered by then has failed and does not hold the answer. A check's error text is not in the body. The gateway's three checks are `postgres`, `rabbitmq` (the connection is open) and `event_consumer` (the consumer loop is active); none passes before the service has connected.
+**On the admin port** a role registers its checks when it starts, and `/readyz` runs them on every request: `{"status":"ok"|"fail","checks":[{"name","status","duration_ms"}]}`, `200` when all pass and `503` otherwise. Each check gets `READINESS_CHECK_TIMEOUT` (1 s); one that has not answered by then has failed and does not hold the answer. A check's error text is not in the body. The gateway's three checks are `postgres`, `rabbitmq` (the connection is open) and `event_consumer` (the consumer loop is active); none passes before the service has connected. The api registers `postgres`; the relay `postgres`; the worker `postgres`, `rabbitmq` (the dispatch connection is usable) and `consumer` (every consumer loop of the role is active: a flag set where a subscription is made and cleared where the connection is lost, the broker cancels, or the loop ends).
 
 ### 8. Admin port
 
@@ -254,5 +281,6 @@ Changes made after the design review, recorded in the [design review log](../ai/
 - Four dashboards and five untested alerts became one "Overview" dashboard with a panel smoke test and `promtool`-checked rules; metrics for leadership and stale events were replaced by reconciliation and oldest-queued-age metrics, and the alerts received first thresholds, with the two metrics the expiry rule needs. (D41, D74, D75)
 - Redaction gained a `Recipient` log type and a canary scan over logs, spans and metrics, because key-based redaction misses values outside named attributes. (D42)
 - The trace rule became hybrid: the first attempt of a non-scheduled notification sits under the request's trace, and retries and scheduled deliveries start linked traces. (D13)
+- In P5 logging, tracing, readiness of every role and the canary scan were built; the provider's error body is stored for the first time, redacted; the request line became `debug`; spans lost the client-chosen path and user agent. (D13, D33, D42, D43)
 - In P5 the metrics, the summary, the dashboard, the alert rules and the gateway's readiness were built, and the points the table had left open were defined (the table above); `expired_total` is also counted by the worker for an expiry found at claim time, and the event publishers' and the gateway's disconnection counters were added. (D41, D74, D75, D77)
 - The summary dropped its `circuits` field and gained a defined `success_rate` and a separate `backlog_due` cache; RabbitMQ is scraped per object; `X-Request-ID` is validated; Jaeger is pinned to 2.x. (D39, D9, D35, D43)

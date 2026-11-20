@@ -41,7 +41,7 @@ The relay runs on a **fixed 100 ms ticker**. On each tick it visits every channe
 ```sql
 BEGIN;
 
-SELECT id, trace_parent
+SELECT id, trace_parent, attempt_count, scheduled_at   -- the last two decide the publish span's parent (D13)
 FROM notifications
 WHERE channel = $1 AND priority = $2
   AND status IN ('pending', 'retrying')
