@@ -27,11 +27,14 @@ import (
 // on the wire against the deliveries of its own channel session.
 
 const (
-	logAckStale    = "worker: ack not sent: the delivery is from an older connection epoch"
-	logNackStale   = "worker: nack not sent: the delivery is from an older connection epoch"
-	logDropped     = "worker: deliveries from an older connection epoch dropped from the buffer"
-	logClaimFailed = "worker: claim failed; retrying with back-off"
-	logResubscribe = "consumer cancelled by the broker; subscribing again"
+	logAckStale  = "worker: ack not sent: the delivery is from an older connection epoch"
+	logNackStale = "worker: nack not sent: the delivery is from an older connection epoch"
+	logDropped   = "worker: deliveries from an older connection epoch dropped from the buffer"
+	// logDroppedAtPush is the line for one such delivery dropped when the
+	// consumer hands it to the worker.
+	logDroppedAtPush = "worker: delivery from an older connection epoch dropped"
+	logClaimFailed   = "worker: claim failed; retrying with back-off"
+	logResubscribe   = "consumer cancelled by the broker; subscribing again"
 )
 
 // workerLogs returns a log buffer for a worker role; it is printed when the
@@ -81,9 +84,16 @@ func logLines(logs *lockedBuffer, msg string) []map[string]any {
 	return out
 }
 
-// droppedFromBuffer sums the counts of the buffer-purge lines.
+// droppedFromBuffer counts the deliveries of an older connection epoch that
+// the worker forgot without an answer: the counts of the buffer-purge lines,
+// and the deliveries it dropped when the consumer handed them over. A
+// delivery the broker sent just before the connection broke can still be on
+// its way to the buffer when the epoch advances; the worker then drops it at
+// the hand-over, which is the same rule (D76) at another place. Seen in CI in
+// P6: of four held deliveries three were purged from the buffer and one was
+// dropped at the hand-over, 2.5 ms after it had been published.
 func droppedFromBuffer(logs *lockedBuffer) int {
-	n := 0
+	n := len(logLines(logs, logDroppedAtPush))
 	for _, l := range logLines(logs, logDropped) {
 		if c, ok := l["count"].(float64); ok {
 			n += int(c)
