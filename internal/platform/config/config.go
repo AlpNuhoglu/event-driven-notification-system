@@ -389,7 +389,7 @@ func (l *loader) load() Config {
 		ClaimRetryMax:       l.dur("CLAIM_RETRY_MAX", 5*time.Second),
 	}
 	c.RateLimit = RateLimit{
-		PerSecond:     l.intv("RATE_LIMIT_PER_SECOND", 98),
+		PerSecond:     l.intv("RATE_LIMIT_PER_SECOND", 97),
 		Horizon:       l.dur("RATE_LIMIT_HORIZON", 250*time.Millisecond),
 		RetryInterval: l.dur("RATE_LIMIT_RETRY_INTERVAL", 50*time.Millisecond),
 		SlotTolerance: l.dur("PACER_SLOT_TOLERANCE", 5*time.Millisecond),
