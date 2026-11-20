@@ -58,12 +58,12 @@ func (p *holdingPublisher) Release() { p.released.Do(func() { close(p.release) }
 // slots. When the relay commits, the claims whose slots passed long ago must
 // not send at once (the missed-slot rule): otherwise they leave together next
 // to slots used on time, and a one-second window at the provider holds more
-// than 100 sends. Real time, at the default 97 msg/s: about two seconds.
+// than 100 sends. Real time, at the default 90 msg/s: about two seconds.
 func TestE2E_LateRelayCommitKeepsRateLimit(t *testing.T) {
 	e := newEnv(t)
 	cfg := e.config(map[string]string{"RELAY_BATCH_SIZE": "200"})
-	if cfg.RateLimit.PerSecond != 97 {
-		t.Fatalf("rate %d, want the default 97", cfg.RateLimit.PerSecond)
+	if cfg.RateLimit.PerSecond != 90 {
+		t.Fatalf("rate %d, want the default 90", cfg.RateLimit.PerSecond)
 	}
 	ids := e.create(batchSize)
 	role, _ := e.startWorker(cfg, 0)
